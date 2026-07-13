@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -705,6 +706,16 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
 
         print("[cosmos] encode_prompt done", flush=True)
 
+        if loss_fn == "residual_motion" and self.text_encoder is not None:
+            offload_text_encoder = True
+            if additional_inputs is not None:
+                offload_text_encoder = bool(additional_inputs.get("offload_text_encoder_after_encode", offload_text_encoder))
+            if offload_text_encoder:
+                print("[cosmos] offload text_encoder to CPU after prompt encoding", flush=True)
+                self.text_encoder.to("cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
         vae_dtype = self.vae.dtype
         transformer_dtype = self.transformer.dtype
 
@@ -817,34 +828,35 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                     .to(device=device, dtype=transformer_dtype)
                 )
 
-                in_latents = cond_mask * cond_latent + (1 - cond_mask) * latents
-                in_latents = in_latents.to(transformer_dtype)
-                in_timestep = cond_indicator * cond_timestep + (1 - cond_indicator) * sigma_t
-                noise_pred = self.transformer(
-                    hidden_states=in_latents,
-                    condition_mask=cond_mask,
-                    timestep=in_timestep,
-                    encoder_hidden_states=prompt_embeds,
-                    padding_mask=padding_mask,
-                    return_dict=False,
-                )[0]
-                # NOTE: replace velocity (noise_pred) with gt_velocity for conditioning inputs only
-                noise_pred = gt_velocity + noise_pred * (1 - cond_mask)
-
-                if self.do_classifier_free_guidance:
-                    noise_pred_neg = self.transformer(
-                        hidden_states=in_latents,
+                def _predict_noise_for_latents(current_latents):
+                    current_in_latents = cond_mask * cond_latent + (1 - cond_mask) * current_latents
+                    current_in_latents = current_in_latents.to(transformer_dtype)
+                    current_in_timestep = cond_indicator * cond_timestep + (1 - cond_indicator) * sigma_t
+                    current_noise_pred = self.transformer(
+                        hidden_states=current_in_latents,
                         condition_mask=cond_mask,
-                        timestep=in_timestep,
-                        encoder_hidden_states=negative_prompt_embeds,
+                        timestep=current_in_timestep,
+                        encoder_hidden_states=prompt_embeds,
                         padding_mask=padding_mask,
                         return_dict=False,
                     )[0]
-                    # NOTE: replace velocity (noise_pred_neg) with gt_velocity for conditioning inputs only
-                    noise_pred_neg = gt_velocity + noise_pred_neg * (1 - cond_mask)
-                    noise_pred = noise_pred + self.guidance_scale * (noise_pred - noise_pred_neg)
+                    # NOTE: replace velocity with gt_velocity for conditioning inputs only.
+                    current_noise_pred = gt_velocity + current_noise_pred * (1 - cond_mask)
 
-                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                    if self.do_classifier_free_guidance:
+                        current_noise_pred_neg = self.transformer(
+                            hidden_states=current_in_latents,
+                            condition_mask=cond_mask,
+                            timestep=current_in_timestep,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            padding_mask=padding_mask,
+                            return_dict=False,
+                        )[0]
+                        current_noise_pred_neg = gt_velocity + current_noise_pred_neg * (1 - cond_mask)
+                        current_noise_pred = current_noise_pred + self.guidance_scale * (current_noise_pred - current_noise_pred_neg)
+                    return current_noise_pred
+
+                noise_pred = _predict_noise_for_latents(latents)
 
                 if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
                     if loss_fn == "residual_motion" and (
@@ -852,11 +864,21 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                     ):
                         raise ValueError("Pass additional_inputs={residual_motion_metric: callable(frames_01)->scalar_score}")
 
+                    # Guidance is applied to the current noisy latent x_t before the scheduler step.
+                    # For Cosmos flow matching, decode the clean estimate x0 ~= x_t - sigma_t * v_theta(x_t),
+                    # not x_t itself. Recompute v_theta after each latent update so repeated guidance
+                    # iterations do not use stale model predictions.
+                    sigma_for_guidance = self.scheduler.sigmas[i].to(device=latents.device, dtype=latents.dtype)
+
                     for rep in range(guidance_step[i]):
+                        with torch.no_grad():
+                            noise_pred_for_guidance = _predict_noise_for_latents(latents).detach()
+
                         with torch.enable_grad():
                             latents_req = latents.detach().requires_grad_(True)
                             if loss_fn == "latent_l2":
-                                loss = latents_req.float().pow(2).mean()
+                                x0_pred = latents_req - sigma_for_guidance * noise_pred_for_guidance
+                                loss = x0_pred.float().pow(2).mean()
                             else:
                                 frames = fixed_frames
                                 if frames is None:
@@ -867,20 +889,72 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
 
                                 latents_mean = self.latents_mean.to(latents_req.device, latents_req.dtype)
                                 latents_std = self.latents_std.to(latents_req.device, latents_req.dtype)
-                                decode_latents = latents_req * latents_std + latents_mean
-                                decoded_video = self.vae.decode(decode_latents.to(self.vae.dtype), return_dict=False)[0]
-                                decoded_video = self._match_num_frames(decoded_video, num_frames)
-                                frames_01_all = ((decoded_video.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
-                                frames_01 = frames_01_all[:, frames]
+                                x0_pred = latents_req - sigma_for_guidance * noise_pred_for_guidance
+                                decode_latents = x0_pred * latents_std + latents_mean
+
+                                # Decode only the selected metric frames. For long videos, using one
+                                # min/max chunk over fixed_frames can still span the whole sequence. Instead,
+                                # decode a tiny latent neighborhood per selected frame and keep only that frame.
+                                latent_t = decode_latents.shape[2]
+                                frames_per_latent = max(int(getattr(self, "vae_scale_factor_temporal", 4) or 4), 1)
+                                selected_frames_01 = []
+                                for f in frames:
+                                    latent_id = min(max(f // frames_per_latent, 0), latent_t - 1)
+                                    lo = max(0, latent_id - 1)
+                                    hi = min(latent_t - 1, latent_id + 1)
+                                    decode_chunk = decode_latents[:, :, lo : hi + 1].contiguous()
+                                    decode_spatial_scale = 0.25
+                                    if additional_inputs is not None:
+                                        decode_spatial_scale = float(additional_inputs.get("decode_spatial_scale", decode_spatial_scale))
+                                    if 0.0 < decode_spatial_scale < 1.0:
+                                        _, _, tt, hh, ww = decode_chunk.shape
+                                        hh2 = max(1, int(round(hh * decode_spatial_scale)))
+                                        ww2 = max(1, int(round(ww * decode_spatial_scale)))
+                                        decode_chunk = F.interpolate(
+                                            decode_chunk.float(),
+                                            size=(tt, hh2, ww2),
+                                            mode="trilinear",
+                                            align_corners=False,
+                                        ).to(dtype=decode_chunk.dtype)
+                                    decoded_video = self.vae.decode(decode_chunk.to(self.vae.dtype), return_dict=False)[0]
+                                    chunk_num_frames = max(1, (hi - lo) * frames_per_latent + 1)
+                                    decoded_video = self._match_num_frames(decoded_video, chunk_num_frames)
+                                    frames_01_all = ((decoded_video.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
+                                    local_f = min(max(f - lo * frames_per_latent, 0), frames_01_all.shape[1] - 1)
+                                    selected_frames_01.append(frames_01_all[:, local_f : local_f + 1])
+                                frames_01 = torch.cat(selected_frames_01, dim=1)
                                 score = additional_inputs["residual_motion_metric"](frames_01)
                                 if not score.requires_grad:
                                     raise RuntimeError("Residual motion metric returned a detached score.")
                                 loss = -score
 
                             grad = torch.autograd.grad(loss, latents_req, retain_graph=False, create_graph=False)[0]
-                        grad_norm = grad.float().norm() + 1e-8
+                        grad = grad * (1 - cond_mask)
+                        latent_mean_abs = latents_req.detach().float().abs().mean().item()
+                        grad_f = grad.float()
+                        grad_norm = grad_f.norm() + 1e-8
+                        grad_mean_abs = grad_f.abs().mean().item()
+                        grad_max_abs = grad_f.abs().max().item()
+                        latents_before_guidance = latents
                         latents = (latents - float(guidance_lr[i]) * grad / grad_norm).detach()
-                        print(f"cosmos_guidance_loss({i}/{rep}): {loss.item():.6f}")
+                        latent_delta = (latents - latents_before_guidance).float().abs().mean().item()
+                        relative_delta = latent_delta / (latent_mean_abs + 1e-8) * 100.0
+                        relative_grad = grad_mean_abs / (latent_mean_abs + 1e-8) * 100.0
+                        print(
+                            f"cosmos_guidance_loss({i}/{rep}): {loss.item():.6f} "
+                            f"sigma={float(sigma_for_guidance):.6f} "
+                            f"latent_mean_abs={latent_mean_abs:.6f} "
+                            f"grad_norm={float(grad_norm):.6f} grad_mean_abs={grad_mean_abs:.10f} grad_max_abs={grad_max_abs:.8f} "
+                            f"latent_delta={latent_delta:.8f} relative_delta={relative_delta:.6f}% relative_grad={relative_grad:.8f}%",
+                            flush=True,
+                        )
+
+                if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
+                    # Use the updated latent for the actual scheduler step as well.
+                    with torch.no_grad():
+                        noise_pred = _predict_noise_for_latents(latents)
+
+                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

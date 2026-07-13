@@ -1,8 +1,3 @@
-'''
-run_wan_geco_case.py 不做 guidance。
-它只是准备参数、模型、metric，然后把这些交给 custom pipeline。
-'''
-
 import argparse
 import json
 import sys
@@ -10,41 +5,52 @@ from pathlib import Path
 
 import torch
 from PIL import Image
-from diffusers import AutoencoderKLWan
 from diffusers.utils import export_to_video
 
-sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_wan")
-from pipeline_wan_i2v_guided import WanImageToVideoPipeline
+sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_cosmos")
+from pipeline_cosmos2_5_predict_guided import Cosmos2_5_PredictBasePipeline
+
+
+def _cosmos_execution_device(self):
+    try:
+        return next(self.transformer.parameters()).device
+    except Exception:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+Cosmos2_5_PredictBasePipeline._execution_device = property(_cosmos_execution_device)
+
 
 def remap_path(p):
     s = str(p)
     s = s.replace("/data2/yz10325/experiments_videogpa_pilot", "/vol/dissolve/yz10325/experiments/experiments_videogpa_pilot")
     s = s.replace("/data2/yz10325/experiments_videogpa", "/vol/dissolve/yz10325/experiments/experiments_videogpa")
+    s = s.replace("/data2/yz10325/checkpoints", "/vol/dissolve/yz10325/checkpoints")
     return s
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--case", required=True)
 parser.add_argument("--prompt_json", required=True)
 parser.add_argument("--output_root", required=True)
 parser.add_argument("--mode", choices=["baseline", "guided"], required=True)
-parser.add_argument("--steps", type=int, default=10)
+parser.add_argument("--steps", type=int, default=25)
 parser.add_argument("--frames", type=int, default=21)
-parser.add_argument("--height", type=int, default=480)
-parser.add_argument("--width", type=int, default=832)
+parser.add_argument("--height", type=int, default=256)
+parser.add_argument("--width", type=int, default=448)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--fps", type=int, default=16)
-parser.add_argument("--fixed_frames", default="0,8,16,20")
-parser.add_argument("--guidance_start", type=int, default=3)
-parser.add_argument("--guidance_end", type=int, default=7)
-parser.add_argument("--guidance_lr", type=float, default=0.05)
+parser.add_argument("--fixed_frames", default="0,4,8,12,16,20")
+parser.add_argument("--guidance_start", type=int, default=8)
+parser.add_argument("--guidance_end", type=int, default=12)
+parser.add_argument("--guidance_lr", type=float, default=0.02)
 parser.add_argument("--guidance_repeats", type=int, default=1)
-parser.add_argument("--ufm_scale", type=float, default=0.125)
+parser.add_argument("--ufm_scale", type=float, default=0.0625)
 parser.add_argument("--metric_device", default="cuda")
-parser.add_argument("--decode_spatial_scale", type=float, default=1.0)
-parser.add_argument("--max_relative_delta", type=float, default=0.0, help="Optional cap on mean absolute latent update as a fraction of mean abs latent, e.g. 0.002 for 0.2%.")
+parser.add_argument("--decode_spatial_scale", type=float, default=0.25)
 args = parser.parse_args()
 
-model = "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers"
+model = "/vol/dissolve/yz10325/checkpoints/Cosmos-Predict2.5-2B-diffusers-base-post-trained"
 data = json.load(open(args.prompt_json))
 item = data[args.case]
 
@@ -53,20 +59,21 @@ prompt = item["text_prompt"]
 
 out_dir = Path(args.output_root) / args.case
 out_dir.mkdir(parents=True, exist_ok=True)
-out = out_dir / f"{args.mode}_seed{args.seed}_steps{args.steps}_frames{args.frames}.mp4"
+out = out_dir / f"{args.mode}_seed{args.seed}_steps{args.steps}_frames{args.frames}_{args.height}x{args.width}.mp4"
 
-print("case:", args.case)
-print("mode:", args.mode)
-print("image:", image_path)
-print("out:", out)
-print("prompt tail:", prompt[-300:])
+print("case:", args.case, flush=True)
+print("mode:", args.mode, flush=True)
+print("image:", image_path, flush=True)
+print("out:", out, flush=True)
+print("prompt tail:", prompt[-300:], flush=True)
 
 additional_inputs = None
 loss_fn = None
-guidance_step = [0] * args.steps     #初始化 guidance_step, 默认全是 0
-guidance_lr = [0.0] * args.steps     #初始化 guidance_lr，默认全是 0
+guidance_step = [0] * args.steps
+guidance_lr = [0.0] * args.steps
+fixed_frames = [int(x) for x in args.fixed_frames.split(",") if x.strip()]
+fixed_frames = [min(max(x, 0), args.frames - 1) for x in fixed_frames]
 
-#64-104  guided 模式：加载 VGGT/UFM，构造 residual_motion_metric，设置 guidance schedule
 if args.mode == "guided":
     from demo_guidance_fast_failure import _get_compute_dtype_for_vggt, make_motion_metric
     from vggt.models.vggt import VGGT
@@ -75,7 +82,7 @@ if args.mode == "guided":
     metric_device = torch.device(args.metric_device)
     compute_dtype = _get_compute_dtype_for_vggt(metric_device)
 
-    print("loading VGGT/UFM...")
+    print("loading VGGT/UFM on", metric_device, flush=True)
     vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(metric_device).eval()
     ufm_model = UniFlowMatchConfidence.from_pretrained("infinity1096/UFM-Base").to(dtype=torch.float32, device=metric_device).eval()
     for p in vggt_model.parameters():
@@ -98,41 +105,36 @@ if args.mode == "guided":
         debug_autograd=False,
     )
 
-    loss_fn = "residual_motion"
     def residual_motion_metric_cross_gpu(frames_01):
         return residual_motion_metric(frames_01.to(metric_device))
 
-    additional_inputs = {"residual_motion_metric": residual_motion_metric_cross_gpu, "decode_spatial_scale": args.decode_spatial_scale, "max_relative_delta": args.max_relative_delta}
-
+    additional_inputs = {"residual_motion_metric": residual_motion_metric_cross_gpu, "decode_spatial_scale": args.decode_spatial_scale}
+    loss_fn = "residual_motion"
     for i in range(args.guidance_start, min(args.guidance_end, args.steps)):
         guidance_step[i] = args.guidance_repeats
         guidance_lr[i] = args.guidance_lr
 
-#107-111 打印 fixed_frames / guidance_step / scale / cap
-fixed_frames = [int(x) for x in args.fixed_frames.split(",") if x.strip()]
-print("fixed_frames 0-based:", fixed_frames)
-print("guidance_step:", guidance_step)
-print("max_relative_delta:", args.max_relative_delta)
-print("decode_spatial_scale:", args.decode_spatial_scale)
+print("fixed_frames 0-based:", fixed_frames, flush=True)
+print("guidance_step:", guidance_step, flush=True)
+print("decode_spatial_scale:", args.decode_spatial_scale, flush=True)
 
-#114-117 加载 Wan VAE + custom Wan pipeline
-vae = AutoencoderKLWan.from_pretrained(model, subfolder="vae", torch_dtype=torch.float32)
-pipe = WanImageToVideoPipeline.from_pretrained(model, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+pipe = Cosmos2_5_PredictBasePipeline.from_pretrained(model, torch_dtype=torch.bfloat16).to("cuda")
 pipe.vae.enable_tiling()
 pipe.vae.enable_slicing()
 
-#120-137 调用 pipe，把 fixed_frames / guidance_step / guidance_lr / loss_fn / additional_inputs 传进去
 image = Image.open(image_path).convert("RGB")
 generator = torch.Generator(device="cuda").manual_seed(args.seed)
 
 output = pipe(
-    prompt=prompt,
     image=image,
+    video=None,
+    prompt=prompt,
+    negative_prompt="low quality, blurry, distorted geometry, flickering, object deformation",
     height=args.height,
     width=args.width,
     num_frames=args.frames,
     num_inference_steps=args.steps,
-    guidance_scale=5.0,
+    guidance_scale=7.0,
     generator=generator,
     fixed_frames=fixed_frames,
     guidance_step=guidance_step,
@@ -142,4 +144,4 @@ output = pipe(
 )
 
 export_to_video(output.frames[0], str(out), fps=args.fps)
-print("saved:", out)
+print("saved:", out, flush=True)

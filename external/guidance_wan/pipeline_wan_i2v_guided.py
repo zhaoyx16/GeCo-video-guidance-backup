@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+'''
+# pipeline 里真正插入 guidance
+'''
 import html
 from typing import Any, Callable
 
@@ -743,6 +747,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         else:
             boundary_timestep = None
 
+        # 检查 guidance
+        # 作用：保证 loss_fn 合法，并且每个 denoising step 都有对应的 guidance_step 和 guidance_lr。
         allowed_losses = {None, "latent_l2", "residual_motion"}
         if loss_fn not in allowed_losses:
             raise ValueError(f"loss_fn must be one of {allowed_losses}")
@@ -757,12 +763,21 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         else:
             assert len(guidance_lr) == num_inference_steps, "guidance_lr length mismatch"
 
+        # 冻结模型参数： freeze transformer 和 VAE 权重，只更新 latent
+        # 作用：不训练 transformer / VAE 权重。后面只更新当前 latents。
+        # 注意：VAE 参数冻结，但梯度仍然可以通过 VAE decode 传回 latent。
         self.transformer.requires_grad_(False)
         if getattr(self, "transformer_2", None) is not None:
             self.transformer_2.requires_grad_(False)
         self.vae.requires_grad_(False)
 
+        # 这段是 Wan 原本的 denoising step，也就是每个 timestep 怎么从当前 latent 预测下一步要用的 noise_pred
+        # 在当前 denoising step，Wan 根据当前 noisy latent、condition image、text prompt 和 timestep，
+        # 选择合适的 transformer，预测当前 step 的 guided model output noise_pred。这个 noise_pred 后面会被 scheduler 用来更新 latents。
+        # 和我们 guidance 的关系：
+        # 这段是原始 Wan 的正常 denoising。后来插入的 GeCo guidance，就是在这个 noise_pred 算完之后、scheduler.step 之前，对 latents 做一次额外梯度更新。
         with self.progress_bar(total=num_inference_steps) as progress_bar:
+            # 进入每个 denoising step，并选择当前用哪个 transformer
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
@@ -777,19 +792,40 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     # low-noise stage in wan2.2
                     current_model = self.transformer_2
                     current_guidance_scale = guidance_scale_2
-
+                # 准备 transformer 输入
                 if self.config.expand_timesteps:
+                    # 这行是在把 condition 部分 和 要生成的 noisy latent 部分 合成 transformer 输入。
+                    # first_frame_mask = 0 的位置：用 condition
+                    # first_frame_mask = 1 的位置：用 current latents
                     latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents
+                    # 转成 transformer 的 dtype，通常是 bfloat16
                     latent_model_input = latent_model_input.to(transformer_dtype)
 
                     # seq_len: num_latent_frames * (latent_height // patch_size) * (latent_width // patch_size)
+                    # 构造每个 latent token 对应的 timestep
+                    # 为什么乘 first_frame_mask：
+                    # condition frame 的 timestep 应该接近 0 或特殊值
+                    # generated latent 的 timestep 是当前 t
+                    # [:, ::2, ::2] 是因为 transformer patch/token 下采样，timestep map 要和 transformer token grid 对齐。
+                    # 它在给 condition 区域和 generated 区域分配不同 timestep。
                     temp_ts = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
-                    # batch_size, seq_len
+                    # temp_ts:   [seq_len]
+                    # timestep:  [batch_size, seq_len]
+                    # 把一条 token-level timestep sequence 复制到 batch 维度上，
+                    # 让每个 batch sample 都有同样的 per-token timestep。
+                    # 在这个 Wan I2V 分支里，timestep 不是一个单独数字，而是每个 token 都可以有自己的 timestep：
+                    # condition token: 0
+                    # generated token: t
+                    # 这就是为什么它需要 [batch, seq_len]
                     timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
                 else:
+                    # expand_timesteps=False:
+                    # condition 和 generated latent 在 channel 维拼接；
+                    # timestep 是 sample-level，整个输入都用同一个 t。
                     latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
                     timestep = t.expand(latents.shape[0])
-
+                # conditional prediction
+                # 这里真正 forward transformer
                 with current_model.cache_context("cond"):
                     noise_pred = current_model(
                         hidden_states=latent_model_input,
@@ -799,8 +835,12 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         attention_kwargs=attention_kwargs,
                         return_dict=False,
                     )[0]
-
+                # 如果启用 classifier-free guidance，就还要跑一次 unconditional prediction branch
                 if self.do_classifier_free_guidance:
+                    # 这次 forward 用的是 negative/unconditional prompt embedding
+                    # 区别是：
+                    # cond:   text prompt = 你的 prompt
+                    # uncond: text prompt = negative prompt / empty prompt
                     with current_model.cache_context("uncond"):
                         noise_uncond = current_model(
                             hidden_states=latent_model_input,
@@ -810,35 +850,130 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             attention_kwargs=attention_kwargs,
                             return_dict=False,
                         )[0]
+                        # 标准 classifier-free guidance 公式。
+                        # 可以写成：guided = uncond + scale * (cond - uncond)
+                        # cond = 通用生成趋势 + prompt 影响
+                        # uncond = 通用生成趋势
+                        # 含义： cond - uncond = prompt 指向的方向； scale 越大，越强化 prompt 约束
                         noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
+                # 826-970   加的 guidance block
                 # Optional train-free latent guidance smoke test.
                 # This verifies: latent -> Wan x0 prediction -> loss -> grad -> latent update.
                 if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
+                    # guidance_step 是一个 list，长度等于 num_inference_steps。它告诉 pipeline：
+                    # 每个 denoising timestep 做几次 guidance update。
                     for rep in range(guidance_step[i]):
+                        # 把当前 latent 从旧计算图里切出来，然后打开梯度，只让当前 latents 可求梯度（把 latents 当作 optimization variable）
+                        # detach()：避免把梯度传回整个 denoising history，省显存，也符合 training-free guidance。
+                        # requires_grad_(True)：我们只想对当前 latent 求梯度。
+                        # 整行完整意思是：把当前 noisy latent 从旧 denoising graph 里切出来，然后把它设为当前 guidance step 的可优化变量。
                         latents = latents.detach().requires_grad_(True)
 
-                        if self.config.expand_timesteps:
+                        # 用当前 latent 准备 transformer 输入
+                        # 意思：构造 Wan transformer 当前 step 的输入。原 pipeline 怎么构造 input，guidance 就怎么构造 input。
+                        # 我们的 guidance forward 必须和原始 denoising forward 用同样的输入格式，否则 noise_pred_g 就不是同一个模型分布下的 prediction。
+                        # 把当前 latent + condition + timestep 整理成 Wan transformer 需要的输入格式。
+                        # 这几行不是 GeCo 核心，是为了保持和原 Wan pipeline 的输入格式一致。
+                        # 为什么有两种：
+                        # expand_timesteps=True：Wan I2V 的 condition frame 和 generated latent 共享一个 expanded timestep/mask 机制。
+                        if self.config.expand_timesteps: #这个分支通常用于 I2V / first-frame conditioning 的特殊输入方式。
+                            # 用 mask 混合 condition 和当前 latent
+                            # 这保证 transformer 看到的是：已知部分固定，未知部分正在 denoise。
                             latent_model_input_g = (1 - first_frame_mask) * condition + first_frame_mask * latents
+                            # 把输入转成 transformer 的 dtype，比如 bfloat16
+                            # 原因： transformer 权重通常是 bf16; 输入 dtype 匹配更省显存，也避免 dtype mismatch
                             latent_model_input_g = latent_model_input_g.to(transformer_dtype)
+                            # 构造 token-level timestep
+                            # first_frame_mask[0][0]取出 batch 0、channel 0 的 mask，形状大概：[T, H, W]
+                            # [:, ::2, ::2]空间下采样 2 倍，匹配 transformer token grid：[T, H, W] -> [T, H/2, W/2]
+                            #  * t把 mask 变成 timestep：mask = 0 -> timestep = 0; mask = 1 -> timestep = t
+                            # 也就是：condition token 的 timestep = 0; generated token 的 timestep = 当前 t
+                            # .flatten()展平成 token sequence：[T, H/2, W/2] -> [seq_len]
+                            # 得到的是：
+                            # temp_ts_g.shape = [seq_len]
+                            # 也就是每个 transformer token 一个 timestep。
+                            # 比如：
+                            # temp_ts_g = [0, 0, t, t, t, ...]
+                            # T = latent video 的时间维度，表示这个 latent tensor 里有多少个时间 token。
+                            # Wan 里的 latent 通常形状是：latents.shape = [B, C, T, H, W]
+                            # B = batch size; C = latent channels; T = latent temporal length; H = latent height; W = latent width
+                            # 一个 channel 可以理解为一个 learned latent feature map；每个时空位置由 C 个 channel 的特征向量表示。
                             temp_ts_g = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
+                            # 整行意思是：把一条 token-level timestep 序列复制/扩展到 batch 维度，
+                            # 让 batch 里的每个 sample 都有同样的 per-token timestep map。最后：timestep_g.shape = [B, seq_len]
+                            # temp_ts_g.unsqueeze(0)
+                            # 在第 0 维加一个新维度：[seq_len] -> [1, seq_len]
+                            # 为什么？ 因为 transformer 通常需要 batch 维：[batch_size, seq_len]
+                            # .expand(latents.shape[0], -1)
+                            # latents.shape[0] 是 batch size，也就是 B。
+                            # -1 的意思是这一维保持原大小，不改变。
+                            # 所以：[1, seq_len] -> [B, seq_len]
+                            # 所以在这个分支里：
+                            # timestep_g 是 per-token timestep
+                            # 每个 token 可以有不同 timestep
+                            # condition token 是 0
+                            # generated token 是 t
                             timestep_g = temp_ts_g.unsqueeze(0).expand(latents.shape[0], -1)
-                        else:
+                        else:  #分支 2：expand_timesteps=False ， 否则：把 latents 和 condition 在 channel 维拼起来。
+                            # dim=1 表示沿着 channel 维度 拼接。
+                            # 原来：
+                            # latents.shape   = [B, C1, T, H, W]
+                            # condition.shape = [B, C2, T, H, W]
+                            # 拼接后：
+                            # latent_model_input.shape = [B, C1 + C2, T, H, W]
+                            # 其他维度不变， 只有 channel 数加起来。
+                            # 可以想成在每个时空位置 (t,h,w)：
+                            # latents   给一个 C1 维 feature vector
+                            # condition 给一个 C2 维 feature vector
+                            # 拼接后：
+                            # [C1 + C2] 维 feature vector
+                            # 所以这不是在时间上拼，不是在空间上拼，而是在 feature/channel 维度上拼。
+                            # 也就是说 transformer 一次性看到：
+                            # 当前 noisy latent
+                            # condition latent
                             latent_model_input_g = torch.cat([latents, condition], dim=1).to(transformer_dtype)
+                            # 这里 timestep 是 sample-level，不是 token-level。形状：[B]
+                            # 意思是：整个 sample 都使用同一个 timestep t
+                            # 没有区分：
+                            # condition token = 0
+                            # generated token = t
                             timestep_g = t.expand(latents.shape[0])
 
-                        with torch.no_grad():
-                            with current_model.cache_context("cond"):
+                        # 重新 forward transformer 得到当前 latent 对应的 model prediction： noise_pred_g
+                        # 基于当前 latents 重新预测当前 timestep 的 model output，并做 CFG。
+                        # 为什么 no_grad()：我们不训练 transformer； GeCo gradient 不需要穿过 transformer； 这样省显存。
+                        # 为什么要每次 repeat 都算：
+                        # 因为 latent 每次 update 后变了，对应的 noise_pred 也应该变。否则就是旧 prediction 配新 latent，梯度方向会错。
+                        with torch.no_grad(): # 这次 transformer forward 不记录梯度图。因为我们的目标是 training-free guidance：固定模型参数，只优化当前 latent, 所以不需要 transformer graph。我们不训练 transformer，也不需要 loss 对 transformer 参数求梯度。
+                            with current_model.cache_context("cond"): #这是 Wan transformer 的 cache 管理上下文
+                            # cond 表示：conditional branch, 也就是使用 prompt embedding 的那次 forward。
+                            # 因为 CFG 有两次 forward：
+                            # cond branch:   用 prompt
+                            # uncond branch: 用 negative prompt / empty prompt
+                            # 所以 Wan 用：
+                            # cache_context("cond")
+                            # cache_context("uncond")
+                            # 来区分缓存。
+
+                                # 输出：noise_pred_g
+                                # 名字叫 noise_pred，但对 Wan flow-matching 来说更接近：predicted velocity / flow / model output
+                                # 它后面会被 scheduler 转成：x0_pred
                                 noise_pred_g = current_model(
-                                    hidden_states=latent_model_input_g,
-                                    timestep=timestep_g,
-                                    encoder_hidden_states=prompt_embeds,
-                                    encoder_hidden_states_image=image_embeds,
+                                    hidden_states=latent_model_input_g,  # 当前 latent + condition
+                                    timestep=timestep_g,  # 当前 noise level
+                                    encoder_hidden_states=prompt_embeds,  # text prompt embedding
+                                    encoder_hidden_states_image=image_embeds, # image condition embedding
                                     attention_kwargs=attention_kwargs,
                                     return_dict=False,
                                 )[0]
-
-                            if self.do_classifier_free_guidance:
+                            # 标准 classifier-free guidance。
+                            if self.do_classifier_free_guidance:  #这段是 Classifier-Free Guidance, CFG。它的目的：让生成结果更听 prompt 的话
+                            # 这段用 conditional prediction 和 unconditional prediction 的差值提取 prompt 方向，并用 guidance_scale 放大它，得到更符合 prompt 的 model output
+                            # 在我们代码里为什么要做 CFG？因为这是原 Wan pipeline 原本就有的 text guidance。
+                            # 在 guidance block 里也要重新做 CFG，是因为我们需要当前 latent 对应的正确 model output：
+                            # 当前 latent + prompt guidance -> noise_pred_g。
+                            # 如果这里不做 CFG，x0_pred 就不是原 pipeline 真正会用的 guided prediction，和正常 denoising 不一致。
                                 with current_model.cache_context("uncond"):
                                     noise_uncond_g = current_model(
                                         hidden_states=latent_model_input_g,
@@ -848,37 +983,183 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                         attention_kwargs=attention_kwargs,
                                         return_dict=False,
                                     )[0]
+                                # 数学上： guided_pred = uncond + scale * (cond - uncond)
+                                # 为什么：保持和原始 Wan sampling 完全一致。我们不是改变 text guidance，
+                                # 只是在它的 denoising prediction 上额外加 GeCo latent guidance。
                                 noise_pred_g = noise_uncond_g + current_guidance_scale * (noise_pred_g - noise_uncond_g)
 
+                        # 用 scheduler 得到 x0_pred
+                        # 用 scheduler 把当前 noisy latent 和 model output 转成 predicted clean latent x0_pred。
                         with torch.enable_grad():
+                            # 因为我们在 scheduler.step 之前提前调用 scheduler.convert_model_output，
+                            # 所以先手动初始化 scheduler.step_index，让它用当前 timestep 对应的 sigma 来计算 x0_pred。
                             if self.scheduler.step_index is None:
+                                # 意思：确保 scheduler 知道当前是第几个 step。
+                                # 为什么：Wan 的 scheduler 内部用 step_index 找当前 sigma。没有初始化会取不到正确 sigma。
+                                # Wan 用的是 Diffusers scheduler。scheduler 里面有一串：
+                                # self.sigmas
+                                # 表示每个 inference step 对应的 noise level。
+
+                                # 平时 step_index 什么时候初始化？
+                                # 正常情况下，scheduler 在：
+                                # self.scheduler.step(noise_pred, t, latents)
+                                # 里面会初始化/更新 step_index。
+                                # 但我们的 guidance 插在：
+                                # scheduler.step 之前
+                                # 我们提前调用了：
+                                # self.scheduler.convert_model_output(...)
+                                # 所以这时候 step_index 可能还没被 scheduler 初始化。
+                                # 因此要手动做：
+                                # self.scheduler._init_step_index(t)
+                                # 如果没有这两行会怎样？
+                                # 可能会出现：
+                                # self.scheduler.step_index is None
+                                # 然后 convert_model_output 内部找 sigma 时失败。
+                                # 或者更隐蔽地：
+                                # 用错 sigma
+                                # 那 x0_pred 就算错了，后面的 VAE decode 和 GeCo loss 都不可信。
+
                                 self.scheduler._init_step_index(t)
+                            # 这行是 guidance 里非常关键的一步：把当前 noisy latent x_t 和 model output 转成 predicted clean sample x0_pred。
+                            # 为什么不用直接 decode latents： latents 是 noisy intermediate。
+                            # GeCo/VGGT/UFM 需要看的是“当前模型认为最终视频大概长什么样”。
+                            # 所以应该 decode x0_pred，不是 decode noisy x_t。
+                            # 为什么 noise_pred_g.detach()：
+                            # 不让梯度穿过 transformer。
+                            # 但 sample=latents.float() 保留梯度，所以 x0_pred 仍然对 latents 可导。
+                            x0_pred = self.scheduler.convert_model_output(
+                                # noise_pred_g 是 Wan transformer 对当前 step 的 model output。对 Wan flow-matching 来说，它更像：
+                                # velocity / flow prediction, 虽然变量名叫 noise_pred。
+                                # =====FIXME+TODO：应该需要不detach noise_pred_g， 考虑transformer的prediction的影响，这样计算的梯度更准确=====
+                                # IMPORTANT: 原 GeCo 是考虑 transformer Jacobian 的
+                                noise_pred_g.float().detach(),
+                                # latents是当前 timestep 的 noisy latent：x_t，也就是还在 denoising 中间过程里的 latent，不是最终干净视频。
+                                sample=latents.float()
+                                )
+                                # 对于 Wan 的 flow_prediction，Diffusers scheduler 内部基本就是：x0_pred = sample - sigma * model_output
+                                # 一句话：这个公式来自 flow matching：模型输出的是从当前 noisy latent 到 clean latent 的 velocity/flow，
+                                # 所以 clean estimate 是当前 latent 减去 sigma 加权的 predicted flow。
+                                # 为什么是这个公式？Flow matching 常见设定是：x_t = (1 - sigma_t) * x0 + sigma_t * noise
+                                # 也就是说当前 sample 是：clean data x0和 noise之间的线性插值（Flow matching 通常把 noisy/intermediate sample 写成线性插值）
+                                # 当：sigma = 0 -> x_t = x0; sigma = 1 -> x_t = noise
+                                # 模型学习一个 velocity / flow，表示从当前点往 clean data 方向应该怎么走。
+                                # 如果模型输出：v_theta(x_t, t) ≈ (x_t - x0) / sigma_t
+                                # 那 rearrange 一下：x_t - x0 ≈ sigma_t * v_theta
+                                # 所以：x0 ≈ x_t - sigma_t * v_theta
+                                # 这就是：x0_pred = x_t - sigma_t * model_output
+                                # 和 DDPM 不同
+                                # DDPM epsilon-pred 里通常是：x_t = sqrt(alpha_t) x0 + sqrt(1-alpha_t) eps
+                                # 所以：x0_pred = (x_t - sqrt(1-alpha_t) eps_pred) / sqrt(alpha_t)
+                                # Flow matching 是线性路径，所以是：x0_pred = x_t - sigma_t * v_pred更直接。
 
-                            x0_pred = self.scheduler.convert_model_output(noise_pred_g.float().detach(), sample=latents.float())
+                                # 多维输出对多维输入的导数”就叫 Jacobian。
+                                # 在我们的 x0 里它为什么出现？
+                                # flow matching 里：
+                                # x0_pred = latents - sigma * noise_pred_g
+                                # 但：
+                                # noise_pred_g = transformer(latents)
+                                # 所以严格写：
+                                # x0_pred = latents - sigma * transformer(latents)
+                                # 如果对 latents 求导：
+                                # d x0_pred / d latents
+                                # = I - sigma * d transformer(latents) / d latents
+                                # 这里：
+                                # d transformer(latents) / d latents
+                                # 就是 transformer Jacobian。
 
+                                # transformer Jacobian 指的是：
+                                # transformer 输出对 transformer 输入 latent 的导数矩阵
+                                # 在这里，transformer 是一个函数：
+                                # noise_pred = v_theta(latents, t, prompt)
+                                # 也就是：
+                                # noise_pred_g = transformer(latents)
+                                # 那么 transformer Jacobian 就是：
+                                # ∂ noise_pred_g / ∂ latents
+                                # transformer Jacobian 就是模型预测 noise_pred 对输入 latents 的敏感度
+                                # detach noise_pred_g 等于忽略这个敏感度，只用近似梯度来更新 latents。
+                                # d x0_pred / d latents = I - sigma * J_transformer 其中：J_transformer = d transformer(latents) / d latents
+                                # 如果 detach noise_pred_g，就等于把：transformer(latents)当成常量，所以：
+                                # J_transformer = 0， 于是：d x0_pred / d latents = I， 也就是梯度只通过 latents 这一项传。
+
+                                # 为什么忽略它？
+                                # 因为 transformer Jacobian 巨大且昂贵。
+                                # 如果不忽略，反传会经过整个 transformer：
+                                # loss -> VAE -> x0_pred -> transformer -> latents
+                                # 需要保存 transformer activations，显存非常大。
+                                # 所以我们采用近似：
+                                # 把 transformer 输出当成当前点的固定方向，
+                                # 只通过 latents 本身反传。
+
+                                # 但 detach 有什么副作用？
+                                # 有。它让 guidance 变成近似梯度。
+                                # 完整依赖是：
+                                # x0_pred = f(latents, transformer(latents))
+                                # detach 后我们当成：
+                                # x0_pred ≈ latents - constant
+                                # 所以梯度方向可能不完美。
+                                # 这也是为什么：
+                                # guidance 有时弱
+                                # 多次 repeat 如果不重新算 noise_pred 会错
+                                # 我们修 repeat 重算 noise_pred_g，就是为了缓解这个近似：
+                                # 每次 latent 更新后，重新 forward transformer 得到新的 stopgrad prediction
+                                # 这相当于：
+                                # 不用 transformer backward，
+                                # 但每次更新后重新线性化当前点。
+
+                                # sigma 大 = noisy 是 scheduler/noise schedule 的设计。
+                                # 在 flow matching 里尤其直观，因为 x_t = (1-sigma)x0 + sigma noise。
+
+                                # TODO+IMPORTANT： 解决和思考中间 step 的 x0_pred误差问题
+                                # visualize 早中晚期的decoded x0_pred，观察噪声和模糊程度/语义和几何是否valid，决定在哪些time step开始guidance更有效。
+                                # guidance timing 是 trade-off： 中间 step 的 x0_pred 是一个 noisy estimate of final clean sample；它越早越不准，越晚越准，但越晚越难改变生成轨迹。
+
+                            # dummy latent_l2 loss 分支
+                            # 一个最简单的 smoke-test loss，用来验证 gradient path，不代表真实 GeCo
                             if loss_fn == "latent_l2":
                                 loss = x0_pred.float().square().mean()
+                            # GeCo loss 分支
                             elif loss_fn == "residual_motion":
                                 if additional_inputs is None or not callable(additional_inputs.get("residual_motion_metric", None)):
                                     raise ValueError("Pass additional_inputs={'residual_motion_metric': callable(frames_01)->scalar_score}")
-
+                                # 选要 decode/评估的 frames
+                                # 意思：决定哪些视频帧参与 GeCo loss。
+                                # 为什么：不能 decode 全部视频，太占显存；而且 guidance 只需要抽样几个关键帧估计几何 residual。
                                 fixed_frames_ = fixed_frames if fixed_frames is not None else [0, num_frames - 1]
                                 if isinstance(fixed_frames_, int):
                                     fixed_frames_ = [fixed_frames_]
                                 fixed_frames_ = [int(x) for x in fixed_frames_]
+                                # 意思：VAE decode 时是否降低空间分辨率。
+                                # 为什么：full-res differentiable VAE decode 会 OOM。比如 0.5 就是在 latent spatial size 上减半，显存大概降很多。
+                                # 代价：scale 太低，UFM/VGGT 信号会变差。
+                                # 如果 additional_inputs 里有 decode_spatial_scale，就取它；如果没有，就默认用 1.0。
+                                # TODO+IMPORTANT：原 GeCo CogVideoX: decode selected temporal chunks，但 spatial resolution 不降。也就是 decode 到原 pipeline 视频分辨率。
+                                decode_spatial_scale = float(additional_inputs.get("decode_spatial_scale", 1.0))
 
                                 # Decode only the temporal chunks needed by fixed_frames.
                                 # Full-video differentiable VAE decode is too expensive at 480x832.
+                                # 意思：对于 I2V，把 condition 部分保持为原始 condition，不让 x0_pred 覆盖它。
+                                # 为什么：第一帧/condition frame 是给定的，不应该被 guidance 改坏。我们只希望指导生成部分。
                                 x0_for_decode = x0_pred
                                 if self.config.expand_timesteps:
+                                    # 它的效果是：
+                                    # mask=0 的区域保留 condition
+                                    # mask=1 的区域使用 predicted/generated x0
                                     x0_for_decode = (1 - first_frame_mask.float()) * condition.float() + first_frame_mask.float() * x0_pred.float()
 
                                 # Keep the full x0 tensor in its existing dtype, but only cast/normalize
                                 # the small temporal chunk that will actually be decoded. Holding a full
                                 # normalized z_all copy is enough to OOM at 320x576 guidance.
+                                # 意思：拿到 latent 时间长度和 VAE 时间压缩比例。
+                                # 为什么：Wan VAE 不是一帧 latent 对一帧视频。通常约 4 帧视频对应 1 个 temporal latent token。所以要把目标 video frame index 映射到 latent chunk。
+                                # x0_for_decode 的形状是：[B, C, T_lat, H_lat, W_lat]， shape[2] 就是 latent 的时间长度。
+                                # T_lat 是当前 x0 latent 里有多少个 temporal latent tokens；
+                                # temporal_scale 是 VAE 时间压缩比例，用来把 RGB frame index 映射到 latent time index。
                                 T_lat = x0_for_decode.shape[2]
                                 temporal_scale = int(getattr(self, "vae_scale_factor_temporal", 4))
+
                                 vae_dtype = self.vae.dtype
+                                # 意思：把 diffusion latent 转成 VAE decode 需要的 latent normalization。
+                                # 为什么：Diffusers Wan 最后正式 decode 前也做这一步。如果 guidance decode 不做，VAE 输入分布错，decoded frames 就不可信。
                                 latents_mean = (
                                     torch.tensor(self.vae.config.latents_mean)
                                     .view(1, self.vae.config.z_dim, 1, 1, 1)
@@ -887,51 +1168,357 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
                                     1, self.vae.config.z_dim, 1, 1, 1
                                 ).to(x0_for_decode.device, vae_dtype)
-                                rm_frames = []
 
+                                rm_frames = []
+                                # 只 decode fixed frame 附近的小 temporal chunk，并取出对应 RGB frame。
+                                # 意思：遍历每个要算 loss 的帧，并确保 index 合法。
+                                # 这两行遍历 guidance 使用的 frame indices，并把每个 index 限制在合法视频帧范围内。
                                 for fidx in fixed_frames_:
                                     fidx = int(max(0, min(fidx, num_frames - 1)))
 
+                                    # 把 RGB video frame index fidx 映射到 latent time index center_lat。
+                                    # 为什么需要映射？
+                                    # 你指定的 fixed_frames_ 是 RGB 视频帧编号，比如：
+                                    # fidx = 0, 12, 24, 36, 40
+                                    # 但 VAE decode 输入是 latent 时间轴：
+                                    # latent index = 0, 1, 2, ...
+                                    # Wan VAE 有 temporal compression：
+                                    # 多个 RGB frames 对应一个 latent time token
+                                    # 比如：
+                                    # temporal_scale = 4
+                                    # 大致是：
+                                    # RGB frame 0      -> latent 0
+                                    # RGB frame 1-4    -> latent 1
+                                    # RGB frame 5-8    -> latent 2
+                                    # RGB frame 9-12   -> latent 3
+                                    # ...
+                                    # 所以要把 fidx 转成对应的 latent index。
+                                    # 为什么 fidx == 0 特殊处理？
+                                    # 第 0 帧通常是 condition / first frame，对应 latent 0。
+                                    # Wan temporal VAE 的第一个 latent token 通常单独对应第一帧/起点，所以 special case。
+                                    # 为什么有 min(T_lat - 1, ...)？
+                                    # min(T_lat - 1, calculated_index)
+                                    # 防止 latent index 超出范围。
+                                    # 如果视频最后一帧 index 映射出来比 latent 时间长度还大，就 clamp 到最后一个 latent token：
+                                    # 最大 latent index = T_lat - 1
                                     if fidx == 0:
                                         center_lat = 0
                                     else:
                                         center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
 
                                     # Small temporal context around the target latent frame.
+                                    # 意思：取目标 latent 前后各一点 temporal context。
+                                    # 围绕目标 latent time index center_lat 取一个小的 temporal chunk，用来送进 VAE decode
+                                    # 它取的范围是什么？
+                                    # Python slicing 是左闭右开：
+                                    # x[:, :, chunk_start:chunk_end]
+                                    # 包含：
+                                    # chunk_start, ..., chunk_end - 1
+                                    # 这里：
+                                    # center_lat - 1
+                                    # center_lat
+                                    # center_lat + 1
+                                    # 也就是目标 latent 前后各取一个。
+                                    # 为什么不只取一个 latent token：VAE 是 temporal model，decode 单个 token 可能缺上下文，容易不稳定。取小 chunk 是显存和质量的折中。
                                     chunk_start = max(0, center_lat - 1)
                                     chunk_end = min(T_lat, center_lat + 2)
 
+                                    # 从完整的 x0_for_decode latent 里切出刚才选好的 temporal chunk，并准备送进 VAE。
+                                    # 先看 x0_for_decode 的形状
+                                    # 它是 video latent，形状大概是：
+                                    # [B, C, T_lat, H_lat, W_lat]
+                                    # 分别是：
+                                    # B = batch
+                                    # C = latent channels
+                                    # T_lat = latent 时间长度
+                                    # H_lat = latent 高度
+                                    # W_lat = latent 宽度
+
+                                    # [:, :, chunk_start:chunk_end]
+                                    # 这是 tensor slicing。
+                                    # x0_for_decode[:, :, chunk_start:chunk_end]
+                                    # 意思：
+                                    # 第 1 维 B：全部保留
+                                    # 第 2 维 C：全部保留
+                                    # 第 3 维 T：只取 chunk_start 到 chunk_end-1
+                                    # 后面的 H/W：没写，默认全部保留
+                                    # 等价完整写法是：
+                                    # x0_for_decode[:, :, chunk_start:chunk_end, :, :]
+                                    # 所以结果形状是：
+                                    # [B, C, chunk_T, H_lat, W_lat]
+                                    # 其中：
+                                    # chunk_T = chunk_end - chunk_start
+                                    # 通常是 2 或 3。
+
+                                    # .contiguous()
+                                    # 切片以后 tensor 可能不是 contiguous memory layout。
+                                    # VAE decode / interpolate 等操作通常更喜欢连续内存。
+                                    # .contiguous()
+                                    # 会创建一个内存连续的 tensor，避免后续操作报错或变慢。
                                     z_chunk = x0_for_decode[:, :, chunk_start:chunk_end].contiguous().to(vae_dtype)
+
+                                    # 意思：可选地缩小 latent 的 H/W。
+                                    # 为什么：进一步省显存。这个操作仍然可导，所以 gradient 可以从 decoded frames 回到 z_chunk，再回到 latents
+                                    # 如果：
+                                    # decode_spatial_scale = 1.0
+                                    # 就 full latent resolution decode。
+                                    # 如果：
+                                    # decode_spatial_scale = 0.5
+                                    # 就把 latent spatial H/W 缩小一半再 decode。
+                                    # 如果：
+                                    # decode_spatial_scale = 0.25
+                                    # 就缩小到四分之一。
+                                    # 代价是什么？
+                                    # 低分辨率 decode 会让 GeCo loss 变粗糙：
+                                    # UFM flow 不准
+                                    # VGGT depth/pose 不准
+                                    # small object/detail 丢失
+                                    # guidance signal 变弱或变噪声
+                                    # 所以它是 trade-off：
+                                    # scale 越大：信号更准，但更容易 OOM
+                                    # scale 越小：更省显存，但 metric 可能不可靠
+                                    # IMPORTANT: GeCo 原来的 pipeline 是不是 full-res differentiable VAE decode？
+                                    # 是的，spatial 上是 full-res differentiable VAE decode。
+                                    # decode_spatial_scale 是工程折中，不是 GeCo 原始方法。
+                                    # 它帮助跑得动，但也可能削弱 guidance 正确性。
+                                    if decode_spatial_scale != 1.0:
+                                        H_lat, W_lat = z_chunk.shape[-2:]
+                                        H_new = max(1, int(round(H_lat * decode_spatial_scale)))
+                                        W_new = max(1, int(round(W_lat * decode_spatial_scale)))
+                                        z_chunk = torch.nn.functional.interpolate(
+                                            z_chunk,
+                                            size=(z_chunk.shape[2], H_new, W_new),
+                                            mode="trilinear",
+                                            align_corners=False,
+                                        )
+
+                                    # 意思：VAE decode 前做 latent un-normalization。
+                                    # 为什么：和正式 pipeline 输出 decode 保持一致。
                                     z_chunk = z_chunk / latents_std + latents_mean
+
+                                    # 意思：把 x0 latent chunk decode 成 RGB video chunk。
+                                    # 为什么必须在 torch.enable_grad() 里：
+                                    # 我们需要 loss -> decoded pixels -> z_chunk -> x0_pred -> latents 的梯度路径。
+                                    # IMPORTANT: 原 GeCo 代码也是只 decode selected frames 附近的 temporal chunk
                                     decoded_chunk = self.vae.decode(z_chunk, return_dict=False)[0]
+
+                                    # 意思：把 VAE 输出从 [B,C,T,H,W] 转成 [B,T,H,W,C]，并从 [-1,1] 映射到 [0,1]。
+                                    # 为什么：make_motion_metric 期望输入是 [B,F,H,W,3]，值域 [0,1]。
+                                    #  .clamp(0, 1)
+                                    # 把值限制在合法图像范围：
+                                    # 小于 0 的变成 0
+                                    # 大于 1 的变成 1
+                                    # 因为 VAE 输出可能略微超出 [-1,1]，比如：
+                                    # 1.03 或 -1.05
+                                    # 映射后可能超出 [0,1]，所以 clamp。
                                     frames_chunk = ((decoded_chunk.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
 
+                                    # 这个 decoded chunk 的第 0 帧，对应原视频的第几帧
                                     if chunk_start == 0:
                                         chunk_first_frame = 0
                                     else:
                                         chunk_first_frame = 1 + (chunk_start - 1) * temporal_scale
 
+                                    # 把全局 frame index 转成 chunk 内部的局部 index
                                     rel = fidx - chunk_first_frame
                                     rel = int(max(0, min(rel, frames_chunk.shape[1] - 1)))
+                                    # 这里用 slice：
+                                    # rel:rel+1
+                                    # 而不是：
+                                    # rel
+                                    # 是为了保留时间维度。
+                                    # 如果用：
+                                    # frames_chunk[:, rel]
+                                    # 形状会变成：
+                                    # [B, H, W, C]
+                                    # 时间维消失。
+                                    # 用：
+                                    # frames_chunk[:, rel:rel + 1]
+                                    # 形状是：
+                                    # [B, 1, H, W, C]
+                                    # 这样后面多个 frame 可以：
+                                    # torch.cat(rm_frames, dim=1)
+                                    # 拼成：
+                                    # [B, F_selected, H, W, C]
                                     rm_frames.append(frames_chunk[:, rel:rel + 1])
 
+                                    # 手动删除临时变量，帮助释放显存引用
                                     del z_chunk, decoded_chunk, frames_chunk
 
+                                # 它是 selected decoded frames，形状：
+                                # [B, F_selected, H, W, C]
                                 frames_01 = torch.cat(rm_frames, dim=1)
+
+                                # 把 selected frames 输入 GeCo residual motion metric，得到 loss
+                                # additional_inputs["residual_motion_metric"] 是什么？
+                                # 它是在 runner 里创建并传进 pipeline 的函数。
                                 score = additional_inputs["residual_motion_metric"](frames_01)
+
+                                # 意思：检查梯度链没有断。
+                                # IMPORTANT为什么：这是非常重要的 correctness guard。如果这里不 requires_grad，说明 VAE/UFM/metric 某处 detach/no_grad 了，guidance 就是假跑。
                                 if not score.requires_grad:
                                     raise RuntimeError("Residual motion metric returned a detached score.")
+                                # 意思：把 score 转成 minimization loss。
+                                # 因为：
+                                # score = -residual
+                                # 所以：
+                                # loss = -score = residual
+                                # 优化 loss 就是在降低 residual flow。
                                 loss = -score
 
                                 del frames_01, rm_frames
                             else:
                                 raise RuntimeError(f"Unexpected loss_fn: {loss_fn}")
 
+                            # 计算 guidance loss 对当前 latents 的梯度
+
+                            # retain_graph=False
+                            # 意思是：
+                            # 算完这次梯度后，不保留计算图
+                            # 为什么？
+                            # 因为这次 guidance update 只用一次这个 graph。
+                            # 不保留可以省显存。
+                            # 如果后面还想对同一个 graph 再 backward 一次，才需要 retain_graph=True。这里不需要。
+
+                            # create_graph=False
+                            # 意思是：
+                            # 不要为梯度本身再建立计算图
+                            # 也就是不需要二阶梯度。
+                            # 我们只需要一阶梯度：
+                            # ∂loss / ∂latents
+                            # 不需要：
+                            # ∂²loss / ∂latents²
+                            # 所以设 False 省显存。
+
+                            # [0]
+                            # torch.autograd.grad 返回的是 tuple。
+                            # 因为你可以一次对多个 tensor 求梯度：
+                            # torch.autograd.grad(loss, [latents, other_tensor])
+                            # 它会返回：
+                            # (grad_latents, grad_other)
+                            # 这里我们只传了一个 latents，所以返回：
+                            # (grad_latents,)
+                            # 取 [0] 就是拿出这个 tensor。
                             grad = torch.autograd.grad(loss, latents, retain_graph=False, create_graph=False)[0]
 
-                        grad_norm = grad.float().norm() + 1e-8
-                        latents = (latents - guidance_lr[i] * grad / grad_norm).detach()
-                        print(f"wan_guidance_loss({i}/{rep}): {loss.item():.6f}")
+                        # 这两行把梯度转成 float32 并计算 L2 norm，用于后面做归一化梯度更新，避免 update 大小被 GeCo loss 的绝对尺度直接支配。
+                        # 第一行：grad_f = grad.float()
+                        # 把梯度转成 float32。
+                        # 为什么？
+                        # grad 可能是：
+                        # bf16 / fp16 / fp32
+                        # 如果用低精度算 norm，可能不够稳定。
+                        # 所以先转成：
+                        # float32
+                        # 再算统计量。
+                        # 这不会改变原始 grad 本身，只是创建一个用于计算 norm 的 float32 版本。
+                        # 第二行：grad_f.norm()
+                        # grad_f.norm()
+                        # 默认是 L2 norm。
+                        # 数学上：
+                        # ||grad||_2 = sqrt(sum_i grad_i^2)
+                        # 也就是把整个 gradient tensor 展平成一大串数，然后算欧几里得长度。整个梯度 tensor 的 L2 norm。
+                        # + 1e-8
+                        # grad_norm = grad_f.norm() + 1e-8
+                        # 加一个很小的数，防止后面除以 0。
+                        # 后面有：
+                        # update = guidance_lr[i] * grad / grad_norm
+                        # 如果 grad_norm = 0，就会除零。
+                        # 所以加：
+                        # 1e-8
+                        # 保证数值安全。
+                        # 为什么需要 grad_norm？
+                        # 因为后面不是直接：
+                        # latents = latents - lr * grad
+                        # 而是：
+                        # latents = latents - lr * grad / grad_norm
+                        # 这叫 normalized gradient update。
+                        # 它让更新方向保持是梯度方向，但更新大小主要由 guidance_lr 控制，而不是由 loss 的数值尺度控制。
+                        # 举例：
+                        # grad_norm 很大：
+                        # grad / grad_norm 后仍然是单位方向，不会更新爆炸
+                        # grad_norm 很小：
+                        # grad / grad_norm 后方向仍然可用，不会因为梯度太小完全没动
+                        # FIXME当然这也有风险，所以后面又加了：
+                        # max_relative_delta
+                        # 限制实际 update 幅度。
+                        # 为什么加 max_relative_delta？一句话：gradient normalization 可以让不同 loss scale 下 update 大小稳定，
+                        # 但也可能把很弱或很噪声的梯度强行放大；max_relative_delta 是安全阀，限制每次 latent update 相对 latent 本身的最大幅度，避免视频崩坏。
+                        grad_f = grad.float()
+                        grad_norm = grad_f.norm() + 1e-8
+
+                        grad_mean_abs = grad_f.abs().mean().item()
+                        grad_max_abs = grad_f.abs().max().item()
+                        latent_mean_abs = latents.detach().float().abs().mean().item()
+                        latents_before_guidance = latents
+                        # 计算 latent guidance 的更新量。
+                        # grad / grad_norm
+                        # 是把梯度归一化成一个“单位方向”。
+                        # 意思：
+                        # 保留梯度方向
+                        # 去掉梯度绝对大小
+                        # 所以它表示：
+                        # 朝 loss 增大的方向的单位向量
+                        # 为什么不是直接用 grad？
+                        # 如果直接：
+                        # update = guidance_lr[i] * grad
+                        # 那 update 大小会强烈依赖 loss scale。
+                        # 比如：
+                        # GeCo loss 数值大 -> grad 大 -> update 爆炸
+                        # GeCo loss 数值小 -> grad 小 -> 几乎没更新
+                        # 而不同场景、不同 scale、不同 frame 数都会改变 loss/grad 大小。
+                        # 归一化以后：
+                        # update 大小主要由 guidance_lr 控制
+                        # 更容易调。
+                        update = guidance_lr[i] * grad / grad_norm
+
+                        # 如果 guidance update 的平均幅度超过 latent 本身平均幅度的一定比例，就按比例缩小 update，避免 latent 被一次推太远导致视频崩坏。
+                        # IMPORTANT: GeCo 原本没有 max_relative_delta 这种 cap。它只做了 global grad norm normalization：update = guidance_lr * grad / ||grad||
+                        # 但没有再限制：update 的 mean abs 不能超过 latent_mean_abs 的某个比例
+                        # max_relative_delta
+                        # 是我们后面给 Wan 加的安全阀。原因是 Wan 里有些 step 的 gradient 特别大，虽然做了 norm normalization，但局部或者平均 update 仍可能把 latent 推得太远，导致视频崩坏。
+                        # 所以区别是：
+                        # GeCo 原本:
+                        # 只 normalize gradient norm。
+                        # 我们的 Wan:
+                        # normalize gradient norm
+                        # + optional max_relative_delta cap。
+                        # 这个 cap 是工程稳定性改动，不是原论文方法。
+                        # 这个还是要时刻关注对guidance是否会有影响，比如是否会对guidance 的效果显著限制
+                        max_relative_delta = 0.0
+                        if additional_inputs is not None:
+                            max_relative_delta = float(additional_inputs.get("max_relative_delta", 0.0) or 0.0)
+                        if max_relative_delta > 0.0:
+                            update_delta = update.float().abs().mean()
+                            max_delta = max_relative_delta * (latent_mean_abs + 1e-8)
+                            if update_delta.item() > max_delta:
+                                update = update * (max_delta / (update_delta + 1e-8))
+
+                        #  guidance loss 的负梯度更新当前 noisy latent，
+                        # 然后切断这次 guidance update 的计算图，
+                        # 让新 latent 作为后续 denoising 的状态继续运行。
+
+                        # 数学形式
+                        # update = η * ∇L / ||∇L||
+                        # 其中：
+                        # η = guidance_lr[i]
+                        # L = guidance loss
+                        # 然后：
+                        # x_t ← x_t - update
+                        latents = (latents - update).detach()
+                        # latent_delta = 本次 update 平均每个 latent 元素改了多少
+                        latent_delta = (latents - latents_before_guidance).float().abs().mean().item()
+                        # 把 update 幅度换算成相对于 latent 本身大小的百分比。
+                        relative_delta = latent_delta / (latent_mean_abs + 1e-8) * 100.0
+                        # 把 gradient 平均绝对值也换算成相对于 latent 本身大小的百分比。
+                        relative_grad = grad_mean_abs / (latent_mean_abs + 1e-8) * 100.0
+                        print(
+                            f"wan_guidance_loss({i}/{rep}): {loss.item():.6f} "
+                            f"latent_mean_abs={latent_mean_abs:.6f} grad_norm={float(grad_norm):.6f} "
+                            f"grad_mean_abs={grad_mean_abs:.10f} grad_max_abs={grad_max_abs:.8f} "
+                            f"latent_delta={latent_delta:.8f} relative_delta={relative_delta:.6f}% relative_grad={relative_grad:.8f}%",
+                            flush=True,
+                        )
 
                         del grad, noise_pred_g, x0_pred, loss
 
@@ -946,6 +1533,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         timestep = t.expand(latents.shape[0])
 
                     with current_model.cache_context("cond"):
+                        # IMPORTANT: 用更新后的 latents 重新预测 model output。
+                        # 为什么：这是修复 stale noise_pred 的关键。如果不做这步，就会变成：
+                        # updated latents + old noise_pred
+                        # scheduler step 就不一致。
                         noise_pred = current_model(
                             hidden_states=latent_model_input,
                             timestep=timestep,
@@ -968,6 +1559,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
+                # 正常 denoising 进入下一步。
+                # 这里使用的是：
+                # guidance 更新后的 latents
+                # guidance 后重算的 noise_pred
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if callback_on_step_end is not None:
