@@ -23,6 +23,7 @@ from typing import Any, Callable
 import PIL
 import regex as re
 import torch
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -395,6 +396,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         if self.config.boundary_ratio is not None and image_embeds is not None:
             raise ValueError("Cannot forward `image_embeds` when the pipeline's `boundary_ratio` is not configured.")
 
+    def _get_geco_vae_device(self):
+        return getattr(self, "_geco_vae_device", self._execution_device)
+
     def prepare_latents(
         self,
         image: PipelineImageInput,
@@ -440,15 +444,16 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 [image, image.new_zeros(image.shape[0], image.shape[1], num_frames - 2, height, width), last_image],
                 dim=2,
             )
-        video_condition = video_condition.to(device=device, dtype=self.vae.dtype)
+        vae_device = self._get_geco_vae_device()
+        video_condition = video_condition.to(device=vae_device, dtype=self.vae.dtype)
 
         latents_mean = (
             torch.tensor(self.vae.config.latents_mean)
             .view(1, self.vae.config.z_dim, 1, 1, 1)
-            .to(latents.device, latents.dtype)
+            .to(vae_device, self.vae.dtype)
         )
         latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
-            latents.device, latents.dtype
+            vae_device, self.vae.dtype
         )
 
         if isinstance(generator, list):
@@ -460,8 +465,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             latent_condition = retrieve_latents(self.vae.encode(video_condition), sample_mode="argmax")
             latent_condition = latent_condition.repeat(batch_size, 1, 1, 1, 1)
 
-        latent_condition = latent_condition.to(dtype)
+        latent_condition = latent_condition.to(device=vae_device, dtype=self.vae.dtype)
         latent_condition = (latent_condition - latents_mean) * latents_std
+        latent_condition = latent_condition.to(device=device, dtype=dtype)
 
         if self.config.expand_timesteps:
             first_frame_mask = torch.ones(
@@ -1012,10 +1018,11 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                         # 重新 forward transformer 得到当前 latent 对应的 model prediction： noise_pred_g
                         # 基于当前 latents 重新预测当前 timestep 的 model output，并做 CFG。
-                        # 为什么 no_grad()：我们不训练 transformer； GeCo gradient 不需要穿过 transformer； 这样省显存。
+                        # Full guidance keeps the transformer forward in the autograd graph.
+                        # Transformer weights stay frozen, but loss still needs d(noise_pred)/d(latent).
                         # 为什么要每次 repeat 都算：
                         # 因为 latent 每次 update 后变了，对应的 noise_pred 也应该变。否则就是旧 prediction 配新 latent，梯度方向会错。
-                        with torch.no_grad(): # 这次 transformer forward 不记录梯度图。因为我们的目标是 training-free guidance：固定模型参数，只优化当前 latent, 所以不需要 transformer graph。我们不训练 transformer，也不需要 loss 对 transformer 参数求梯度。
+                        with torch.enable_grad():
                             with current_model.cache_context("cond"): #这是 Wan transformer 的 cache 管理上下文
                             # cond 表示：conditional branch, 也就是使用 prompt embedding 的那次 forward。
                             # 因为 CFG 有两次 forward：
@@ -1094,15 +1101,14 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             # 为什么不用直接 decode latents： latents 是 noisy intermediate。
                             # GeCo/VGGT/UFM 需要看的是“当前模型认为最终视频大概长什么样”。
                             # 所以应该 decode x0_pred，不是 decode noisy x_t。
-                            # 为什么 noise_pred_g.detach()：
-                            # 不让梯度穿过 transformer。
-                            # 但 sample=latents.float() 保留梯度，所以 x0_pred 仍然对 latents 可导。
+                            # Do not detach noise_pred_g: transformer weights are frozen, but the latent update
+                            # should include the transformer Jacobian d(noise_pred)/d(latent).
                             x0_pred = self.scheduler.convert_model_output(
                                 # noise_pred_g 是 Wan transformer 对当前 step 的 model output。对 Wan flow-matching 来说，它更像：
                                 # velocity / flow prediction, 虽然变量名叫 noise_pred。
                                 # =====FIXME+TODO：应该需要不detach noise_pred_g， 考虑transformer的prediction的影响，这样计算的梯度更准确=====
                                 # IMPORTANT: 原 GeCo 是考虑 transformer Jacobian 的
-                                noise_pred_g.float().detach(),
+                                noise_pred_g.float(),
                                 # latents是当前 timestep 的 noisy latent：x_t，也就是还在 denoising 中间过程里的 latent，不是最终干净视频。
                                 sample=latents.float()
                                 )
@@ -1204,6 +1210,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 如果 additional_inputs 里有 decode_spatial_scale，就取它；如果没有，就默认用 1.0。
                                 # TODO+IMPORTANT：原 GeCo CogVideoX: decode selected temporal chunks，但 spatial resolution 不降。也就是 decode 到原 pipeline 视频分辨率。
                                 decode_spatial_scale = float(additional_inputs.get("decode_spatial_scale", 1.0))
+                                if decode_spatial_scale != 1.0:
+                                    raise ValueError('Full Wan GeCo guidance requires decode_spatial_scale=1.0')
 
                                 # Decode only the temporal chunks needed by fixed_frames.
                                 # Full-video differentiable VAE decode is too expensive at 480x832.
@@ -1230,14 +1238,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 vae_dtype = self.vae.dtype
                                 # 意思：把 diffusion latent 转成 VAE decode 需要的 latent normalization。
                                 # 为什么：Diffusers Wan 最后正式 decode 前也做这一步。如果 guidance decode 不做，VAE 输入分布错，decoded frames 就不可信。
+                                vae_device = self._get_geco_vae_device()
                                 latents_mean = (
                                     torch.tensor(self.vae.config.latents_mean)
                                     .view(1, self.vae.config.z_dim, 1, 1, 1)
-                                    .to(x0_for_decode.device, vae_dtype)
+                                    .to(vae_device, vae_dtype)
                                 )
                                 latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
                                     1, self.vae.config.z_dim, 1, 1, 1
-                                ).to(x0_for_decode.device, vae_dtype)
+                                ).to(vae_device, vae_dtype)
 
                                 rm_frames = []
                                 # 只 decode fixed frame 附近的小 temporal chunk，并取出对应 RGB frame。
@@ -1325,7 +1334,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     # VAE decode / interpolate 等操作通常更喜欢连续内存。
                                     # .contiguous()
                                     # 会创建一个内存连续的 tensor，避免后续操作报错或变慢。
-                                    z_chunk = x0_for_decode[:, :, chunk_start:chunk_end].contiguous().to(vae_dtype)
+                                    z_chunk = x0_for_decode[:, :, chunk_start:chunk_end].to(device=vae_device, dtype=vae_dtype).contiguous()
 
                                     # 意思：可选地缩小 latent 的 H/W。
                                     # 为什么：进一步省显存。这个操作仍然可导，所以 gradient 可以从 decoded frames 回到 z_chunk，再回到 latents
@@ -1370,7 +1379,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     # 为什么必须在 torch.enable_grad() 里：
                                     # 我们需要 loss -> decoded pixels -> z_chunk -> x0_pred -> latents 的梯度路径。
                                     # IMPORTANT: 原 GeCo 代码也是只 decode selected frames 附近的 temporal chunk
-                                    decoded_chunk = self.vae.decode(z_chunk, return_dict=False)[0]
+                                    def _decode_chunk_for_checkpoint(z):
+                                        return self.vae.decode(z, return_dict=False)[0]
+
+                                    decoded_chunk = checkpoint(_decode_chunk_for_checkpoint, z_chunk, use_reentrant=False)
 
                                     # 意思：把 VAE 输出从 [B,C,T,H,W] 转成 [B,T,H,W,C]，并从 [-1,1] 映射到 [0,1]。
                                     # 为什么：make_motion_metric 期望输入是 [B,F,H,W,3]，值域 [0,1]。
@@ -1658,7 +1670,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             latents = (1 - first_frame_mask) * condition + first_frame_mask * latents
 
         if not output_type == "latent":
-            latents = latents.to(self.vae.dtype)
+            vae_device = self._get_geco_vae_device()
+            latents = latents.to(device=vae_device, dtype=self.vae.dtype)
             latents_mean = (
                 torch.tensor(self.vae.config.latents_mean)
                 .view(1, self.vae.config.z_dim, 1, 1, 1)

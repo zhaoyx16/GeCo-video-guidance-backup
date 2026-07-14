@@ -14,7 +14,7 @@ from diffusers import AutoencoderKLWan
 from diffusers.utils import export_to_video
 
 sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_wan")
-from pipeline_wan_i2v_guided import WanImageToVideoPipeline
+from pipeline_wan_i2v_full_guided import WanImageToVideoPipeline
 
 def remap_path(p):
     s = str(p)
@@ -40,6 +40,8 @@ parser.add_argument("--guidance_lr", type=float, default=0.05)
 parser.add_argument("--guidance_repeats", type=int, default=1)
 parser.add_argument("--ufm_scale", type=float, default=0.125)
 parser.add_argument("--metric_device", default="cuda")
+parser.add_argument("--pipe_device", default="cuda:0")
+parser.add_argument("--vae_device", default=None)
 parser.add_argument("--decode_spatial_scale", type=float, default=1.0)
 parser.add_argument("--max_relative_delta", type=float, default=0.0, help="Optional cap on mean absolute latent update as a fraction of mean abs latent, e.g. 0.002 for 0.2%.")
 parser.add_argument("--debug_x0_interval", type=int, default=0, help="If >0, save decoded x0_pred frames every N denoising steps.")
@@ -146,13 +148,20 @@ if args.debug_x0_interval > 0:
 
 #114-117 加载 Wan VAE + custom Wan pipeline
 vae = AutoencoderKLWan.from_pretrained(model, subfolder="vae", torch_dtype=torch.float32)
-pipe = WanImageToVideoPipeline.from_pretrained(model, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+pipe = WanImageToVideoPipeline.from_pretrained(model, vae=vae, torch_dtype=torch.bfloat16).to(args.pipe_device)
+if args.vae_device is not None:
+    pipe.vae.to(args.vae_device)
+    pipe._geco_vae_device = torch.device(args.vae_device)
+else:
+    pipe._geco_vae_device = torch.device(args.pipe_device)
 pipe.vae.enable_tiling()
 pipe.vae.enable_slicing()
+print("pipe_device:", args.pipe_device)
+print("vae_device:", pipe._geco_vae_device)
 
 #120-137 调用 pipe，把 fixed_frames / guidance_step / guidance_lr / loss_fn / additional_inputs 传进去
 image = Image.open(image_path).convert("RGB")
-generator = torch.Generator(device="cuda").manual_seed(args.seed)
+generator = torch.Generator(device=args.pipe_device).manual_seed(args.seed)
 
 output = pipe(
     prompt=prompt,
