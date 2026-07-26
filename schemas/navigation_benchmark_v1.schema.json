@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ShixuanGu/GeCo/schemas/navigation_benchmark_v1.schema.json",
+  "title": "Navigation Benchmark Protocol v1",
+  "description": "Structural schema. navigation_benchmark.manifest performs stricter semantic and paired-condition validation.",
+  "oneOf": [
+    {"$ref": "#/$defs/generationRun"},
+    {"$ref": "#/$defs/metricResult"}
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "reference": {
+      "type": "object",
+      "required": ["uri", "format", "sha256"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "format": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "required": ["role", "frame_index", "timestamp_sec", "frame_uri", "sha256"],
+      "properties": {
+        "role": {"enum": ["first", "middle", "last"]},
+        "frame_index": {"type": "integer"},
+        "timestamp_sec": {"type": "number", "minimum": 0},
+        "frame_uri": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "generationRun": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "record_type",
+        "run_id",
+        "pair_id",
+        "status",
+        "method",
+        "condition",
+        "condition_hash",
+        "output"
+      ],
+      "properties": {
+        "schema_version": {"const": "navigation-benchmark/v1"},
+        "record_type": {"const": "generation_run"},
+        "run_id": {"type": "string", "minLength": 1},
+        "pair_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["planned", "completed", "failed"]},
+        "condition_hash": {"$ref": "#/$defs/sha256"},
+        "record_hash": {"$ref": "#/$defs/sha256"},
+        "method": {
+          "type": "object",
+          "required": ["name", "version", "parameters", "mechanism"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+            "parameters": {"type": "object"},
+            "mechanism": {
+              "type": "object",
+              "required": [
+                "id",
+                "version",
+                "time_travel",
+                "temporal_vae_context",
+                "guidance_schedule_state"
+              ],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "version": {"type": "string", "minLength": 1},
+                "time_travel": {"type": "string", "minLength": 1},
+                "temporal_vae_context": {"type": "string", "minLength": 1},
+                "guidance_schedule_state": {
+                  "enum": [
+                    "baseline_all_zero_schedule",
+                    "positive_schedule_zero_lr",
+                    "active_guidance"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "condition": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "scene",
+            "source_clip",
+            "prompt",
+            "seed",
+            "model",
+            "sampling",
+            "frame_guidance"
+          ],
+          "properties": {
+            "protocol": {
+              "type": "object",
+              "required": ["id", "version"]
+            },
+            "scene": {
+              "type": "object",
+              "required": ["scene_id", "dataset_id", "split", "static_scene_eligibility"]
+            },
+            "source_clip": {
+              "type": "object",
+              "required": [
+                "source_uri",
+                "source_sha256",
+                "sequence_id",
+                "clip_id",
+                "start_frame",
+                "end_frame",
+                "source_fps",
+                "time_origin",
+                "intrinsics_ref",
+                "poses_ref",
+                "anchors"
+              ],
+              "properties": {
+                "source_sha256": {"$ref": "#/$defs/sha256"},
+                "time_origin": {"enum": ["clip_relative", "source_absolute"]},
+                "intrinsics_ref": {"$ref": "#/$defs/reference"},
+                "poses_ref": {"$ref": "#/$defs/reference"},
+                "anchors": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {"$ref": "#/$defs/anchor"}
+                }
+              }
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "required": ["video_uri"],
+          "properties": {
+            "video_uri": {"type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "execution": {
+          "type": ["object", "null"],
+          "properties": {
+            "git_commit": {"type": "string", "minLength": 1},
+            "runtime_sec": {"type": "number", "minimum": 0},
+            "devices": {"type": "object", "minProperties": 1},
+            "peak_vram_mib": {"type": "object", "minProperties": 1}
+          }
+        }
+      }
+    },
+    "metricResult": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "record_type",
+        "run_id",
+        "metric_name",
+        "metric_role",
+        "direction",
+        "value",
+        "evaluator"
+      ],
+      "properties": {
+        "schema_version": {"const": "navigation-benchmark/v1"},
+        "record_type": {"const": "metric_result"},
+        "run_id": {"type": "string", "minLength": 1},
+        "metric_name": {"type": "string", "minLength": 1},
+        "metric_role": {
+          "enum": [
+            "guidance_aligned",
+            "independent_geometry",
+            "trajectory_adherence",
+            "motion_preservation",
+            "visual_quality"
+          ]
+        },
+        "direction": {"enum": ["lower_is_better", "higher_is_better"]},
+        "value": {"type": "number"},
+        "evaluator": {
+          "type": "object",
+          "required": ["name", "version", "model_id", "checkpoint_revision", "config"]
+        }
+      }
+    }
+  }
+}

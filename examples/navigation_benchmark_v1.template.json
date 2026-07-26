@@ -1,0 +1,107 @@
+{
+  "records": [
+    {
+      "schema_version": "navigation-benchmark/v1",
+      "record_type": "generation_run",
+      "run_id": "replace-with-unique-run-id",
+      "pair_id": "replace-with-scene-seed-protocol-id",
+      "status": "planned",
+      "method": {
+        "name": "fg_only",
+        "version": "replace-with-code-version",
+        "parameters": {},
+        "mechanism": {
+          "id": "frame_guidance_reference",
+          "version": "replace-with-mechanism-version",
+          "time_travel": "not_applicable",
+          "temporal_vae_context": "not_applicable",
+          "guidance_schedule_state": "baseline_all_zero_schedule"
+        }
+      },
+      "condition": {
+        "protocol": {
+          "id": "controlled-navigation-frame-guidance",
+          "version": "v1"
+        },
+        "scene": {
+          "scene_id": "replace-with-scene-id",
+          "dataset_id": "replace-with-dataset-id",
+          "split": "test",
+          "static_scene_eligibility": {
+            "eligible": true,
+            "criteria_version": "static-navigation-v1",
+            "rationale": "Rigid scene, no independently moving objects."
+          }
+        },
+        "source_clip": {
+          "source_uri": "dataset://replace-with-dataset/sequence/clip",
+          "source_sha256": "replace-with-64-character-source-sha256",
+          "sequence_id": "replace-with-sequence-id",
+          "clip_id": "replace-with-clip-id",
+          "start_frame": 0,
+          "end_frame": 80,
+          "source_fps": 10.0,
+          "time_origin": "clip_relative",
+          "intrinsics_ref": {
+            "uri": "dataset://replace-with-dataset/intrinsics",
+            "format": "replace-with-format",
+            "sha256": "replace-with-64-character-intrinsics-sha256"
+          },
+          "poses_ref": {
+            "uri": "dataset://replace-with-dataset/poses",
+            "format": "replace-with-format",
+            "sha256": "replace-with-64-character-poses-sha256"
+          },
+          "anchors": [
+            {
+              "role": "first",
+              "frame_index": 0,
+              "timestamp_sec": 0.0,
+              "frame_uri": "dataset://replace-with-dataset/frame_00000.png",
+              "sha256": "replace-with-64-character-first-anchor-sha256"
+            },
+            {
+              "role": "middle",
+              "frame_index": 40,
+              "timestamp_sec": 4.0,
+              "frame_uri": "dataset://replace-with-dataset/frame_00040.png",
+              "sha256": "replace-with-64-character-middle-anchor-sha256"
+            },
+            {
+              "role": "last",
+              "frame_index": 80,
+              "timestamp_sec": 8.0,
+              "frame_uri": "dataset://replace-with-dataset/frame_00080.png",
+              "sha256": "replace-with-64-character-last-anchor-sha256"
+            }
+          ]
+        },
+        "frame_guidance": {
+          "enabled": true,
+          "anchor_roles": ["first", "middle", "last"]
+        },
+        "prompt": "Replace with the fixed prompt for every arm in this pair.",
+        "seed": 0,
+        "model": {
+          "model_id": "replace-with-model-id",
+          "checkpoint_revision": "replace-with-checkpoint-revision"
+        },
+        "sampling": {
+          "height": 704,
+          "width": 1280,
+          "num_frames": 93,
+          "fps": 16.0,
+          "num_inference_steps": 36,
+          "scheduler": {
+            "name": "replace-with-scheduler-name"
+          }
+        }
+      },
+      "condition_hash": "Compute this with navigation_benchmark.manifest.with_condition_hash before validating.",
+      "output": {
+        "video_uri": "outputs://replace-with-video-output"
+      },
+      "execution": null
+    }
+  ]
+}
