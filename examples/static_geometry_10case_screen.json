@@ -1,0 +1,62 @@
+{
+  "screen_traditional_corridor_forward_left_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same traditional Chinese corridor beside the water. The camera moves forward quickly along the corridor and then makes one smooth, continuous 90-degree turn to the left, with strong natural parallax and a clearly changing viewpoint. The wooden pillars, carved railings, tiled floor, benches, river, distant buildings, and all background geometry remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/00534f5868a6f72e77befbdb06e35ee9dc34e175dddf0e64e8b1922e494c8e24/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Fast forward motion followed by a continuous 90-degree left turn in a static traditional corridor."
+  },
+  "screen_halloween_display_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same indoor Halloween display in the department store. In one uninterrupted shot, the camera travels along a large, smooth 120-degree clockwise arc around the central display, with strong natural parallax and a clearly changing viewpoint. The shelves, tables, candles, ornaments, kitchenware, decorations, floor, walls, and lighting remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/00713c8c22cf3b2ef6495b1da5484da9972921442d85a0a3c8be57f7aa9bbbb5/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Large 120-degree clockwise orbit around a stationary indoor retail display."
+  },
+  "screen_hospital_corridor_forward_right_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous first-person video of the same quiet hospital corridor. The camera moves forward quickly and then makes one smooth, continuous 90-degree turn to the right around the corridor corner, with strong natural parallax and a clearly changing viewpoint. The doors, chairs, windows, signs, floor, ceiling lights, walls, and all background geometry remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0bfab69b5b2b692d066b4435f2f6406357772aa53a3e17c3e0b8598083848a7a/images_8/frame_00224.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Fast forward motion followed by a continuous 90-degree right turn in a static hospital corridor."
+  },
+  "screen_pet_store_aisle_forward_left_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same quiet pet-store aisle. The camera moves forward quickly past the shelves and then makes one smooth, continuous 90-degree turn to the left at the end of the aisle, with strong natural parallax and a clearly changing viewpoint. The pet-food bags, shelves, labels, floor, ceiling lights, endcap, and store interior remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/1a0dc4cda12b60b6eb02464b8164944a6fd28bf92341e46b5ca1271526e4c0ad/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Fast forward motion followed by a continuous 90-degree left turn in a static pet-store aisle."
+  },
+  "screen_formal_wear_boutique_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same formal-wear boutique display with black dresses, a wooden vanity, marble counter, and white orchids. In one uninterrupted shot, the camera travels along a large, smooth 120-degree clockwise arc around the central display, with strong natural parallax and a clearly changing viewpoint. The dresses, racks, vanity, orchids, mirrors, floor, shelves, and lighting remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/341f58fb740c5afd7d6cf5c0315c55b4c79c2b9dd7900aba52678d95cdfdc740/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Large 120-degree clockwise orbit around a stationary boutique display."
+  },
+  "screen_mannequin_clothing_store_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same clothing-store display with mannequins, casual clothing, racks, a vase of green plants, and wooden flooring. In one uninterrupted shot, the camera travels along a large, smooth 120-degree counterclockwise arc around the mannequins and central display, with strong natural parallax and a clearly changing viewpoint. The mannequins, clothes, racks, plant, signs, floor, walls, and lighting remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/453bc8fb0d949ef24b115d177ab8a2492af60a6369993ed088ab6267a4380880/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Large 120-degree counterclockwise orbit around stationary mannequins and clothing display."
+  },
+  "screen_supermarket_aisle_forward_right_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same bright supermarket aisle with snacks, noodles, sauces, and shelves. The camera moves forward quickly down the aisle and then makes one smooth, continuous 90-degree turn to the right around an aisle end, with strong natural parallax and a clearly changing viewpoint. The products, shelves, labels, signs, floor, ceiling lights, and store interior remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/6a4a6c547d4a904697b5be22ce7fbacbeeca85de99badf7f2715aee3fd471a66/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Fast forward motion followed by a continuous 90-degree right turn in a static supermarket aisle."
+  },
+  "screen_beauty_store_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same high-end beauty store with glass cosmetic cabinets, polished wooden shelves, white leather chairs, and display tables. In one uninterrupted shot, the camera travels along a large, smooth 120-degree clockwise arc around the central product display, with strong natural parallax and a clearly changing viewpoint. The cabinets, cosmetics, chairs, tables, shelves, floor, walls, and lighting remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/916e632952079b6bae67170c41b2eefab103ac984173662d42be8e6f18029b8d/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Large 120-degree clockwise orbit around a stationary beauty-store display."
+  },
+  "screen_storage_store_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same modern home-organization and storage store. In one uninterrupted shot, the camera travels along a large, smooth 120-degree counterclockwise arc around the central shelves and storage display, with strong natural parallax and a clearly changing viewpoint. The kitchenware, storage boxes, metal shelves, signs, floor, walls, and lighting remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/a5bb77a1f00af24ce7a7afd375d7a657c0a3d842264af5dd45bc9b72729cf4d8/images_8/frame_00001.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Large 120-degree counterclockwise orbit around stationary storage displays."
+  },
+  "screen_office_corridor_forward_right_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous first-person video of the same office corridor with wooden doors, glass panels, a blue accent wall, polished floor, and ceiling lights. The camera moves forward quickly and then makes one smooth, continuous 90-degree turn to the right at the corridor corner, with strong natural parallax and a clearly changing viewpoint. The doors, glass panels, walls, signs, floor, ceiling lights, and all background geometry remain completely stationary with stable shape, texture, and relative positions. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/c9dfcbddfd2db1253490487bb1e74b2f7b387428d29e22595c39996d2f79bad4/images_8/frame_00210.png",
+    "prompt_type": "static_geometry_screen",
+    "motion_instruction": "Fast forward motion followed by a continuous 90-degree right turn in a static office corridor."
+  }
+}

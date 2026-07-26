@@ -1,0 +1,38 @@
+{
+  "locomotion_admin_corridor_0a41_start161": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same empty administrative hallway. The camera walks forward quickly for several metres, follows the corridor around a large turn, and continues forward along the connected hallway. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/8K_0a41f445803edd340c7086ebdc4d484a882eb7606ceffe7c9ee38455cc8751c3/8K/images_4/frame_00161.png",
+    "source": "DL3DV-8K-960P frame 161",
+    "motion_instruction": "Forward locomotion followed by a large corridor turn."
+  },
+  "locomotion_office_corridor_194d_start135": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same empty office corridor. The camera walks forward quickly for several metres, follows the corridor around a large turn near the staircase, and continues forward along the connected passage. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/8K_194dbbddd8fafdc7f9e8dcced84e2feaf967c74399586514541c5c25fba6e71d/8K/images_4/frame_00135.png",
+    "source": "DL3DV-8K-960P frame 135",
+    "motion_instruction": "Forward locomotion followed by the corridor turn near the staircase."
+  },
+  "locomotion_hospital_corridor_45bc_start052": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same empty hospital corridor. The camera walks forward quickly for several metres, follows the corridor around a large turn, and continues forward along the connected hallway. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/8K_45bc9ccfacb84abbf9210dead92565d0a29354c798c4dc77645d48c90f7fb699/8K/images_4/frame_00052.png",
+    "source": "DL3DV-8K-960P frame 52",
+    "motion_instruction": "Forward locomotion followed by a large hospital-corridor turn."
+  },
+  "locomotion_subway_corridor_dd86_start049": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same empty underground subway passage. The camera walks forward quickly for several metres, follows the passage around a large turn, and continues forward along the connected corridor. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/8K_dd868582bda79fca0c82f832e5ce3b58fc0773ac7369da091fec3589d2afe28f/8K/dd868582bda79fca0c82f832e5ce3b58fc0773ac7369da091fec3589d2afe28f/images_4/frame_00049.png",
+    "source": "DL3DV-8K-960P frame 49",
+    "motion_instruction": "Forward locomotion followed by a large subway-passage turn."
+  },
+  "locomotion_narrow_hallway_6ef6_start021": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same long empty narrow hallway. The camera walks forward quickly for several metres, follows the hallway around a large turn, and continues forward along the connected corridor. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/9K_6ef6baa80d545b940b838eb1cfd681e96e0b6fca0624c7d3bdb2e2c8d479fdc2/9K/images_4/frame_00021.png",
+    "source": "DL3DV-9K-960P frame 21",
+    "motion_instruction": "Forward locomotion followed by a large narrow-hallway turn."
+  },
+  "locomotion_school_corridor_019c_start027": {
+    "text_prompt": "A realistic continuous first-person navigation video from the given first frame of the same empty school corridor. The camera walks forward quickly for several metres, follows the corridor around a large turn, and continues forward along the connected hallway. The camera remains at a stable human eye height. The environment remains static. One continuous shot with no cuts or zoom.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718_corridor_candidates/11K_019cb9f575bd7abe545d13e6be80aca202f910778c278cd31ddd459bb16006ef/11K/019cb9f575bd7abe545d13e6be80aca202f910778c278cd31ddd459bb16006ef/images_4/frame_00027.png",
+    "source": "DL3DV-11K-960P frame 27",
+    "motion_instruction": "Forward locomotion followed by a large school-corridor turn."
+  }
+}

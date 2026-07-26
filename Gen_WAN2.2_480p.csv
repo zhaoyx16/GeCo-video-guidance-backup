@@ -1,0 +1,9 @@
+clip_id,category,motion,depth,fused
+nav_store_baseline,indoor_prompts,0.004237,0.010293,0.007302
+nav_store_guided_lr10,indoor_prompts,0.004639,0.011284,0.008109
+nav_store_guided_lr10_cap0002,indoor_prompts,0.004319,0.010572,0.007570
+nav_store_guided_lr5,indoor_prompts,0.004210,0.011125,0.007762
+object_orbit_baseline,object_centric_prompts,0.003735,0.004143,0.003940
+object_orbit_guided_lr10,object_centric_prompts,0.003869,0.004437,0.004154
+object_orbit_guided_lr10_cap0002,object_centric_prompts,0.004169,0.004615,0.004393
+object_orbit_guided_lr5,object_centric_prompts,0.003985,0.004392,0.004190

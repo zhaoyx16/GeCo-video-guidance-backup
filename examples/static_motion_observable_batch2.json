@@ -1,0 +1,74 @@
+{
+  "extra_hospital_corridor_forward_right_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same empty hospital corridor with doors, chairs, windows, signs, tiled floor, and ceiling lights. The camera is the only moving element. It starts in the corridor, travels several metres forward, shifts toward the right-hand side, then makes one smooth large 90-degree right turn at the visible corner and continues into the newly revealed corridor. The nearby door frames and chairs create strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All doors, chairs, windows, signs, floor, walls, lights, and other objects remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0bfab69b5b2b692d066b4435f2f6406357772aa53a3e17c3e0b8598083848a7a/images_8/frame_00224.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_right_shift_turn"
+  },
+  "extra_pet_store_forward_left_turn": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same quiet pet-store aisle filled with rigid shelves, pet-food bags, labels, endcaps, and ceiling lights. The camera is the only moving element. It travels several metres forward down the aisle, passes close to the nearest shelf ends, then makes one smooth large 90-degree left turn at the endcap and continues into the previously hidden aisle. Foreground shelf edges sweep rapidly across the frame while the distant shelves move slowly, creating strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All shelves, products, labels, floor, lights, walls, and other objects remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/1a0dc4cda12b60b6eb02464b8164944a6fd28bf92341e46b5ca1271526e4c0ad/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_left_turn"
+  },
+  "extra_formal_wear_boutique_orbit": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty formal-wear boutique with black dresses, a wooden vanity, a marble counter, white orchids, racks, mirrors, and shelves. The camera is the only moving element. It physically travels along a smooth 150-degree clockwise orbit around the central display at a constant distance, passes close to the vanity and clothing rack, and ends behind the display where previously hidden surfaces are revealed. Nearby objects sweep rapidly while distant walls move slowly, producing strong parallax and disocclusion. Use one stabilized orbit shot with constant focal length, no zoom, no cuts, and no teleportation. Every dress, rack, vanity, orchid, mirror, shelf, floor, wall, and light remains completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/341f58fb740c5afd7d6cf5c0315c55b4c79c2b9dd7900aba52678d95cdfdc740/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "large_orbit_disocclusion"
+  },
+  "extra_mannequin_store_orbit": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty clothing-store display with mannequins, clothing racks, casual garments, a vase of green plants, signs, and wooden flooring. The camera is the only moving element. It physically travels along a smooth 150-degree counterclockwise orbit around the mannequins and central display, passes close to the nearest rack, and ends at the rear side where the back of the display and hidden shelves are revealed. Use strong natural parallax, one stabilized shot, constant focal length, no zoom, no cuts, and no teleportation. The mannequins, clothes, racks, plant, signs, floor, walls, and lighting remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/453bc8fb0d949ef24b115d177ab8a2492af60a6369993ed088ab6267a4380880/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "large_orbit_disocclusion"
+  },
+  "extra_supermarket_forward_right_turn": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty supermarket aisle with rigid shelves of snacks, noodles, sauces, product labels, signs, floor, and ceiling lights. The camera is the only moving element. It travels quickly several metres forward down the aisle, passes close to the shelf ends, then makes one smooth large 90-degree right turn around the endcap and continues into the newly revealed aisle. The near shelves occlude and then reveal the far products, creating strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All products, shelves, signs, floor, walls, and lights remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/6a4a6c547d4a904697b5be22ce7fbacbeeca85de99badf7f2715aee3fd471a66/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_right_turn"
+  },
+  "extra_storage_store_orbit": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty modern storage store with kitchenware, storage boxes, metal shelves, signs, a tiled floor, and walls. The camera is the only moving element. It physically travels along a smooth 150-degree counterclockwise orbit around the central storage display, passes close to the nearest shelf, and ends behind the display where hidden shelves and rear surfaces are revealed. Nearby boxes and metal shelf edges sweep quickly while distant walls move slowly, producing strong parallax and disocclusion. Use one stabilized orbit shot with constant focal length, no zoom, no cuts, and no teleportation. All boxes, shelves, signs, floor, walls, and lighting remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/a5bb77a1f00af24ce7a7afd375d7a657c0a3d842264af5dd45bc9b72729cf4d8/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "large_orbit_disocclusion"
+  },
+  "extra_c9df_start309_forward_right_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same indoor corridor. The camera is the only moving element. It travels physically forward several metres through the corridor, passes close to a wall and door frame, then makes one smooth large 90-degree right turn at the corridor corner and continues into the newly revealed section. The near wall and door frame sweep rapidly across the image while the far corridor moves slowly, creating strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. The corridor geometry, doors, walls, floor, ceiling lights, signs, and all other objects remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/c9dfcbddfd2db1253490487bb1e74b2f7b387428d29e22595c39996d2f79bad4/images_8/frame_00309.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_right_turn"
+  },
+  "extra_c9df_start263_forward_right_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same indoor corridor. The camera is the only moving element. It travels physically forward several metres, passes close to the corridor wall and a doorway, then makes one smooth large 90-degree right turn at the visible corner and continues into the previously hidden corridor. The close door frame creates strong foreground parallax and the turn reveals new space by disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. Every wall, doorway, floor tile, light, sign, and background object remains completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/c9dfcbddfd2db1253490487bb1e74b2f7b387428d29e22595c39996d2f79bad4/images_8/frame_00263.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_right_turn"
+  },
+  "extra_hospital_start047_forward_left_shift": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same empty corridor. The camera is the only moving element. It travels physically straight forward toward the visible corner, passes close to the left wall and a doorway, then shifts several metres to the left while turning left around the corner into the newly revealed section. The close wall and door frame create strong parallax, occlusion, and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. The corridor, doors, walls, floor, lights, signs, and every other object remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0bfab69b5b2b692d066b4435f2f6406357772aa53a3e17c3e0b8598083848a7a/images_8/frame_00047.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_left_shift"
+  },
+  "extra_modern_office_forward_left_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same modern office corridor with wooden doors, glass walls, posters, a polished floor, and ceiling lights. The camera is the only moving element. It travels quickly forward several metres, passes close to the glass wall and door frames, then makes one smooth large 90-degree left turn at the corridor corner and continues into the previously hidden section. The glass wall produces strong foreground parallax and the turn reveals new corridor geometry by disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All doors, glass panels, posters, walls, floor, lights, and other objects remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/ba8cdeaf964ee1fbdc1d298499f85cc15d1cc7c435979ebd37846334b1cc9d98/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "corridor_forward_left_turn"
+  },
+  "extra_outdoor_gateway_forward_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same quiet outdoor historical gateway and courtyard. The camera is the only moving element. It travels several metres forward along the stone path toward the carved gateway, passes close to the stone pillars, then makes one smooth large 90-degree right turn into the courtyard and reveals the previously hidden side of the gate and surrounding buildings. The pillars sweep rapidly across the image while distant walls move slowly, creating strong translation parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. The gateway, pillars, lanterns, paving, walls, roof, plants, and all other scene elements remain completely stationary; no people or animals.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/001dccbc1f78146a9f03861026613d8e73f39f372b545b26118e37a23c740d5f/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "outdoor_forward_right_turn"
+  },
+  "extra_outdoor_barrel_display_orbit": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same quiet outdoor craft display with rigid wooden barrels, baskets, containers, pumpkins, gourds, yarn, trees, and a garden backdrop. The camera is the only moving element. It physically travels along a smooth 150-degree clockwise orbit around the central barrel display at a constant distance, passes close to the nearest barrel, and ends behind the display where hidden sides and background trees are revealed. Nearby barrels move rapidly across the frame while distant trees move slowly, producing strong parallax and disocclusion. Use one stabilized orbit shot with constant focal length, no zoom, no cuts, and no teleportation. Every barrel, basket, decoration, tree, ground surface, and background object remains completely stationary; no people or animals.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0032cd2f169847864c28e5e190c2496c03ddd1a5e68d52145634164ebe57d3ac/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "outdoor_large_orbit_disocclusion"
+  }
+}

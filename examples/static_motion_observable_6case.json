@@ -1,0 +1,38 @@
+{
+  "stress_corridor_dolly": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same quiet traditional corridor beside the water. The scene contains wooden pillars and carved railings close to the camera path, a tiled floor, benches, the river, and distant buildings. The camera is the only moving element. It starts at the corridor entrance, physically travels several metres forward along the full corridor, passes very close to successive wooden pillars, and ends near the far bend where more of the riverfront is revealed. The pillars sweep rapidly across the image while the distant buildings move more slowly, creating strong foreground-to-background parallax. Use one stabilized wide-angle shot with a constant focal length, no zoom, no cuts, and no teleportation. The pillars, railings, benches, floor, river, buildings, and every other object remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/00534f5868a6f72e77befbdb06e35ee9dc34e175dddf0e64e8b1922e494c8e24/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_forward_translation"
+  },
+  "stress_l_corridor_turn": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same empty office corridor with wooden doors, glass panels, a blue accent wall, polished floor, and ceiling lights. The camera is the only moving element. It starts before the corridor corner, physically travels quickly forward, passes close to the right-hand glass wall and a door frame, then makes one smooth large 90-degree right turn at the corner and continues into the previously hidden corridor section. The near wall and door frame move rapidly across the frame while the newly revealed corridor appears through disocclusion. Use one stabilized wide-angle shot with a constant focal length, strong translation parallax, no zoom, no cuts, and no teleportation. Every door, glass panel, wall, sign, floor, light, and background object remains completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/c9dfcbddfd2db1253490487bb1e74b2f7b387428d29e22595c39996d2f79bad4/images_8/frame_00210.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_forward_turn_disocclusion"
+  },
+  "stress_lateral_shelves": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same quiet pet-store aisle filled with rigid shelves, pet-food bags, labels, endcaps, and ceiling lights. The camera is the only moving element. It starts at the front of the aisle and physically trucks several metres from right to left while maintaining the same viewing direction, passing very close to the nearest shelf ends and product displays. Foreground shelf edges and bags temporarily cover the distant aisle and then reveal it again, creating strong multi-layer parallax and disocclusion. The camera ends at the left aisle opening. Use one stabilized wide-angle shot with a constant focal length, no pan-only motion, no zoom, no cuts, and no teleportation. All shelves, products, labels, floor, lights, walls, and every other object remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/1a0dc4cda12b60b6eb02464b8164944a6fd28bf92341e46b5ca1271526e4c0ad/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_lateral_translation_occlusion"
+  },
+  "stress_doorway_flythrough": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same empty hospital corridor with doors, chairs, windows, signs, tiled floor, and ceiling lights. The camera is the only moving element. It starts in the corridor, physically travels forward toward a visible doorway and passes very close to the door frame and a nearby chair, then continues through the doorway into the previously hidden section beyond it. The door frame briefly fills one side of the image while the new space is revealed by disocclusion. Use one stabilized wide-angle shot with a constant focal length, large translation, strong near-to-far parallax, no zoom, no cuts, and no teleportation. The doors, chairs, windows, signs, floor, walls, lights, and all other objects remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0bfab69b5b2b692d066b4435f2f6406357772aa53a3e17c3e0b8598083848a7a/images_8/frame_00224.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_doorway_flythrough"
+  },
+  "stress_beauty_orbit_150": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty high-end beauty store with glass cosmetic cabinets, polished wooden shelves, white leather chairs, and display tables. The camera is the only moving element. It starts at the front-left side of the central product display, physically travels along a large smooth 150-degree clockwise orbit while keeping a constant distance from the display, and ends at the rear-right side. Nearby cabinets and chairs sweep rapidly across the image while distant shelves move more slowly. The side and rear surfaces of the display, previously hidden products, and the far wall are revealed by disocclusion. Use one stabilized orbit shot with a constant focal length, no zoom, no cuts, and no teleportation. Cabinets, cosmetics, chairs, tables, shelves, floor, walls, lights, and every other object remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/916e632952079b6bae67170c41b2eefab103ac984173662d42be8e6f18029b8d/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_large_orbit_disocclusion"
+  },
+  "stress_halloween_orbit_150": {
+    "text_prompt": "A realistic continuous video from the given first frame of the same empty indoor department-store Halloween display with shelves, tables, candles, ornaments, kitchenware, decorations, floor, and walls. The camera is the only moving element. It starts at the front-right side of the central display, physically travels along a large smooth 150-degree counterclockwise orbit, passes close to the nearest table and shelf edge, and ends behind the display. The close foreground objects sweep rapidly across the frame while the distant wall shifts slowly, producing strong parallax. The back of the display and previously hidden shelves are revealed gradually by disocclusion. Use one stabilized orbit shot with a constant focal length, no zoom, no cuts, and no teleportation. All shelves, tables, candles, ornaments, decorations, floor, walls, lights, and every other object remain completely stationary.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/00713c8c22cf3b2ef6495b1da5484da9972921442d85a0a3c8be57f7aa9bbbb5/images_8/frame_00001.png",
+    "task_type": "static_camera_stress",
+    "prompt_type": "observable_large_orbit_disocclusion"
+  }
+}

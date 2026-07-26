@@ -61,6 +61,9 @@ dic_model_fps = {
     'Gen_SORA2': 30,
     'Gen_Veo3.1': 24,
     'Gen_WAN2.2': 16,
+    # Explicit benchmark keys avoid silently treating the TI2V-5B run as 16 FPS.
+    'Gen_Wan2_2_TI2V_5B': 24,
+    'Gen_Cosmos_Predict2_5_2B': 16,
     'Gen_HunyuanVideo': 24,
     'Gen_SORA2_480p': 30,
     'Gen_Veo3.1_480p': 24,

@@ -1,0 +1,4 @@
+clip_id,category,motion,depth,fused
+hard_static_home_decor_90deg_orbit,object_centric_prompts,0.004657,0.019822,0.012599
+hard_static_stone_gateway_120deg_orbit,object_centric_prompts,0.005375,0.050568,0.042730
+hard_static_building_planter_forward_right_turn,outdoor_prompts,0.003978,0.023664,0.018301

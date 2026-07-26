@@ -1,0 +1,26 @@
+{
+  "dl3dv_corridor_office_10k_e390": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same empty office-building corridor. The camera is the only moving element. It travels quickly forward along the corridor until it reaches the physical end of the hallway, then makes one smooth large 90-degree right turn at the open corridor junction and continues forward into the connected hallway. The camera stays inside the open corridor space and never passes through or opens any door, wall, glass panel, or other solid object. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All doors, walls, floor, glass panels, signs, and furniture remain completely stationary. No people, animals, or independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/10K/e39057cd2f1488cf139f5e75f2f0b4fdd9e265f49e5e5be8587d2a0bdbf40ceb/images_4/frame_00001.png",
+    "source": "DL3DV-10K-960P",
+    "motion_instruction": "Fast forward movement followed by a large 90-degree right turn in an empty office corridor."
+  },
+  "dl3dv_corridor_traditional_11k_9c688": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same quiet sunlit traditional architectural corridor. The camera is the only moving element. It travels forward several metres beneath the corridor, passes close to the wooden beams and lattice panels, then makes one smooth large 90-degree left turn toward the open lawn and continues into the newly revealed space. Nearby beams and railings sweep rapidly across the frame while distant buildings and greenery move slowly, creating strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. Every beam, panel, railing, floor, wall, building, and plant remains completely stationary. No people, animals, or independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4/images_4/frame_00001.png",
+    "source": "DL3DV-11K-960P",
+    "motion_instruction": "Forward movement followed by a large 90-degree left turn in a static traditional corridor."
+  },
+  "dl3dv_path_garden_11k_173ac": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same quiet garden pathway leading to a pond and traditional pavilion. The camera is the only moving element. It travels quickly forward along the winding stone path, passes close to the limestone formations and shrubs, then makes one smooth large 90-degree right turn beside the pond and reveals the previously hidden garden area. Nearby stones and plants sweep rapidly across the frame while the pond and pavilion move slowly, creating strong parallax and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. All stones, plants, path surfaces, pond, pavilion, and background geometry remain completely stationary. No people, animals, or independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32/images_4/frame_00001.png",
+    "source": "DL3DV-11K-960P",
+    "motion_instruction": "Fast forward movement along a garden path followed by a large 90-degree right turn beside a pond."
+  },
+  "dl3dv_path_forest_8k_16ce": {
+    "text_prompt": "A realistic continuous first-person video from the given first frame of the same quiet forest pathway in autumn. The camera is the only moving element. It travels forward a long distance along the path, passes close to the tree trunks and low vegetation, then makes one smooth large 90-degree left turn at the bend and continues into the newly revealed section. Nearby trunks sweep quickly across the image while distant trees move slowly, producing strong translation parallax, occlusion, and disocclusion. Use one stabilized wide-angle shot with constant focal length, no zoom, no cuts, and no teleportation. Every tree, leaf-covered ground surface, path, and background element remains completely stationary. No people, animals, or independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/8K/16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a/images_4/frame_00001.png",
+    "source": "DL3DV-8K-960P",
+    "motion_instruction": "Long forward movement followed by a large 90-degree left turn on a static forest pathway."
+  }
+}

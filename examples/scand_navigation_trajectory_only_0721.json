@@ -1,0 +1,20 @@
+{
+  "scand_campus_sidewalk_left_turn_row100000": {
+    "text_prompt": "A realistic continuous robot-mounted navigation video continuing naturally from the given first frame on the same campus sidewalk. The camera travels quickly forward for several metres along the paved path, then follows one broad left turn of roughly 90 degrees around the tree-lined corner and continues into the newly revealed walkway. Use one stabilized wide-angle shot with constant focal length. The camera motion is one uninterrupted navigation trajectory with strong perspective change, parallax, and newly revealed areas through the turn. No cuts, no teleportation, no zoom, and no camera shake.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/scand_0721/frames/scand_row100000_campus_sidewalk.jpg",
+    "source": "SCAND via mateoguaman/vamos_navigation_only_dataset train row 100000",
+    "motion_instruction": "Fast forward motion followed by a broad roughly 90-degree left turn."
+  },
+  "scand_tree_path_right_turn_row185000": {
+    "text_prompt": "A realistic continuous robot-mounted navigation video continuing naturally from the given first frame on the same tree-lined campus path. The camera travels quickly forward for several metres beside the low brick border, then makes one smooth pronounced right turn of roughly 90 degrees at the path bend and continues along the newly revealed route. Use one stabilized wide-angle shot with constant focal length. The camera motion is one uninterrupted navigation trajectory with strong perspective change, parallax, and newly revealed areas through the turn. No cuts, no teleportation, no zoom, and no camera shake.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/scand_0721/frames/scand_row185000_tree_path.jpg",
+    "source": "SCAND via mateoguaman/vamos_navigation_only_dataset train row 185000",
+    "motion_instruction": "Fast forward motion followed by a pronounced roughly 90-degree right turn."
+  },
+  "scand_brick_walkway_left_turn_row224000": {
+    "text_prompt": "A realistic continuous robot-mounted navigation video continuing naturally from the given first frame on the same brick-paved campus walkway. The camera moves quickly forward across the walkway for several metres, then follows one smooth large left turn of roughly 90 degrees at the open path junction and continues through the newly revealed part of the campus. Use one stabilized wide-angle shot with constant focal length. The camera motion is one uninterrupted navigation trajectory with strong perspective change, parallax, and newly revealed areas through the turn. No cuts, no teleportation, no zoom, and no camera shake.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/scand_0721/frames/scand_row224000_brick_walkway.jpg",
+    "source": "SCAND via mateoguaman/vamos_navigation_only_dataset train row 224000",
+    "motion_instruction": "Fast forward motion followed by a large roughly 90-degree left turn."
+  }
+}

@@ -1,0 +1,5 @@
+clip_id,category,motion,depth,fused
+chair_static_baseline,object_centric_prompts,0.007184,0.012739,0.009964
+chair_static_guided,object_centric_prompts,0.003377,0.010255,0.006824
+globe_orbit_baseline,object_centric_prompts,0.002978,0.013060,0.008797
+globe_orbit_guided,object_centric_prompts,0.002753,0.012242,0.008253

@@ -1,0 +1,14 @@
+{
+  "pet_store_forward_left_turn_81f": {
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/1a0dc4cda12b60b6eb02464b8164944a6fd28bf92341e46b5ca1271526e4c0ad/images_8/frame_00001.png",
+    "text_prompt": "A continuous first-person video inside the same empty pet-supply store. The camera walks quickly straight forward down the aisle between the fixed shelves of pet food and toys, then makes a smooth left turn at the far end into the next aisle. Strong parallax and a clearly changing viewpoint. Keep every shelf, product, sign, floor, and ceiling light fixed. No people, no cuts, no teleportation, and no moving objects."
+  },
+  "auto_parts_forward_right_turn_81f": {
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/25231e5e062b71d1f9b0463219e63a2383d55f3b2cec95f50e20f044d60ef4f6/images_8/frame_00001.png",
+    "text_prompt": "A continuous first-person video inside the same automotive-parts store. The camera walks quickly forward down the narrow aisle, passing the fixed shelves of boxed car parts, then makes a smooth right turn into the cross-aisle at the far end. Strong parallax and a clearly changing viewpoint. Keep every shelf, product, sign, floor, and ceiling light fixed. No people, no cuts, no teleportation, and no moving objects."
+  },
+  "halloween_display_curve_left_81f": {
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/00713c8c22cf3b2ef6495b1da5484da9972921442d85a0a3c8be57f7aa9bbbb5/images_8/frame_00007.png",
+    "text_prompt": "A continuous first-person video in the same empty Halloween home-decor department. The camera walks forward and curves smoothly left around the central display table, revealing different sides of the same fixed pumpkins, ornaments, signs, shelves, and decorations. Strong parallax and a clearly changing viewpoint. Keep all displays, products, floor, walls, and ceiling lights fixed. No people, no cuts, no teleportation, and no moving objects."
+  }
+}

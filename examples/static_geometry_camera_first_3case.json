@@ -1,0 +1,14 @@
+{
+  "camera_first_hospital_corridor_right_turn": {
+    "text_prompt": "A realistic continuous first-person camera video in the same empty hospital corridor. The camera moves rapidly forward, then makes a large smooth 90-degree turn to the right around the corner. Strong parallax and a clearly changing viewpoint. Keep the corridor, doors, chairs, signs, floor, ceiling lights, walls, and all objects perfectly static. No people, no cuts, no teleportation, no new objects, and no deformation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/0bfab69b5b2b692d066b4435f2f6406357772aa53a3e17c3e0b8598083848a7a/images_8/frame_00224.png"
+  },
+  "camera_first_office_corridor_right_turn": {
+    "text_prompt": "A realistic continuous first-person camera video in the same empty office corridor. The camera rapidly moves forward and makes a large smooth 90-degree turn to the right at the corner. Strong parallax and a clearly changing viewpoint. Keep every door, glass panel, blue wall, floor, ceiling light, sign, and object perfectly static. No people, no cuts, no teleportation, no new objects, and no deformation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/c9dfcbddfd2db1253490487bb1e74b2f7b387428d29e22595c39996d2f79bad4/images_8/frame_00210.png"
+  },
+  "camera_first_beauty_store_120deg_orbit": {
+    "text_prompt": "A realistic continuous camera video orbiting rapidly clockwise by 120 degrees around the central display in the same empty beauty store. Strong parallax and a clearly changing viewpoint. Keep the cosmetic cabinets, products, chairs, tables, shelves, floor, walls, and lights perfectly static. No people, no cuts, no teleportation, no new objects, and no deformation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/916e632952079b6bae67170c41b2eefab103ac984173662d42be8e6f18029b8d/images_8/frame_00001.png"
+  }
+}

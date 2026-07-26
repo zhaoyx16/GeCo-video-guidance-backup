@@ -1,0 +1,38 @@
+{
+  "kitti00_start000080_right_turn": {
+    "text_prompt": "A realistic continuous forward-facing video from a vehicle-mounted camera on a quiet outdoor road. The camera travels a long distance forward and follows the road through one pronounced right-hand bend of roughly 90 degrees, with a strong change in heading and large translation. Roadside buildings, trees, parked vehicles, signs, lane markings, and other static scene geometry remain fixed in the world while the camera moves smoothly. The motion is one uninterrupted trajectory with strong perspective change, parallax, and newly revealed roadside areas; no cuts, no teleportation, no camera shake, and no independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/outputs/static_motion_observable_0718/inputs/kitti_seq00/frame_000080.png",
+    "source": "KITTI-Odometry-seq00",
+    "pose_start": 80,
+    "pose_window": 120,
+    "pose_yaw_deg": 136.0,
+    "motion_instruction": "Large forward displacement with a pronounced right-hand bend."
+  },
+  "kitti00_start000680_right_turn": {
+    "text_prompt": "A realistic continuous forward-facing video from a vehicle-mounted camera on a quiet outdoor road. The camera moves forward for a long distance and follows the road through a pronounced right-hand bend, changing heading substantially while maintaining smooth driving motion. Roadside buildings, trees, parked vehicles, signs, lane markings, and all other static scene geometry remain fixed in the world. The camera reveals new roadside areas through strong parallax and occlusion changes in one uninterrupted shot; no cuts, no teleportation, no camera shake, and no independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/outputs/static_motion_observable_0718/inputs/kitti_seq00/frame_000680.png",
+    "source": "KITTI-Odometry-seq00",
+    "pose_start": 680,
+    "pose_window": 120,
+    "pose_yaw_deg": 91.9,
+    "motion_instruction": "Long forward vehicle motion followed by a pronounced right-hand bend."
+  },
+  "kitti00_start001120_left_turn": {
+    "text_prompt": "A realistic continuous forward-facing video from a vehicle-mounted camera on a quiet outdoor road. The camera travels a long distance forward and follows the road through a pronounced left-hand bend of more than 120 degrees, producing a large change in heading and strong translation parallax. Roadside buildings, trees, parked vehicles, signs, lane markings, and all other static scene geometry remain fixed in the world while the camera moves smoothly. The shot is one uninterrupted trajectory that reveals previously hidden roadside geometry; no cuts, no teleportation, no camera shake, and no independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/outputs/static_motion_observable_0718/inputs/kitti_seq00/frame_001120.png",
+    "source": "KITTI-Odometry-seq00",
+    "pose_start": 1120,
+    "pose_window": 120,
+    "pose_yaw_deg": -136.0,
+    "motion_instruction": "Large forward displacement with a pronounced left-hand bend."
+  },
+  "kitti00_start002960_right_turn": {
+    "text_prompt": "A realistic continuous forward-facing video from a vehicle-mounted camera on a quiet outdoor road. The camera drives forward over a large distance and follows the road through a pronounced right-hand bend of more than 120 degrees, with strong heading change, perspective variation, and disocclusion of roadside structures. Buildings, trees, parked vehicles, signs, lane markings, and all other static scene geometry remain fixed in the world while only the camera moves. Use one stable uninterrupted trajectory with no cuts, no teleportation, no camera shake, and no independently moving objects.",
+    "image_prompt": "/vol/dissolve/yz10325/outputs/static_motion_observable_0718/inputs/kitti_seq00/frame_002960.png",
+    "source": "KITTI-Odometry-seq00",
+    "pose_start": 2960,
+    "pose_window": 120,
+    "pose_yaw_deg": 129.0,
+    "motion_instruction": "Large forward displacement with a pronounced right-hand bend."
+  }
+}
