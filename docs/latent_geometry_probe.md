@@ -51,17 +51,21 @@ source_pose_sha256
 
 The writer verifies the frame-ID and pose hashes against the cached tensors,
 then stores a `cache_sha256` over `z0`, poses, intrinsics, frame IDs, temporal
-mapping, pose spec, provenance, and latent spec. The manifest mirrors the
-dataset-qualified `source_scene_uid`, `source_clip_uid`, and `cache_sha256`.
-Dataset construction validates every cache in every split before selecting the
-requested split. Thus using the same cache in train and val cannot be hidden by
-changing a human-readable `scene_id`.
+mapping, pose spec, provenance, and latent spec. The v3 manifest mirrors the
+dataset-qualified `source_scene_uid`, `source_clip_uid`, verified
+`source_content_sha256`, and `cache_sha256`. Dataset construction validates
+every cache in every split before selecting the requested split. Split
+validation treats `source_content_sha256` as an identity key, so independently
+re-caching identical source content under fresh UIDs and cache hashes cannot
+place it in two splits.
 
 `source_content_sha256` is intentionally required but cannot be recomputed by
 this package without the original images/video. A future extractor must compute
-it from a documented ordered source-frame list or source asset bytes. This is a
-remaining external-data validation responsibility, not something this probe can
-claim to verify without the assets.
+it from a documented ordered source-frame list or source asset bytes. The cache
+hash cryptographically binds the extractor-provided digest, and the loader
+checks that its manifest copy matches exactly. Verifying that the extractor
+derived that digest from the original RGB/video remains an external-data
+responsibility; this probe cannot claim that without those assets.
 
 ## Explicit RGB-pose to latent mapping
 

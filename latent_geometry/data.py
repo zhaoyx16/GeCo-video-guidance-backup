@@ -23,7 +23,7 @@ from .geometry import make_relative_pose_target, validate_world_to_camera_se3
 
 
 CACHE_FORMAT_VERSION = 2
-MANIFEST_FORMAT_VERSION = 2
+MANIFEST_FORMAT_VERSION = 3
 LATENT_DOMAIN_RAW_VAE_Z0 = "raw_vae_z0"
 LATENT_DOMAIN_NORMALIZED_DIFFUSION_Z = "normalized_diffusion_z"
 LATENT_DOMAIN_X0_PRED = "x0_pred"
@@ -81,9 +81,9 @@ class ProbeManifestRecord:
     """An ordered latent/camera pair with immutable source binding fields.
 
     ``scene_id`` is human-readable only.  Split safety is enforced using the
-    dataset-qualified ``source_scene_uid``, ``source_clip_uid``, and the actual
-    cache digest, so renaming ``scene_id`` cannot move the same source across
-    train/val/test.
+    dataset-qualified ``source_scene_uid``, ``source_clip_uid``, verified
+    source-content digest, and the actual cache digest, so renaming ``scene_id``
+    cannot move the same source across train/val/test.
     """
 
     record_id: str
@@ -91,6 +91,7 @@ class ProbeManifestRecord:
     source_dataset: str
     source_scene_uid: str
     source_clip_uid: str
+    source_content_sha256: str
     cache_sha256: str
     split: str
     cache_path: Path
@@ -109,6 +110,7 @@ class ProbeManifestRecord:
             "source_dataset",
             "source_scene_uid",
             "source_clip_uid",
+            "source_content_sha256",
             "cache_sha256",
             "split",
             "cache_path",
@@ -142,6 +144,9 @@ class ProbeManifestRecord:
             source_dataset=_require_nonempty_string(payload, "source_dataset", "manifest record"),
             source_scene_uid=_require_nonempty_string(payload, "source_scene_uid", "manifest record"),
             source_clip_uid=_require_nonempty_string(payload, "source_clip_uid", "manifest record"),
+            source_content_sha256=_require_sha256(
+                payload["source_content_sha256"], "manifest source_content_sha256"
+            ),
             cache_sha256=_require_sha256(payload["cache_sha256"], "manifest cache_sha256"),
             split=split,
             cache_path=cache_path,
@@ -168,6 +173,7 @@ def validate_scene_disjoint_splits(records: Sequence[ProbeManifestRecord]) -> No
         ("scene_id", {}, lambda record: record.scene_id),
         ("source_scene_uid", {}, lambda record: _source_scene_key(record.source_dataset, record.source_scene_uid)),
         ("source_clip_uid", {}, lambda record: f"{record.source_dataset}::{record.source_clip_uid}"),
+        ("source_content_sha256", {}, lambda record: record.source_content_sha256),
         ("cache_sha256", {}, lambda record: record.cache_sha256),
     )
     for label, split_map, key_fn in split_maps:
@@ -462,6 +468,7 @@ def save_clean_latent_record(
         "source_dataset": validated_source_provenance["source_dataset"],
         "source_scene_uid": validated_source_provenance["source_scene_uid"],
         "source_clip_uid": validated_source_provenance["source_clip_uid"],
+        "source_content_sha256": validated_source_provenance["source_content_sha256"],
         "cache_sha256": cache_sha256,
     }
 
@@ -563,12 +570,14 @@ def _validate_manifest_cache_binding(record: ProbeManifestRecord, payload: Mappi
         "source_dataset": record.source_dataset,
         "source_scene_uid": record.source_scene_uid,
         "source_clip_uid": record.source_clip_uid,
+        "source_content_sha256": record.source_content_sha256,
         "cache_sha256": record.cache_sha256,
     }
     actual = {
         "source_dataset": provenance["source_dataset"],
         "source_scene_uid": provenance["source_scene_uid"],
         "source_clip_uid": provenance["source_clip_uid"],
+        "source_content_sha256": provenance["source_content_sha256"],
         "cache_sha256": payload["cache_sha256"],
     }
     for key, expected_value in expected.items():

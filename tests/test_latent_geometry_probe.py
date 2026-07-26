@@ -19,6 +19,7 @@ from latent_geometry.data import (
     LinearFlowNoiseSchedule,
     ManifestError,
     load_manifest_records,
+    save_clean_latent_record,
 )
 from latent_geometry.geometry import make_relative_pose_target, rotation_6d_to_matrix
 from latent_geometry.models import ConstantPoseBaseline, LinearLatentProbe, Small3DConvCritic
@@ -80,6 +81,57 @@ class LatentGeometryProbeTests(unittest.TestCase):
             leaky = Path(temporary) / "same_source_uid.jsonl"
             _write_records(leaky, records)
             with self.assertRaisesRegex(ManifestError, "source_scene_uid"):
+                load_manifest_records(leaky)
+
+    def test_manifest_rejects_independent_recaches_of_same_source_content_across_splits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = create_synthetic_probe_manifest(root, train_scenes=1, val_scenes=1, records_per_scene=1)
+            train_record = _read_records(manifest)[0]
+            train_cache = torch.load(root / str(train_record["cache_path"]), map_location="cpu", weights_only=False)
+
+            independently_recached_provenance = dict(train_cache["source_provenance"])
+            independently_recached_provenance.update(
+                {
+                    "source_scene_uid": "independent-recache/new-scene-uid",
+                    "source_clip_uid": "independent-recache/new-clip-uid",
+                    # This is deliberately the same immutable source identity.
+                    "source_content_sha256": train_record["source_content_sha256"],
+                }
+            )
+            recache_path = root / "cache" / "same_content_new_cache.pt"
+            binding = save_clean_latent_record(
+                recache_path,
+                record_id="independently_recached_same_content",
+                scene_id="independently_recached_scene",
+                z0=train_cache["z0"].clone(),
+                camera_poses_w2c=train_cache["camera_poses_w2c"].clone(),
+                intrinsics=train_cache["intrinsics"].clone(),
+                frame_ids=train_cache["frame_ids"].clone(),
+                source_provenance=independently_recached_provenance,
+                latent_spec=train_cache["latent_spec"],
+                temporal_mapping=train_cache["temporal_mapping"],
+                pose_spec=train_cache["pose_spec"],
+            )
+            self.assertNotEqual(train_record["cache_sha256"], binding["cache_sha256"])
+
+            recached_val_record = dict(train_record)
+            recached_val_record.update(
+                {
+                    "record_id": binding["record_id"],
+                    "scene_id": binding["scene_id"],
+                    "source_dataset": binding["source_dataset"],
+                    "source_scene_uid": binding["source_scene_uid"],
+                    "source_clip_uid": binding["source_clip_uid"],
+                    "source_content_sha256": binding["source_content_sha256"],
+                    "cache_sha256": binding["cache_sha256"],
+                    "split": "val",
+                    "cache_path": str(recache_path.relative_to(root)),
+                }
+            )
+            leaky = root / "same_content_independent_recaches.jsonl"
+            _write_records(leaky, [train_record, recached_val_record])
+            with self.assertRaisesRegex(ManifestError, "source_content_sha256"):
                 load_manifest_records(leaky)
 
     def test_cache_provenance_rejects_cross_split_reuse_under_renamed_manifest(self) -> None:

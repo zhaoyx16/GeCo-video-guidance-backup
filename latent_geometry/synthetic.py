@@ -123,6 +123,7 @@ def create_synthetic_probe_manifest(
                         "source_dataset": binding["source_dataset"],
                         "source_scene_uid": binding["source_scene_uid"],
                         "source_clip_uid": binding["source_clip_uid"],
+                        "source_content_sha256": binding["source_content_sha256"],
                         "cache_sha256": binding["cache_sha256"],
                         "split": split,
                         "cache_path": str(cache_path.relative_to(root)),
