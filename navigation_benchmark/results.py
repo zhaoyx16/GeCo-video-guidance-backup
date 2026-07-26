@@ -6,6 +6,7 @@ import math
 import random
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .manifest import (
@@ -14,6 +15,7 @@ from .manifest import (
     ManifestValidationError,
     ValidationIssue,
     canonical_json,
+    statistical_unit_id,
     validate_manifest,
 )
 
@@ -68,6 +70,7 @@ def aggregate_paired_metric(
     expected_methods: Sequence[str] | None = None,
     bootstrap_samples: int = 2_000,
     random_seed: int = 0,
+    artifact_root: str | Path | None = None,
 ) -> PairedMetricSummary:
     """Aggregate a metric only when every expected arm is complete and bound.
 
@@ -86,7 +89,12 @@ def aggregate_paired_metric(
         raise ValueError("expected_methods must not contain duplicates")
 
     records = list(run_records) + list(metric_records)
-    issues = validate_manifest(records, expected_methods=expected, require_completed=True)
+    issues = validate_manifest(
+        records,
+        expected_methods=expected,
+        require_completed=True,
+        artifact_root=artifact_root,
+    )
     if issues:
         raise ManifestValidationError(issues)
 
@@ -122,9 +130,15 @@ def aggregate_paired_metric(
         improvement = -raw_delta if direction == "lower_is_better" else raw_delta
         condition = methods[baseline_method]["condition"]
         scene = condition["scene"]
+        source_clip = condition["source_clip"]
         statistical_unit = scene["statistical_unit"]
-        cluster_id = statistical_unit["cluster_id"]
         cluster_level = statistical_unit["level"]
+        cluster_id = statistical_unit_id(
+            dataset_id=str(scene["dataset_id"]),
+            scene_id=str(scene["scene_id"]),
+            sequence_id=str(source_clip["sequence_id"]),
+            level=str(cluster_level),
+        )
         rows.append(
             {
                 "pair_id": pair_id,

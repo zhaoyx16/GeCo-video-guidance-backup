@@ -59,13 +59,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_methods=args.expected_method,
             require_static_scene=args.require_static_scene,
             require_completed=args.require_completed,
+            artifact_root=Path(args.manifest).parent,
         )
         print(json.dumps({"valid": not issues, "issues": [issue.as_dict() for issue in issues]}, indent=2))
         return 0 if not issues else 1
 
     if args.command == "trajectory":
         manifest_records = load_records(args.manifest)
-        issues = validate_manifest(manifest_records)
+        issues = validate_manifest(manifest_records, artifact_root=Path(args.manifest).parent)
         if issues:
             raise SystemExit("\n".join(str(issue) for issue in issues))
         run = _find_run(manifest_records, args.run_id)
@@ -106,6 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_methods=args.expected_method,
                 bootstrap_samples=args.bootstrap_samples,
                 random_seed=args.random_seed,
+                artifact_root=Path(args.manifest).parent,
             )
         except ManifestValidationError as exc:
             raise SystemExit(str(exc)) from exc

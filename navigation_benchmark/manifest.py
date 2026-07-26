@@ -34,6 +34,13 @@ _METRIC_ROLES = {
     "visual_quality",
 }
 _EVALUATOR_POLICIES = {"independent", "guidance_aligned", "human_annotation"}
+_ROLE_ALLOWED_POLICIES = {
+    "guidance_aligned": {"guidance_aligned"},
+    "independent_geometry": {"independent"},
+    "trajectory_adherence": {"independent"},
+    "motion_preservation": {"independent", "human_annotation"},
+    "visual_quality": {"independent", "human_annotation"},
+}
 _POSE_CONVENTIONS = {"W2C", "C2W"}
 _STATISTICAL_UNIT_LEVELS = {"scene", "sequence"}
 _ANCHOR_ROLES = ("first", "middle", "last")
@@ -138,6 +145,18 @@ def evaluator_fingerprint(evaluator: Mapping[str, Any]) -> str:
     return sha256_json(copied)
 
 
+def statistical_unit_id(*, dataset_id: str, scene_id: str, sequence_id: str, level: str) -> str:
+    """Derive the only allowed bootstrap cluster identifier for one condition."""
+
+    if level == "scene":
+        identifier = scene_id
+    elif level == "sequence":
+        identifier = sequence_id
+    else:
+        raise ValueError(f"unsupported statistical-unit level: {level!r}")
+    return f"{dataset_id}::{level}::{identifier}"
+
+
 def with_evaluator_fingerprint(evaluator: Mapping[str, Any]) -> dict[str, Any]:
     """Copy an evaluator descriptor and attach its canonical fingerprint."""
 
@@ -201,6 +220,7 @@ def validate_manifest(
     expected_methods: Sequence[str] = (),
     require_static_scene: bool = False,
     require_completed: bool = False,
+    artifact_root: str | Path | None = None,
 ) -> list[ValidationIssue]:
     """Validate a whole benchmark manifest, including cross-record contracts.
 
@@ -221,7 +241,7 @@ def validate_manifest(
         record_type = record.get("record_type")
         if record_type == SPLIT_MANIFEST_RECORD_TYPE:
             split_records.append(record)
-            issues.extend(validate_split_manifest(record))
+            issues.extend(validate_split_manifest(record, artifact_root=artifact_root))
         elif record_type == GENERATION_RUN_RECORD_TYPE:
             generation_records.append(record)
             run_id = record.get("run_id")
@@ -261,7 +281,9 @@ def validate_manifest(
     return issues
 
 
-def validate_split_manifest(record: Mapping[str, Any]) -> list[ValidationIssue]:
+def validate_split_manifest(
+    record: Mapping[str, Any], *, artifact_root: str | Path | None = None
+) -> list[ValidationIssue]:
     """Validate one immutable scene/sequence-disjoint frozen split manifest."""
 
     issues: list[ValidationIssue] = []
@@ -275,6 +297,16 @@ def validate_split_manifest(record: Mapping[str, Any]) -> list[ValidationIssue]:
         issues.append(ValidationIssue(record_id, "split_manifest_hash", "must be a 64-character SHA-256 hash"))
     elif declared != split_manifest_fingerprint(record):
         issues.append(ValidationIssue(record_id, "split_manifest_hash", "does not match frozen split-manifest content"))
+
+    frozen_source = _require_mapping_field(record, "frozen_source", record_id, issues)
+    if frozen_source is not None:
+        _required_string(frozen_source, "uri", record_id, issues, prefix="frozen_source.")
+        _required_string(frozen_source, "version", record_id, issues, prefix="frozen_source.")
+        _required_string(frozen_source, "registry_id", record_id, issues, prefix="frozen_source.")
+        _required_string(frozen_source, "artifact_path", record_id, issues, prefix="frozen_source.")
+        _require_equal(frozen_source, "format", "json", record_id, issues, prefix="frozen_source.")
+        _require_sha256(frozen_source.get("expected_sha256"), record_id, "frozen_source.expected_sha256", issues)
+        _validate_extensions(frozen_source, record_id, issues, field="frozen_source.extensions")
 
     assignments = record.get("assignments")
     if not isinstance(assignments, list) or not assignments:
@@ -304,8 +336,65 @@ def validate_split_manifest(record: Mapping[str, Any]) -> list[ValidationIssue]:
             if sequence_key in seen_sequences:
                 issues.append(ValidationIssue(record_id, field, "duplicate sequence assignment"))
             seen_sequences.add(sequence_key)
+    if frozen_source is not None:
+        _validate_frozen_split_source(
+            frozen_source,
+            assignments,
+            record_id,
+            issues,
+            artifact_root=artifact_root,
+        )
     _validate_extensions(record, record_id, issues)
     return issues
+
+
+def _validate_frozen_split_source(
+    frozen_source: Mapping[str, Any],
+    assignments: Sequence[Any],
+    record_id: str | None,
+    issues: list[ValidationIssue],
+    *,
+    artifact_root: str | Path | None,
+) -> None:
+    """Verify the immutable external split artifact, not merely its declaration."""
+
+    raw_path = frozen_source.get("artifact_path")
+    expected_hash = frozen_source.get("expected_sha256")
+    if not isinstance(raw_path, str) or not raw_path or not _is_sha256(expected_hash):
+        return
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        if artifact_root is None:
+            issues.append(
+                ValidationIssue(
+                    record_id,
+                    "frozen_source.artifact_path",
+                    "relative artifact_path requires validate_manifest(..., artifact_root=...)",
+                )
+            )
+            return
+        path = Path(artifact_root) / path
+    if not path.is_file():
+        issues.append(ValidationIssue(record_id, "frozen_source.artifact_path", "does not resolve to a readable frozen split artifact"))
+        return
+    actual_hash = _sha256_file(path)
+    if actual_hash != expected_hash:
+        issues.append(ValidationIssue(record_id, "frozen_source.expected_sha256", "does not match the frozen split artifact bytes"))
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        issues.append(ValidationIssue(record_id, "frozen_source.artifact_path", f"cannot parse frozen JSON split artifact: {exc}"))
+        return
+    if not isinstance(payload, Mapping):
+        issues.append(ValidationIssue(record_id, "frozen_source.artifact_path", "frozen split artifact must be a JSON object"))
+        return
+    if payload.get("registry_id") != frozen_source.get("registry_id"):
+        issues.append(ValidationIssue(record_id, "frozen_source.registry_id", "does not match the frozen split artifact"))
+    if payload.get("version") != frozen_source.get("version"):
+        issues.append(ValidationIssue(record_id, "frozen_source.version", "does not match the frozen split artifact"))
+    if canonical_json(payload.get("assignments")) != canonical_json(assignments):
+        issues.append(ValidationIssue(record_id, "assignments", "do not exactly match the frozen split artifact"))
 
 
 def validate_generation_run(
@@ -417,8 +506,19 @@ def validate_metric_result(record: Mapping[str, Any]) -> list[ValidationIssue]:
         _required_string(evaluator, "model_id", record_id, issues, prefix="evaluator.")
         _required_string(evaluator, "checkpoint_revision", record_id, issues, prefix="evaluator.")
         _require_mapping_field(evaluator, "config", record_id, issues, prefix="evaluator.")
-        if evaluator.get("independence_policy") not in _EVALUATOR_POLICIES:
+        evaluator_policy = evaluator.get("independence_policy")
+        if evaluator_policy not in _EVALUATOR_POLICIES:
             issues.append(ValidationIssue(record_id, "evaluator.independence_policy", f"must be one of {sorted(_EVALUATOR_POLICIES)}"))
+        else:
+            allowed_policies = _ROLE_ALLOWED_POLICIES.get(record.get("metric_role"))
+            if allowed_policies is not None and evaluator_policy not in allowed_policies:
+                issues.append(
+                    ValidationIssue(
+                        record_id,
+                        "evaluator.independence_policy",
+                        f"metric_role={record.get('metric_role')!r} requires one of {sorted(allowed_policies)}",
+                    )
+                )
         fingerprint = evaluator.get("fingerprint")
         if not _is_sha256(fingerprint):
             issues.append(ValidationIssue(record_id, "evaluator.fingerprint", "must be a 64-character SHA-256 hash"))
@@ -557,6 +657,9 @@ def _validate_condition(
 
     scene = _require_mapping_field(condition, "scene", record_id, issues, prefix="condition.")
     dataset_id = scene_id = sequence_id = None
+    statistical_unit: Mapping[str, Any] | None = None
+    cluster_id = None
+    cluster_level = None
     if scene is not None:
         dataset_id = _required_string(scene, "dataset_id", record_id, issues, prefix="condition.scene.")
         scene_id = _required_string(scene, "scene_id", record_id, issues, prefix="condition.scene.")
@@ -565,8 +668,9 @@ def _validate_condition(
             issues.append(ValidationIssue(record_id, "condition.scene.split", f"must be one of {sorted(_SPLITS)}"))
         statistical_unit = _require_mapping_field(scene, "statistical_unit", record_id, issues, prefix="condition.scene.")
         if statistical_unit is not None:
-            _required_string(statistical_unit, "cluster_id", record_id, issues, prefix="condition.scene.statistical_unit.")
-            if statistical_unit.get("level") not in _STATISTICAL_UNIT_LEVELS:
+            cluster_id = _required_string(statistical_unit, "cluster_id", record_id, issues, prefix="condition.scene.statistical_unit.")
+            cluster_level = statistical_unit.get("level")
+            if cluster_level not in _STATISTICAL_UNIT_LEVELS:
                 issues.append(ValidationIssue(record_id, "condition.scene.statistical_unit.level", f"must be one of {sorted(_STATISTICAL_UNIT_LEVELS)}"))
         eligibility = _require_mapping_field(scene, "static_scene_eligibility", record_id, issues, prefix="condition.scene.")
         if eligibility is not None:
@@ -605,6 +709,29 @@ def _validate_condition(
         _validate_reference(source.get("poses_ref"), record_id, "condition.source_clip.poses_ref", issues, pose_reference=True)
         anchors_by_role = _validate_anchors(source.get("anchors"), record_id, issues, start, end, source_fps, time_origin)
 
+    if (
+        isinstance(cluster_id, str)
+        and isinstance(cluster_level, str)
+        and isinstance(dataset_id, str)
+        and isinstance(scene_id, str)
+        and isinstance(sequence_id, str)
+        and cluster_level in _STATISTICAL_UNIT_LEVELS
+    ):
+        expected_cluster_id = statistical_unit_id(
+            dataset_id=dataset_id,
+            scene_id=scene_id,
+            sequence_id=sequence_id,
+            level=cluster_level,
+        )
+        if cluster_id != expected_cluster_id:
+            issues.append(
+                ValidationIssue(
+                    record_id,
+                    "condition.scene.statistical_unit.cluster_id",
+                    "must equal the deterministic dataset/scene-or-sequence cluster identifier",
+                )
+            )
+
     _required_string(condition, "prompt", record_id, issues, prefix="condition.")
     _require_integer(condition, "seed", record_id, issues, prefix="condition.")
 
@@ -623,6 +750,8 @@ def _validate_condition(
                 issues.append(ValidationIssue(record_id, f"condition.sampling.{field}", "must be greater than zero"))
             if field == "num_frames":
                 num_frames = value
+                if value is not None and value < 3:
+                    issues.append(ValidationIssue(record_id, "condition.sampling.num_frames", "must be at least three for first/middle/last guidance"))
         generated_fps = _require_positive_number(sampling, "fps", record_id, issues, prefix="condition.sampling.")
         scheduler = _require_mapping_field(sampling, "scheduler", record_id, issues, prefix="condition.sampling.")
         if scheduler is not None:
@@ -661,6 +790,8 @@ def _validate_split_reference(
     manifest_id = _required_string(reference, "id", record_id, issues, prefix="condition.split_manifest.")
     manifest_hash = reference.get("sha256")
     _require_sha256(manifest_hash, record_id, "condition.split_manifest.sha256", issues)
+    frozen_source_hash = reference.get("frozen_source_expected_sha256")
+    _require_sha256(frozen_source_hash, record_id, "condition.split_manifest.frozen_source_expected_sha256", issues)
     if split_index is None or not manifest_id:
         return
     split_record = split_index.get(manifest_id)
@@ -669,6 +800,16 @@ def _validate_split_reference(
         return
     if manifest_hash != split_record.get("split_manifest_hash"):
         issues.append(ValidationIssue(record_id, "condition.split_manifest.sha256", "does not match the referenced frozen split manifest"))
+    frozen_source = split_record.get("frozen_source")
+    expected_frozen_source_hash = frozen_source.get("expected_sha256") if isinstance(frozen_source, Mapping) else None
+    if frozen_source_hash != expected_frozen_source_hash:
+        issues.append(
+            ValidationIssue(
+                record_id,
+                "condition.split_manifest.frozen_source_expected_sha256",
+                "does not match the external frozen-split registry artifact",
+            )
+        )
     if not all(isinstance(value, str) and value for value in (dataset_id, scene_id, sequence_id)):
         return
     assignment = _find_split_assignment(split_record, dataset_id, scene_id, sequence_id)
@@ -771,6 +912,14 @@ def _validate_frame_guidance(
     _require_equal(timing, "mapping_policy", _ANCHOR_MAPPING_POLICY_ID, record_id, issues, prefix="condition.frame_guidance.generated_timing.")
     reported_count = _require_integer(timing, "generated_frame_count", record_id, issues, prefix="condition.frame_guidance.generated_timing.")
     reported_fps = _require_positive_number(timing, "generated_fps", record_id, issues, prefix="condition.frame_guidance.generated_timing.")
+    if reported_count is not None and reported_count < 3:
+        issues.append(
+            ValidationIssue(
+                record_id,
+                "condition.frame_guidance.generated_timing.generated_frame_count",
+                "must be at least three for distinct first/middle/last generated anchors",
+            )
+        )
     if num_frames is not None and reported_count is not None and reported_count != num_frames:
         issues.append(ValidationIssue(record_id, "condition.frame_guidance.generated_timing.generated_frame_count", "must equal sampling.num_frames"))
     if generated_fps is not None and reported_fps is not None and abs(reported_fps - generated_fps) > 1e-9:
@@ -785,6 +934,7 @@ def _validate_frame_guidance(
     expected_generated_indices = None
     if num_frames is not None and num_frames > 0:
         expected_generated_indices = {"first": 0, "middle": (num_frames - 1) // 2, "last": num_frames - 1}
+    observed_generated_indices: list[int] = []
     for index, entry in enumerate(anchor_map):
         path = f"condition.frame_guidance.generated_timing.anchor_map[{index}]"
         if not isinstance(entry, Mapping):
@@ -806,6 +956,16 @@ def _validate_frame_guidance(
         if generated_frame is not None and generated_time is not None and reported_fps is not None:
             if abs(generated_time - generated_frame / reported_fps) > 1e-6:
                 issues.append(ValidationIssue(record_id, f"{path}.generated_timestamp_sec", "must equal generated_frame_index/generated_fps"))
+        if generated_frame is not None:
+            observed_generated_indices.append(generated_frame)
+    if len(observed_generated_indices) == len(_ANCHOR_ROLES) and len(set(observed_generated_indices)) != len(_ANCHOR_ROLES):
+        issues.append(
+            ValidationIssue(
+                record_id,
+                "condition.frame_guidance.generated_timing.anchor_map",
+                "first, middle, and last must bind to distinct generated frames",
+            )
+        )
 
 
 def _validate_reference(
@@ -840,7 +1000,13 @@ def _validate_trajectory_binding(value: Any, record_id: str | None, issues: list
     binding = _require_mapping(value, record_id, "trajectory_binding", issues)
     if binding is None:
         return
-    for field in ("reference_pose_artifact_sha256", "predicted_pose_artifact_sha256", "anchor_mapping_hash"):
+    for field in (
+        "reference_pose_artifact_sha256",
+        "predicted_pose_artifact_sha256",
+        "predicted_input_video_sha256",
+        "anchor_mapping_hash",
+        "run_condition_hash",
+    ):
         _require_sha256(binding.get(field), record_id, f"trajectory_binding.{field}", issues)
     if binding.get("pose_convention") not in _POSE_CONVENTIONS:
         issues.append(ValidationIssue(record_id, "trajectory_binding.pose_convention", "must be W2C or C2W"))
@@ -870,7 +1036,52 @@ def _validate_metric_bindings(
         expected_output_hash = output.get("sha256") if isinstance(output, Mapping) else None
         if metric.get("evaluated_output_sha256") != expected_output_hash:
             issues.append(ValidationIssue(record_id, "evaluated_output_sha256", "does not match the completed output artifact"))
+        if metric.get("metric_role") == "trajectory_adherence":
+            _validate_trajectory_binding_against_run(metric, run, record_id, issues)
     return issues
+
+
+def _validate_trajectory_binding_against_run(
+    metric: Mapping[str, Any],
+    run: Mapping[str, Any],
+    record_id: str | None,
+    issues: list[ValidationIssue],
+) -> None:
+    """Bind a trajectory metric to this exact source clip, output, and anchors."""
+
+    binding = metric.get("trajectory_binding")
+    if not isinstance(binding, Mapping):
+        return
+    condition = run.get("condition")
+    if not isinstance(condition, Mapping):
+        return
+    source = condition.get("source_clip")
+    frame_guidance = condition.get("frame_guidance")
+    output = run.get("output")
+    if not isinstance(source, Mapping) or not isinstance(frame_guidance, Mapping) or not isinstance(output, Mapping):
+        return
+    poses_ref = source.get("poses_ref")
+    timing = frame_guidance.get("generated_timing")
+    if not isinstance(poses_ref, Mapping) or not isinstance(timing, Mapping):
+        return
+    anchor_map = timing.get("anchor_map")
+    expected = {
+        "reference_pose_artifact_sha256": poses_ref.get("sha256"),
+        "predicted_input_video_sha256": output.get("sha256"),
+        "anchor_mapping_hash": sha256_json(anchor_map) if isinstance(anchor_map, list) else None,
+        "run_condition_hash": run.get("condition_hash"),
+        "pose_convention": poses_ref.get("pose_convention"),
+        "translation_unit": poses_ref.get("translation_unit"),
+    }
+    for field, expected_value in expected.items():
+        if binding.get(field) != expected_value:
+            issues.append(
+                ValidationIssue(
+                    record_id,
+                    f"trajectory_binding.{field}",
+                    "does not match the bound completed run condition or output",
+                )
+            )
 
 
 def _validate_device_assignments(value: Any, record_id: str | None, issues: list[ValidationIssue]) -> None:
@@ -976,6 +1187,14 @@ def _require_nonnegative_number(
 def _require_sha256(value: Any, record_id: str | None, field: str, issues: list[ValidationIssue]) -> None:
     if not _is_sha256(value):
         issues.append(ValidationIssue(record_id, field, "must be a 64-character SHA-256 hash"))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _is_sha256(value: Any) -> bool:

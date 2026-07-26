@@ -14,13 +14,20 @@ Frame Guidance, or a latent critic.
 Every benchmark manifest starts with one or more frozen split_manifest records.
 Each assignment contains dataset_id, scene_id, sequence_id, and split. The
 validator rejects a scene or sequence that appears in more than one frozen
-manifest, and rejects a scene or sequence assigned to different splits. A
-generation condition must name the split-manifest ID and its SHA-256. The
-referenced manifest must be present in the same run manifest and must assign
-that exact dataset/scene/sequence tuple to the claimed split.
+manifest, and rejects a scene or sequence assigned to different splits. A split
+must also name an immutable external registry artifact (`uri`, `version`,
+`registry_id`, `artifact_path`, and `expected_sha256`). The artifact must be a
+JSON file packaged with the final benchmark manifest; the validator checks its
+bytes, registry metadata, and exact assignments. This external pin is
+deliberately not derived from the run manifest itself. A generation condition must name the
+split-manifest ID, its SHA-256, and the pinned external split-artifact hash.
+The referenced manifest must be present in the same run manifest and must
+assign that exact dataset/scene/sequence tuple to the claimed split.
 
 The frozen split manifest is therefore created before method tuning. Do not
-create a new split to accommodate a method result.
+create a new split to accommodate a method result. The validator does not fetch
+registries over the network: it resolves a relative `artifact_path` against the
+manifest directory, so the checked JSON artifact must travel with the manifest.
 
 ## Paired Condition
 
@@ -29,7 +36,7 @@ The condition mapping is hashed as condition_hash. It includes:
 - source clip interval, native FPS, source hash, intrinsics hash, and pose hash;
 - first, middle, and last image-anchor paths, source timestamps, and hashes;
 - the frozen split-manifest reference;
-- static-scene eligibility and an explicit scene/sequence statistical unit;
+- static-scene eligibility and a deterministic scene/sequence statistical unit;
 - prompt, seed, model ID/revision/config, and complete sampler config;
 - Frame Guidance settings; and
 - source-to-generated frame and timestamp mapping.
@@ -49,9 +56,11 @@ This v1 protocol fixes the anchor rule rather than accepting any three frames:
 3. last is source_clip.end_frame.
 
 Anchors must be stored in that order. Source timestamps are checked against the
-declared native FPS and time origin. frame_guidance.generated_timing then maps
-the three source anchors to generated frame 0, generated floor midpoint, and
-generated final frame. It also records both source and generated timestamps.
+declared native FPS and time origin. The generated video must contain at least
+three frames, and frame_guidance.generated_timing then maps the three source
+anchors to generated frame 0, generated floor midpoint, and generated final
+frame. It also records both source and generated timestamps. The three generated
+anchors must be distinct.
 
 This is the contract used by a future Frame Guidance implementation and by
 trajectory evaluation; it avoids a result being evaluated on a different set
@@ -74,14 +83,19 @@ artifact, plus an evaluator descriptor with name, version, model/checkpoint,
 full config, independence policy, and evaluator fingerprint.
 
 GeCo-Eval is useful, but it is guidance_aligned when RGB-GeCo itself uses
-VGGT/UFM. It must not be described as an independent evaluator. Independent
-geometry or trajectory evaluators must state independence_policy=independent.
+VGGT/UFM. It must not be described as an independent evaluator. The validator
+therefore only accepts `guidance_aligned` for the guidance-aligned metric role;
+`independent_geometry` and `trajectory_adherence` require
+`independence_policy=independent`. Motion preservation and visual quality may
+use an independent evaluator or a human-annotation protocol.
 
 Trajectory evaluation accepts only bound pose artifacts. A reference artifact
 must hash-match source_clip.poses_ref. A predicted artifact must name the
 generated video SHA-256. Both must expose the contractual anchors, explicit
-W2C or C2W convention, and translation units. Raw arbitrary pose matrices are
-rejected by the public trajectory interface.
+W2C or C2W convention, and translation units. Final trajectory metric records
+are checked again against the completed run's condition hash, source pose hash,
+output hash, anchor-map hash, convention, and units. Raw arbitrary pose matrices
+are rejected by the public trajectory interface.
 
 ## Current RGB Reference Identity
 
@@ -117,9 +131,12 @@ reporting a misleading one.
 
 ## Commands
 
-Create a frozen split record with with_split_manifest_hash, then calculate a
-condition hash with with_condition_hash. After a generation completes, add the
-execution and output hash and call with_record_hash.
+Create and publish the external split-assignment JSON artifact first. It must
+contain `registry_id`, `version`, and `assignments`. Then create a frozen split
+record with its URI/version/registry ID/local artifact path/SHA-256 and call
+with_split_manifest_hash. Calculate a condition hash with with_condition_hash.
+After a generation completes, add the execution and output hash and call
+with_record_hash.
 
 Validate a final three-arm manifest:
 

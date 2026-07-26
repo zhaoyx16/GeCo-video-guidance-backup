@@ -13,6 +13,7 @@ from navigation_benchmark.manifest import (
     SCHEMA_VERSION,
     ManifestValidationError,
     load_records,
+    statistical_unit_id,
     validate_manifest,
     with_condition_hash,
     with_evaluator_fingerprint,
@@ -22,6 +23,9 @@ from navigation_benchmark.manifest import (
 )
 from navigation_benchmark.results import aggregate_paired_metric
 from navigation_benchmark.trajectory import evaluate_bound_anchor_trajectory, trajectory_metric_records
+
+
+_TEST_ARTIFACT_DIRECTORY = Path(tempfile.mkdtemp(prefix="geco-navigation-protocol-"))
 
 
 def digest(value: str) -> str:
@@ -37,13 +41,32 @@ def split_assignment(scene_id: str = "synthetic-scene", sequence_id: str = "sequ
     }
 
 
+def frozen_split_source(manifest_id: str, assignments: list[dict]) -> dict:
+    registry_id = f"synthetic-registry-{manifest_id}"
+    version = "2026-07-26"
+    payload = {"registry_id": registry_id, "version": version, "assignments": assignments}
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    path = _TEST_ARTIFACT_DIRECTORY / f"{digest(serialized)}.json"
+    path.write_text(serialized, encoding="utf-8")
+    return {
+        "uri": f"registry://synthetic/splits/{manifest_id}.json",
+        "version": version,
+        "registry_id": registry_id,
+        "artifact_path": str(path),
+        "format": "json",
+        "expected_sha256": digest(serialized),
+    }
+
+
 def valid_split_manifest(*assignments: dict, manifest_id: str = "synthetic-split-v1") -> dict:
+    assignment_list = list(assignments or (split_assignment(),))
     record = {
         "schema_version": SCHEMA_VERSION,
         "record_type": "split_manifest",
         "split_manifest_id": manifest_id,
         "status": "frozen",
-        "assignments": list(assignments or (split_assignment(),)),
+        "frozen_source": frozen_split_source(manifest_id, assignment_list),
+        "assignments": assignment_list,
     }
     return with_split_manifest_hash(record)
 
@@ -94,12 +117,21 @@ def valid_condition(
         "split_manifest": {
             "id": split_manifest["split_manifest_id"],
             "sha256": split_manifest["split_manifest_hash"],
+            "frozen_source_expected_sha256": split_manifest["frozen_source"]["expected_sha256"],
         },
         "scene": {
             "scene_id": scene_id,
             "dataset_id": "synthetic-dataset",
             "split": split,
-            "statistical_unit": {"cluster_id": sequence_id, "level": "sequence"},
+            "statistical_unit": {
+                "cluster_id": statistical_unit_id(
+                    dataset_id="synthetic-dataset",
+                    scene_id=scene_id,
+                    sequence_id=sequence_id,
+                    level="sequence",
+                ),
+                "level": "sequence",
+            },
             "static_scene_eligibility": {
                 "eligible": True,
                 "criteria_version": "static-navigation-v1",
@@ -231,7 +263,14 @@ def default_evaluator(*, policy: str = "guidance_aligned", config: dict | None =
     )
 
 
-def metric(run: dict, value: float, *, metric_name: str = "geco_fused", evaluator: dict | None = None) -> dict:
+def metric(
+    run: dict,
+    value: float,
+    *,
+    metric_name: str = "geco_fused",
+    metric_role: str = "guidance_aligned",
+    evaluator: dict | None = None,
+) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "record_type": METRIC_RESULT_RECORD_TYPE,
@@ -239,7 +278,7 @@ def metric(run: dict, value: float, *, metric_name: str = "geco_fused", evaluato
         "run_record_hash": run["record_hash"],
         "evaluated_output_sha256": run["output"]["sha256"],
         "metric_name": metric_name,
-        "metric_role": "guidance_aligned",
+        "metric_role": metric_role,
         "direction": "lower_is_better",
         "value": value,
         "evaluator": evaluator or default_evaluator(),
@@ -314,6 +353,54 @@ class NavigationBenchmarkManifestTests(unittest.TestCase):
         issues = validate_manifest([split, run])
         self.assertTrue(any(issue.field == "condition.split_manifest.sha256" for issue in issues))
 
+    def test_split_requires_external_frozen_registry_pin(self) -> None:
+        split = valid_split_manifest()
+        del split["frozen_source"]
+        issues = validate_manifest([split])
+        self.assertTrue(any(issue.field == "frozen_source" for issue in issues))
+
+        split = valid_split_manifest(manifest_id="tampered-split")
+        Path(split["frozen_source"]["artifact_path"]).write_text("{}\n", encoding="utf-8")
+        issues = validate_manifest([split])
+        self.assertTrue(any(issue.field == "frozen_source.expected_sha256" for issue in issues))
+
+        split = valid_split_manifest(manifest_id="assignment-mismatch")
+        payload = {
+            "registry_id": split["frozen_source"]["registry_id"],
+            "version": split["frozen_source"]["version"],
+            "assignments": [],
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        Path(split["frozen_source"]["artifact_path"]).write_text(serialized, encoding="utf-8")
+        split["frozen_source"]["expected_sha256"] = digest(serialized)
+        split = with_split_manifest_hash(split)
+        issues = validate_manifest([split])
+        self.assertTrue(any(issue.field == "assignments" and "frozen split artifact" in issue.message for issue in issues))
+
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="run", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        del run["condition"]["split_manifest"]["frozen_source_expected_sha256"]
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        self.assertTrue(any(issue.field == "condition.split_manifest.frozen_source_expected_sha256" for issue in issues))
+
+    def test_relative_split_artifact_uses_manifest_artifact_root(self) -> None:
+        split = valid_split_manifest(manifest_id="relative-source")
+        artifact_path = Path(split["frozen_source"]["artifact_path"])
+        split["frozen_source"]["artifact_path"] = artifact_path.name
+        split = with_split_manifest_hash(split)
+        issues = validate_manifest([split])
+        self.assertTrue(any(issue.field == "frozen_source.artifact_path" for issue in issues))
+        self.assertEqual([], validate_manifest([split], artifact_root=artifact_path.parent))
+
+    def test_statistical_unit_must_be_derived_from_source_identity(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="cluster", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        run["condition"]["scene"]["statistical_unit"]["cluster_id"] = "free-form-cluster"
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        self.assertTrue(any(issue.field == "condition.scene.statistical_unit.cluster_id" for issue in issues))
+
     def test_pair_validation_detects_nonmethod_difference(self) -> None:
         split = valid_split_manifest()
         baseline = valid_run(split, run_id="baseline", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
@@ -342,6 +429,21 @@ class NavigationBenchmarkManifestTests(unittest.TestCase):
         issues = validate_manifest([split, run])
         self.assertTrue(any("generated_frame_index" in issue.field for issue in issues))
 
+    def test_frame_guidance_requires_three_distinct_generated_frames(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="short", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        run["condition"]["sampling"]["num_frames"] = 1
+        timing = run["condition"]["frame_guidance"]["generated_timing"]
+        timing["generated_frame_count"] = 1
+        for mapping in timing["anchor_map"]:
+            mapping["generated_frame_index"] = 0
+            mapping["generated_timestamp_sec"] = 0.0
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        fields = {issue.field for issue in issues}
+        self.assertIn("condition.sampling.num_frames", fields)
+        self.assertIn("condition.frame_guidance.generated_timing.anchor_map", fields)
+
     def test_completed_run_requires_hash_valid_output_and_provenance(self) -> None:
         split = valid_split_manifest()
         run = valid_run(split, run_id="complete", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
@@ -351,6 +453,18 @@ class NavigationBenchmarkManifestTests(unittest.TestCase):
         invalid = with_record_hash(invalid)
         issues = validate_manifest([split, invalid])
         self.assertTrue(any(issue.field == "output.sha256" for issue in issues))
+
+    def test_independent_metric_role_rejects_guidance_aligned_evaluator(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="metric-policy", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        result = metric(
+            run,
+            1.0,
+            metric_role="independent_geometry",
+            evaluator=default_evaluator(policy="guidance_aligned"),
+        )
+        issues = validate_manifest([split, run, result])
+        self.assertTrue(any(issue.field == "evaluator.independence_policy" for issue in issues))
 
     def test_jsonl_round_trip(self) -> None:
         split = valid_split_manifest()
@@ -400,6 +514,17 @@ class TrajectoryBindingTests(unittest.TestCase):
         poses = [pose(), pose(1.0), pose(2.0)]
         with self.assertRaisesRegex(ValueError, "independence_policy=independent"):
             evaluate_bound_anchor_trajectory(run, reference_pose_artifact(run, poses), predicted_pose_artifact(run, poses), evaluator=default_evaluator(policy="guidance_aligned"))
+
+    def test_trajectory_metric_rejects_binding_not_matching_its_run(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="trajectory-binding", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        poses = [pose(), pose(1.0), pose(2.0)]
+        evaluator = default_evaluator(policy="independent", config={"backend": "synthetic-pose"})
+        report = evaluate_bound_anchor_trajectory(run, reference_pose_artifact(run, poses), predicted_pose_artifact(run, poses), evaluator=evaluator)
+        metrics = trajectory_metric_records(run, report, evaluator=evaluator, metric_artifact={"uri": "metrics://trajectory/report.json", "sha256": digest("trajectory-report")})
+        metrics[0]["trajectory_binding"]["predicted_input_video_sha256"] = digest("other-output")
+        issues = validate_manifest([split, run, *metrics])
+        self.assertTrue(any(issue.field == "trajectory_binding.predicted_input_video_sha256" for issue in issues))
 
 
 class PairedAggregationTests(unittest.TestCase):

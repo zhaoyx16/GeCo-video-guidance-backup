@@ -5,6 +5,14 @@
       "record_type": "split_manifest",
       "split_manifest_id": "navigation-split-v1",
       "status": "frozen",
+      "frozen_source": {
+        "uri": "registry://replace-with-frozen-split-assignment-artifact",
+        "version": "replace-with-immutable-registry-version",
+        "registry_id": "replace-with-registry-record-id",
+        "artifact_path": "splits/replace-with-frozen-split-assignment.json",
+        "format": "json",
+        "expected_sha256": "replace-with-64-character-external-split-artifact-sha256"
+      },
       "assignments": [
         {
           "dataset_id": "replace-with-dataset-id",
@@ -37,13 +45,14 @@
         "protocol": {"id": "controlled-navigation-frame-guidance", "version": "v1"},
         "split_manifest": {
           "id": "navigation-split-v1",
-          "sha256": "copy-the-frozen-split-manifest-hash-here"
+          "sha256": "copy-the-frozen-split-manifest-hash-here",
+          "frozen_source_expected_sha256": "copy-the-external-split-artifact-hash-here"
         },
         "scene": {
           "dataset_id": "replace-with-dataset-id",
           "scene_id": "replace-with-scene-id",
           "split": "test",
-          "statistical_unit": {"cluster_id": "replace-with-sequence-id", "level": "sequence"},
+          "statistical_unit": {"cluster_id": "replace-with-dataset-id::sequence::replace-with-sequence-id", "level": "sequence"},
           "static_scene_eligibility": {
             "eligible": true,
             "criteria_version": "static-navigation-v1",

@@ -87,7 +87,9 @@ def evaluate_bound_anchor_trajectory(
     report["binding"] = {
         "reference_pose_artifact_sha256": str(reference_pose_artifact["sha256"]),
         "predicted_pose_artifact_sha256": str(predicted_pose_artifact["sha256"]),
+        "predicted_input_video_sha256": str(output["sha256"]),
         "anchor_mapping_hash": _anchor_mapping_fingerprint(timing),
+        "run_condition_hash": str(run_record["condition_hash"]),
         "pose_convention": convention,
         "translation_unit": reference_unit,
         "scale_alignment": scale_alignment,
