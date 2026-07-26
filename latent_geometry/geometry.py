@@ -13,6 +13,43 @@ import torch
 import torch.nn.functional as F
 
 
+def validate_world_to_camera_se3(
+    world_to_camera: torch.Tensor,
+    *,
+    atol: float = 1e-4,
+    rotation_atol: float = 1e-3,
+) -> None:
+    """Reject malformed transforms before treating them as W2C SE(3) poses."""
+    if world_to_camera.ndim != 3 or world_to_camera.shape[-2:] != (4, 4):
+        raise ValueError(
+            "world_to_camera must have shape [num_frames, 4, 4], "
+            f"got {tuple(world_to_camera.shape)}"
+        )
+    if not torch.is_floating_point(world_to_camera) or not torch.isfinite(world_to_camera).all():
+        raise ValueError("world_to_camera must contain finite floating-point values")
+    expected_bottom_row = torch.tensor(
+        [0.0, 0.0, 0.0, 1.0], device=world_to_camera.device, dtype=world_to_camera.dtype
+    )
+    if not torch.allclose(world_to_camera[:, 3, :], expected_bottom_row.expand_as(world_to_camera[:, 3, :]), atol=atol, rtol=0.0):
+        raise ValueError("world_to_camera transforms must use homogeneous SE(3) bottom row [0, 0, 0, 1]")
+
+    rotation = world_to_camera[:, :3, :3]
+    identity = torch.eye(3, device=rotation.device, dtype=rotation.dtype).expand_as(rotation)
+    orthogonality_error = (rotation.transpose(-1, -2) @ rotation - identity).abs().amax()
+    if float(orthogonality_error.detach().cpu()) > rotation_atol:
+        raise ValueError(
+            "world_to_camera rotation is not orthonormal; "
+            f"max |R^T R - I|={float(orthogonality_error.detach().cpu()):.3e}"
+        )
+    determinant = torch.linalg.det(rotation)
+    determinant_error = (determinant - 1.0).abs().amax()
+    if bool((determinant <= 0.0).any()) or float(determinant_error.detach().cpu()) > rotation_atol:
+        raise ValueError(
+            "world_to_camera rotation must be right-handed with determinant approximately +1; "
+            f"max |det(R)-1|={float(determinant_error.detach().cpu()):.3e}"
+        )
+
+
 def rotation_matrix_to_6d(rotation: torch.Tensor) -> torch.Tensor:
     """Encode a rotation matrix by its first two columns, column-major."""
     if rotation.shape[-2:] != (3, 3):
@@ -46,11 +83,7 @@ def relative_transform_from_world_to_camera(
     coordinates, so its translation direction has an unambiguous sign once the
     ordered source/target pair is fixed.
     """
-    if world_to_camera.ndim != 3 or world_to_camera.shape[-2:] != (4, 4):
-        raise ValueError(
-            "world_to_camera must have shape [num_frames, 4, 4], "
-            f"got {tuple(world_to_camera.shape)}"
-        )
+    validate_world_to_camera_se3(world_to_camera)
     num_frames = world_to_camera.shape[0]
     if not 0 <= source_index < num_frames or not 0 <= target_index < num_frames:
         raise IndexError(

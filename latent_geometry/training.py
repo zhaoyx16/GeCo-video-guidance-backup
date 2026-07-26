@@ -23,6 +23,17 @@ def _target_from_batch(batch: Mapping[str, Any]) -> dict[str, torch.Tensor]:
     }
 
 
+def _select_model_input(batch: Mapping[str, Any], input_key: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return an input and the only valid conditioning timestep for its domain."""
+    if input_key == "z0":
+        if "z0_timestep" not in batch:
+            raise KeyError("z0 control batches must provide z0_timestep=0")
+        return batch["z0"], batch["z0_timestep"]
+    if input_key == "zt":
+        return batch["zt"], batch["timestep"]
+    raise ValueError("input_key must be 'z0' or 'zt'")
+
+
 def probe_loss_for_batch(
     model: nn.Module,
     batch: Mapping[str, Any],
@@ -31,9 +42,8 @@ def probe_loss_for_batch(
     rotation_weight: float = 1.0,
     translation_weight: float = 1.0,
 ) -> dict[str, torch.Tensor]:
-    if input_key not in {"z0", "zt"}:
-        raise ValueError("input_key must be 'z0' or 'zt'")
-    prediction = model(batch[input_key], batch["timestep"])
+    model_input, model_timestep = _select_model_input(batch, input_key)
+    prediction = model(model_input, model_timestep)
     return pose_losses(
         prediction,
         _target_from_batch(batch),
@@ -60,6 +70,7 @@ def evaluate_probe(
     input_key: str = "zt",
 ) -> ProbeEvaluation:
     device = torch.device(device)
+    model.to(device)
     model.eval()
     total_loss = 0.0
     total_rotation = 0.0
@@ -69,9 +80,10 @@ def evaluate_probe(
     for raw_batch in dataloader:
         batch = _move_batch(raw_batch, device)
         losses = probe_loss_for_batch(model, batch, input_key=input_key)
-        prediction = model(batch[input_key], batch["timestep"])
+        model_input, model_timestep = _select_model_input(batch, input_key)
+        prediction = model(model_input, model_timestep)
         metrics = pose_metrics(prediction, _target_from_batch(batch))
-        batch_size = int(batch[input_key].shape[0])
+        batch_size = int(model_input.shape[0])
         total_examples += batch_size
         total_loss += float(losses["loss"].item()) * batch_size
         total_rotation += float(metrics["rotation_deg"].sum().item())

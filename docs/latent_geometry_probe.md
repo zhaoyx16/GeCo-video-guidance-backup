@@ -1,102 +1,131 @@
 # Latent Geometry Probe Foundation
 
-This branch contains a small, isolated research scaffold for testing whether
-Wan clean VAE latents can support geometry prediction. It does not alter a Wan
-pipeline, Frame Guidance, GeCo guidance, or evaluation code.
+This branch is a strict, probe-only scaffold for testing geometry information
+in cached Wan VAE latents. It does not modify a Wan sampling pipeline, Frame
+Guidance, RGB GeCo guidance, or evaluation.
 
-## Scope and three latent distributions
+## Scope: three distinct latent distributions
 
-- `z0`: a clean latent cached from a frozen Wan VAE. This is the first and
-  cheapest question: can geometry be read from the VAE representation at all?
-- `zt`: an online noised version of that cached latent. This branch uses the
-  probe-only convention `zt = (1 - t) z0 + t epsilon`, with `t` given to the
-  critic. It is useful for checking robustness to noise, but is not a claim
-  that it exactly reproduces Wan's scheduler state.
-- `x0_pred(t)`: a future input. It must be obtained by running frozen Wan at a
-  real sampling timestep and is the distribution that matters for sampling-time
-  guidance. It is deliberately not generated in this foundation because that
-  would require expensive VDM inference and a separate cache/extraction plan.
+- `raw_vae_z0`: the direct, clean output of a frozen VAE encoder. This is the
+  only cache domain accepted by `CachedLatentDataset` in this branch.
+- `online_probe_zt`: generated in memory as `zt = (1 - t) z0 + t epsilon`.
+  It is a controlled robustness probe, not an assertion that it exactly equals
+  a Wan scheduler state.
+- `x0_pred`: a future domain that must be extracted from frozen Wan at a real
+  scheduler timestep under a fully recorded prompt/image/CFG condition. It is
+  not generated or accepted by this branch, because treating it as ordinary z0
+  would be an invalid sampler-integration claim.
 
-Passing a `z0` probe only shows representational information. It does not prove
-that a critic can guide Wan sampling. The required next stages are documented at
-the end of this file.
+For a pure `z0` control, the model always receives `t=0` through
+`z0_timestep`; it never sees a nonzero noising timestep merely because the
+same batch also contains an online `zt` example.
 
-## Manifest and cache contract
+## Versioned cache and provenance contract
 
-The data interface is JSONL. Every record has these required fields:
-
-```json
-{
-  "format_version": 1,
-  "record_id": "kitti_00_000123_pair_000_020",
-  "scene_id": "kitti_odometry_00",
-  "split": "train",
-  "cache_path": "cache/kitti_00_clip_000123.pt",
-  "source_pose_index": 0,
-  "target_pose_index": 20,
-  "source_latent_index": 0,
-  "target_latent_index": 5,
-  "static_scene": true,
-  "source_dataset": "KITTI-odometry"
-}
-```
-
-`source_pose_index` and `target_pose_index` index the cached RGB-camera poses.
-`source_latent_index` and `target_latent_index` index the temporal axis of
-`z0`. They are intentionally separate because a causal video VAE's temporal
-mapping is not generally one-to-one with RGB frames.
-
-One cached `.pt` file is a trusted PyTorch dictionary with:
+The v2 cache is a trusted PyTorch dictionary with:
 
 ```text
-format_version: 1
-z0:                  float tensor [C, T_latent, H_latent, W_latent]
-camera_poses_w2c:    float tensor [F, 4, 4]
-intrinsics:          float tensor [F, 3, 3]
-frame_ids:           int tensor   [F]
-metadata:
-  model_family: wan
-  vae_identifier: <exact frozen VAE/checkpoint identifier>
-  pose_convention: world_to_camera
-  z0_layout: C,T,H,W
-  translation_target: unit_direction_in_target_camera
+format_version: 2
+record_id, scene_id
+z0:                     float [C, T_latent, H_latent, W_latent]
+camera_poses_w2c:       float [F, 4, 4]
+intrinsics:             float [F, 3, 3]
+frame_ids:              integer [F], unique source frame IDs
+source_provenance:      immutable source identifiers and digests
+pose_spec:              explicit W2C, SE3, right-handed convention
+latent_spec:            typed latent-domain/VAE/preprocessing metadata
+temporal_mapping:       explicit latent-token to RGB-anchor mapping
+cache_sha256:           digest of tensors plus validated metadata
 ```
 
-The loader rejects a manifest if any `scene_id` occurs in more than one of
-`train`, `val`, or `test`. This is intentional: random frame-level splits would
-leak route and scene appearance into validation. For DL3DV/KITTI, split by
-source scene or sequence before creating latent pairs.
-
-## Pose target convention
-
-All cached poses must be world-to-camera transforms. For ordered source view
-`s` and target view `u`, the target is:
+`source_provenance` must include:
 
 ```text
-T_u_from_s = T_w2c[u] @ inverse(T_w2c[s])
+source_dataset
+source_scene_uid
+source_clip_uid
+source_content_sha256
+source_frame_ids_sha256
+source_pose_sha256
 ```
 
-The rotation target uses the continuous 6D representation (the first two
-columns of `R_u_from_s`). The translation target is only
-`normalize(t_u_from_s)`, expressed in target-camera coordinates. Its magnitude
-is not supervised, avoiding monocular global-scale ambiguity. If the baseline
-is effectively zero, `translation_valid=false` masks the direction loss.
+The writer verifies the frame-ID and pose hashes against the cached tensors,
+then stores a `cache_sha256` over `z0`, poses, intrinsics, frame IDs, temporal
+mapping, pose spec, provenance, and latent spec. The manifest mirrors the
+dataset-qualified `source_scene_uid`, `source_clip_uid`, and `cache_sha256`.
+Dataset construction validates every cache in every split before selecting the
+requested split. Thus using the same cache in train and val cannot be hidden by
+changing a human-readable `scene_id`.
 
-## Models and metrics
+`source_content_sha256` is intentionally required but cannot be recomputed by
+this package without the original images/video. A future extractor must compute
+it from a documented ordered source-frame list or source asset bytes. This is a
+remaining external-data validation responsibility, not something this probe can
+claim to verify without the assets.
 
-- `ConstantPoseBaseline`: a learned constant prediction. It establishes the
-  minimum that a latent-dependent model must beat.
-- `LinearLatentProbe`: global mean of the latent pair plus scalar timestep, fed
-  to one linear pose head. It is a diagnostic, not the proposed final method.
-- `Small3DConvCritic`: two lightweight 3D residual blocks, timestep embedding,
-  and a small pose head. This is the first nonlinear candidate critic.
+## Explicit RGB-pose to latent mapping
 
-Training uses chordal rotation loss plus masked translation-direction cosine
-loss. Validation reports rotation geodesic error in degrees and translation
-direction angular error in degrees. A useful probe must outperform the constant
-baseline on held-out *scenes*, not merely training pairs.
+`temporal_mapping` has one explicit RGB anchor per latent token:
 
-## CPU smoke run
+```text
+mapping_type: latent_anchor_frame_id
+anchor_rule: <documented rule, e.g. causal_first_output_anchor>
+is_causal: true | false
+temporal_compression_ratio: positive integer
+latent_to_frame_ids: integer tensor [T_latent]
+```
+
+`latent_to_frame_ids[k]` must exist in `frame_ids`. Every manifest pair supplies
+both RGB pose indices and latent indices; the loader rejects it unless the pose
+indices point to exactly the RGB frame IDs anchored by its selected latent
+tokens. This avoids silently assuming `latent_index == RGB_frame_index`.
+
+The cache also requires a `pose_spec` and numerically validates every stored
+transform as finite, right-handed SE(3): bottom row `[0, 0, 0, 1]`, orthonormal
+rotation, and determinant near `+1`. Relative pose is:
+
+```text
+T_target_from_source = T_w2c[target] @ inverse(T_w2c[source])
+```
+
+The target is 6D rotation plus translation *direction* in target-camera
+coordinates. Translation magnitude is deliberately excluded because it is
+ambiguous in monocular video.
+
+## Typed latent metadata
+
+`latent_spec` records a domain, model family, VAE identifier/revision/scaling,
+preprocessing, temporal-mapping type, scheduler, and condition:
+
+```text
+domain: raw_vae_z0 | normalized_diffusion_z | x0_pred
+model_family: wan
+vae: {identifier, revision, latent_scaling}
+preprocessing: {image_normalization, height, width, fps, frame_sampling}
+temporal_mapping_type: latent_anchor_frame_id
+scheduler: null for raw_vae_z0; required structured metadata otherwise
+condition: null for raw_vae_z0; required for x0_pred
+```
+
+The current dataset rejects any domain other than `raw_vae_z0`. This is
+intentional: `normalized_diffusion_z` and `x0_pred` require scheduler- and
+condition-faithful extraction, and adding them is a later research task rather
+than an implicit sampler integration.
+
+## Models, baselines, and metrics
+
+- `ConstantPoseBaseline` is learned and trained with the same optimizer and
+  number of steps as the other probes.
+- `LinearLatentProbe` reads global latent statistics plus the valid timestep.
+- `Small3DConvCritic` is the small nonlinear candidate, with 3D convolution and
+  timestep embedding.
+
+Training uses chordal rotation loss and masked translation-direction cosine
+loss. Evaluation reports rotation geodesic degrees and translation-direction
+angular degrees on scene-disjoint held-out data. The evaluator moves the model
+to the requested device before consuming the batch.
+
+## CPU tests and smoke run
 
 From the repository root:
 
@@ -105,23 +134,21 @@ python -m unittest discover -s tests -v
 python scripts/run_latent_geometry_probe_smoke.py --steps 24
 ```
 
-The smoke script writes only temporary synthetic latent records, trains the
-three small heads on CPU, and removes the data afterward. It never loads Wan,
-VGGT, Any4D, or a VAE.
+Both commands use synthetic tensors only. They do not download or load Wan,
+VAE, VGGT, Any4D, or any checkpoint.
 
-## Gate before sampling guidance
+## Gate before any sampling-guidance branch
 
-Do not integrate this branch with Wan sampling until all of these hold:
+Do not attach this critic to sampling until all of these are demonstrated:
 
-1. A nonlinear critic beats constant and linear probes on scene-disjoint held-
-   out data.
-2. The same result remains true at the intended late/mid `zt` timesteps.
-3. A separate cache of real Wan `x0_pred(t)` examples validates the critic on
-   the distribution seen during guidance.
-4. Gradients through the frozen critic to the latent are finite, nontrivial,
-   and a small update decreases critic loss without collapsing predicted motion.
-5. A future paired Frame-Guidance experiment shows trajectory adherence and an
-   independent geometry metric improve or at least do not regress.
+1. The nonlinear critic beats learned constant and linear baselines on held-out
+   source scenes/sequences.
+2. Results hold at the selected online-zt timesteps.
+3. A separate, scheduler-faithful `x0_pred(t)` cache with full condition
+   metadata validates the critic on the actual sampling distribution.
+4. Gradients from a frozen critic to latent input are finite and reduce critic
+   loss without collapsing motion or trajectory adherence.
+5. In a separate Frame-Guidance experiment, independent geometry and trajectory
+   metrics do not regress.
 
-Only after those gates should a separate `latent-guidance-wan` branch attach a
-frozen critic to a sampling loop.
+Only after these gates should a new `latent-guidance-wan` branch be created.

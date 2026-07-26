@@ -67,14 +67,13 @@ def main() -> None:
         }
         for name, model in models.items():
             before = evaluate_probe(model, val_loader, input_key="z0")
-            if name != "constant":
-                train_probe_steps(
-                    model,
-                    train_loader,
-                    torch.optim.Adam(model.parameters(), lr=5e-2),
-                    steps=arguments.steps,
-                    input_key="z0",
-                )
+            train_probe_steps(
+                model,
+                train_loader,
+                torch.optim.Adam(model.parameters(), lr=5e-2),
+                steps=arguments.steps,
+                input_key="z0",
+            )
             after = evaluate_probe(model, val_loader, input_key="z0")
             print(_format_metrics(f"{name} before", before))
             print(_format_metrics(f"{name} after", after))
