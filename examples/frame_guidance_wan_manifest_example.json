@@ -1,0 +1,36 @@
+{
+  "cases": {
+    "kitti_sequence_00_example": {
+      "text_prompt": "A continuous first-person video from the given first frame of the same empty static road scene. The camera drives forward, then makes one smooth right turn at the junction. Buildings, road markings, signs, trees, and parked vehicles remain stationary. No cuts, zoom, teleportation, or independently moving objects.",
+      "image_prompt": "/absolute/path/to/sequence00_frame_000000.png",
+      "source_dataset": "KITTI odometry",
+      "source_sequence": "00",
+      "source_fps": 10,
+      "frame_guidance": {
+        "generated_fps": 24,
+        "source_clip_start_frame": 0,
+        "source_clip_end_frame": 50,
+        "anchors": [
+          {
+            "frame_index": 0,
+            "image_path": "/absolute/path/to/sequence00_frame_000000.png",
+            "source_frame_index": 0,
+            "source_timestamp_seconds": 0.0
+          },
+          {
+            "frame_index": 60,
+            "image_path": "/absolute/path/to/sequence00_frame_000025.png",
+            "source_frame_index": 25,
+            "source_timestamp_seconds": 2.5
+          },
+          {
+            "frame_index": 120,
+            "image_path": "/absolute/path/to/sequence00_frame_000050.png",
+            "source_frame_index": 50,
+            "source_timestamp_seconds": 5.0
+          }
+        ]
+      }
+    }
+  }
+}

@@ -18,7 +18,7 @@
 '''
 import html
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import PIL
 import regex as re
@@ -68,6 +68,52 @@ def _geco_move_tensor(
         staged = tensor.to("cpu")
         return staged.to(device=target, dtype=dtype) if dtype is not None else staged.to(target)
     return tensor.to(device=target, dtype=dtype) if dtype is not None else tensor.to(target)
+
+
+def _prepare_frame_guidance_targets(
+    video_processor: VideoProcessor,
+    raw_targets: Mapping[int | str, PipelineImageInput],
+    fixed_frames: list[int],
+    num_frames: int,
+    height: int,
+    width: int,
+    vae_device: torch.device,
+) -> dict[int, torch.Tensor]:
+    """Preprocess immutable RGB anchors once for Frame Guidance MSE.
+
+    Targets are stored as ``[B, H, W, C]`` in the VideoProcessor's native
+    ``[-1, 1]`` range, matching the official Frame Guidance frame loss.  The
+    target tensors have no gradient; only decoded x0 predictions are optimized.
+    """
+    if not isinstance(raw_targets, Mapping) or not raw_targets:
+        raise ValueError("Frame Guidance requires additional_inputs['frame_guidance_targets'].")
+
+    fixed_set = set(fixed_frames)
+    targets: dict[int, torch.Tensor] = {}
+    for raw_index, raw_target in raw_targets.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Frame Guidance target index is not an integer: {raw_index!r}") from error
+        if index < 0 or index >= num_frames:
+            raise ValueError(f"Frame Guidance target index {index} is outside [0, {num_frames - 1}].")
+        if index not in fixed_set:
+            raise ValueError(
+                f"Frame Guidance target index {index} is missing from fixed_frames={sorted(fixed_set)}."
+            )
+        with torch.no_grad():
+            target = video_processor.preprocess(raw_target, height=height, width=width).to(
+                vae_device, dtype=torch.float32
+            )
+        if target.ndim != 4 or target.shape[0] != 1 or target.shape[1] != 3:
+            raise ValueError(
+                f"Frame Guidance target {index} must preprocess to [1, 3, H, W], got {tuple(target.shape)}."
+            )
+        targets[index] = target.permute(0, 2, 3, 1).contiguous()
+
+    if not any(index > 0 for index in targets):
+        raise ValueError("Frame Guidance needs at least one target after frame zero.")
+    return targets
 
 
 def _geco_tiled_decode_with_per_tile_checkpoint(vae: AutoencoderKLWan, z: torch.Tensor) -> torch.Tensor:
@@ -863,7 +909,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         # 检查 guidance
         # 作用：保证 loss_fn 合法，并且每个 denoising step 都有对应的 guidance_step 和 guidance_lr。
-        allowed_losses = {None, "latent_l2", "residual_motion"}
+        allowed_losses = {None, "latent_l2", "residual_motion", "frame", "frame_residual_motion"}
         if loss_fn not in allowed_losses:
             raise ValueError(f"loss_fn must be one of {allowed_losses}")
 
@@ -876,6 +922,57 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             guidance_lr = [guidance_lr] * num_inference_steps
         else:
             assert len(guidance_lr) == num_inference_steps, "guidance_lr length mismatch"
+
+        # Frame Guidance uses the same predicted x0 and latent update as the audited
+        # RGB-GeCo path.  Only the loss term differs.  Preprocess fixed target frames
+        # once, after the pipeline's final height/width adjustment, so the MSE target
+        # is exactly aligned with the decoded x0 resolution.
+        uses_frame_guidance = loss_fn in {"frame", "frame_residual_motion"}
+        uses_residual_motion = loss_fn in {"residual_motion", "frame_residual_motion"}
+        frame_guidance_targets = None
+        frame_loss_weight = 1.0
+        geco_loss_weight = 1.0
+        frame_guidance_fixed_frames = None
+        if uses_frame_guidance:
+            if additional_inputs is None:
+                raise ValueError("Frame Guidance requires additional_inputs with frame_guidance_targets.")
+            if fixed_frames is None:
+                raise ValueError("Frame Guidance requires fixed_frames matching its target anchor indices.")
+            if isinstance(fixed_frames, int):
+                frame_guidance_fixed_frames = [int(fixed_frames)]
+            else:
+                frame_guidance_fixed_frames = [int(index) for index in fixed_frames]
+            if len(set(frame_guidance_fixed_frames)) != len(frame_guidance_fixed_frames):
+                raise ValueError("Frame Guidance fixed_frames must not contain duplicates.")
+            if any(index < 0 or index >= num_frames for index in frame_guidance_fixed_frames):
+                raise ValueError(
+                    f"Frame Guidance fixed_frames must lie in [0, {num_frames - 1}], got {frame_guidance_fixed_frames}."
+                )
+            frame_loss_weight = float(additional_inputs.get("frame_loss_weight", 1.0))
+            geco_loss_weight = float(additional_inputs.get("geco_loss_weight", 1.0))
+            if frame_loss_weight <= 0:
+                raise ValueError("frame_loss_weight must be positive.")
+            if loss_fn == "frame_residual_motion" and geco_loss_weight <= 0:
+                raise ValueError("geco_loss_weight must be positive for frame_residual_motion.")
+            frame_guidance_targets = _prepare_frame_guidance_targets(
+                self.video_processor,
+                additional_inputs.get("frame_guidance_targets"),
+                frame_guidance_fixed_frames,
+                num_frames,
+                height,
+                width,
+                self._get_geco_vae_device(),
+            )
+            if 0 not in frame_guidance_fixed_frames:
+                raise ValueError("Frame Guidance fixed_frames must include the frame-0 conditioning anchor.")
+            missing_frame_targets = [
+                index for index in frame_guidance_fixed_frames if index not in frame_guidance_targets
+            ]
+            if missing_frame_targets:
+                raise ValueError(
+                    "Frame Guidance is missing targets for fixed_frames="
+                    f"{missing_frame_targets}."
+                )
 
         # 冻结模型参数： freeze transformer 和 VAE 权重，只更新 latent
         # 作用：不训练 transformer / VAE 权重。后面只更新当前 latents。
@@ -1049,7 +1146,12 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # 826-970   加的 guidance block
                 # Optional train-free latent guidance smoke test.
                 # This verifies: latent -> Wan x0 prediction -> loss -> grad -> latent update.
-                if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
+                if guidance_step[i] > 0 and loss_fn in {
+                    "latent_l2",
+                    "residual_motion",
+                    "frame",
+                    "frame_residual_motion",
+                }:
                     # guidance_step 是一个 list，长度等于 num_inference_steps。它告诉 pipeline：
                     # 每个 denoising timestep 做几次 guidance update。
                     for rep in range(guidance_step[i]):
@@ -1335,14 +1437,32 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             # 一个最简单的 smoke-test loss，用来验证 gradient path，不代表真实 GeCo
                             if loss_fn == "latent_l2":
                                 loss = x0_pred.float().square().mean()
-                            # GeCo loss 分支
-                            elif loss_fn == "residual_motion":
-                                if additional_inputs is None or not callable(additional_inputs.get("residual_motion_metric", None)):
-                                    raise ValueError("Pass additional_inputs={'residual_motion_metric': callable(frames_01)->scalar_score}")
+                            # RGB GeCo, Frame Guidance, or their controlled joint loss.
+                            # The x0 prediction and decoder below are the existing RGB-GeCo path;
+                            # Frame Guidance only adds an anchor MSE term on the same decoded frames.
+                            elif loss_fn in {"residual_motion", "frame", "frame_residual_motion"}:
+                                if uses_residual_motion and (
+                                    additional_inputs is None
+                                    or not callable(additional_inputs.get("residual_motion_metric", None))
+                                ):
+                                    raise ValueError(
+                                        "Pass additional_inputs={'residual_motion_metric': callable(frames_01)->scalar_score}"
+                                    )
+                                if uses_frame_guidance and frame_guidance_targets is None:
+                                    raise RuntimeError("Frame Guidance targets were not prepared.")
                                 # 选要 decode/评估的 frames
                                 # 意思：决定哪些视频帧参与 GeCo loss。
                                 # 为什么：不能 decode 全部视频，太占显存；而且 guidance 只需要抽样几个关键帧估计几何 residual。
-                                fixed_frames_ = fixed_frames if fixed_frames is not None else [0, num_frames - 1]
+                                if uses_frame_guidance:
+                                    # Official Frame Guidance treats frame zero as an immutable I2V
+                                    # condition.  Decode it only when the joint GeCo metric needs it.
+                                    fixed_frames_ = (
+                                        frame_guidance_fixed_frames
+                                        if uses_residual_motion
+                                        else [index for index in frame_guidance_fixed_frames if index != 0]
+                                    )
+                                else:
+                                    fixed_frames_ = fixed_frames if fixed_frames is not None else [0, num_frames - 1]
                                 if isinstance(fixed_frames_, int):
                                     fixed_frames_ = [fixed_frames_]
                                 fixed_frames_ = [int(x) for x in fixed_frames_]
@@ -1394,11 +1514,13 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 ).to(vae_device, vae_dtype)
 
                                 rm_frames = []
+                                decoded_frame_indices = []
                                 # 只 decode fixed frame 附近的小 temporal chunk，并取出对应 RGB frame。
                                 # 意思：遍历每个要算 loss 的帧，并确保 index 合法。
                                 # 这两行遍历 guidance 使用的 frame indices，并把每个 index 限制在合法视频帧范围内。
                                 for fidx in fixed_frames_:
                                     fidx = int(max(0, min(fidx, num_frames - 1)))
+                                    decoded_frame_indices.append(fidx)
 
                                     # 把 RGB video frame index fidx 映射到 latent time index center_lat。
                                     # 为什么需要映射？
@@ -1627,24 +1749,61 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                             f"mean={frames_01.detach().mean().item():.8f}"
                                         )
 
-                                # 把 selected frames 输入 GeCo residual motion metric，得到 loss
-                                # additional_inputs["residual_motion_metric"] 是什么？
-                                # 它是在 runner 里创建并传进 pipeline 的函数。
-                                score = additional_inputs["residual_motion_metric"](frames_01)
+                                frame_loss = None
+                                if uses_frame_guidance:
+                                    frame_loss_terms = []
+                                    for local_index, frame_index in enumerate(decoded_frame_indices):
+                                        # The condition is held fixed by Wan.  It is retained in the
+                                        # manifest for provenance, but cannot provide a latent update.
+                                        if frame_index == 0:
+                                            continue
+                                        target_11 = frame_guidance_targets[frame_index]
+                                        prediction_11 = frames_01[:, local_index] * 2.0 - 1.0
+                                        if prediction_11.shape != target_11.shape:
+                                            raise RuntimeError(
+                                                "Frame Guidance target/prediction shape mismatch for "
+                                                f"frame {frame_index}: predicted={tuple(prediction_11.shape)}, "
+                                                f"target={tuple(target_11.shape)}."
+                                            )
+                                        frame_loss_terms.append(
+                                            torch.nn.functional.mse_loss(prediction_11.float(), target_11.float())
+                                        )
+                                    if not frame_loss_terms:
+                                        raise RuntimeError(
+                                            "Frame Guidance has no nonzero anchor frame available for its MSE loss."
+                                        )
+                                    frame_loss = torch.stack(frame_loss_terms).mean()
 
-                                # 意思：检查梯度链没有断。
-                                # IMPORTANT为什么：这是非常重要的 correctness guard。如果这里不 requires_grad，说明 VAE/UFM/metric 某处 detach/no_grad 了，guidance 就是假跑。
-                                if not score.requires_grad:
-                                    raise RuntimeError("Residual motion metric returned a detached score.")
-                                # 意思：把 score 转成 minimization loss。
-                                # 因为：
-                                # score = -residual
-                                # 所以：
-                                # loss = -score = residual
-                                # 优化 loss 就是在降低 residual flow。
-                                loss = -score
+                                geco_loss = None
+                                if uses_residual_motion:
+                                    # Keep the audited RGB GeCo loss/sign unchanged: the metric returns
+                                    # a score whose negative is the residual minimization objective.
+                                    score = additional_inputs["residual_motion_metric"](frames_01)
+                                    if not score.requires_grad:
+                                        raise RuntimeError("Residual motion metric returned a detached score.")
+                                    geco_loss = -score
 
-                                del frames_01, rm_frames
+                                if frame_loss is None and geco_loss is None:
+                                    raise RuntimeError(f"No guidance loss was constructed for loss_fn={loss_fn!r}.")
+                                if frame_loss is None:
+                                    loss = geco_loss
+                                elif geco_loss is None:
+                                    loss = frame_loss_weight * frame_loss
+                                else:
+                                    loss = (
+                                        frame_loss_weight * frame_loss
+                                        + geco_loss_weight * geco_loss
+                                    )
+
+                                if uses_frame_guidance:
+                                    geco_value = "n/a" if geco_loss is None else f"{geco_loss.detach().item():.6f}"
+                                    print(
+                                        f"wan_frame_guidance_loss({i}/{rep}): "
+                                        f"frame={frame_loss.detach().item():.6f} "
+                                        f"geco={geco_value} total={loss.detach().item():.6f}"
+                                    )
+
+                                del frames_01, rm_frames, decoded_frame_indices
                             else:
                                 raise RuntimeError(f"Unexpected loss_fn: {loss_fn}")
 
