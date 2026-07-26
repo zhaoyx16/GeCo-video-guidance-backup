@@ -547,7 +547,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         attn_avg_match_confidence: float = 0.0,
         attn_avg_match_mutual: bool = False,
         attn_avg_descriptor_dim: int = 64,
-        attn_avg_tracklet_max_accel: float = 1.5,
+        attn_avg_coarse_factor: int = 2,
         attn_avg_cond_only: bool = True,
         attn_avg_preserve_first_frame: bool = True,
         attn_avg_debug: bool = False,
@@ -627,7 +627,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             attn_avg_layers (`List[int]`, *optional*):
                 Transformer block indices whose self-attention outputs are averaged across frames.
             attn_avg_mode (`str`, defaults to `"global"`):
-                `global`, `local`, `anchor`, `match_prev`, `tracklet_prev`, `query_match_prev`,
+                `global`, `local`, `anchor`, `match_prev`, `c2f_match_prev`, `query_match_prev`,
                 `key_match_prev`, `kv_match_prev`, or `value_residual_prev`.
                 The correspondence modes use the most similar local token in the previous frame rather than
                 assuming identical pixel coordinates. `query_match_prev` transports only queries,
@@ -646,10 +646,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 Require the local correspondence to be reciprocal before transporting features.
             attn_avg_descriptor_dim (`int`, defaults to `64`):
                 Number of deterministic pooled descriptor channels for local correspondence.
-            attn_avg_tracklet_max_accel (`float`, defaults to `1.5`):
-                Maximum allowed two-hop tracklet acceleration, in spatial patch tokens. `tracklet_prev`
-                propagates features only for correspondences that remain mutually confident over three
-                consecutive temporal tokens and whose two local displacements are smooth.
+            attn_avg_coarse_factor (`int`, defaults to `2`):
+                Spatial downsampling factor used by `c2f_match_prev` to obtain a global coarse correspondence
+                before its local full-resolution refinement.
             attn_avg_cond_only (`bool`, defaults to `True`):
                 Apply only to the conditional CFG branch, leaving the unconditional model prediction unchanged.
             attn_avg_preserve_first_frame (`bool`, defaults to `True`):
@@ -792,11 +791,11 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         if not 0.0 <= attn_avg_alpha <= 1.0:
             raise ValueError("attn_avg_alpha must lie in [0, 1]")
         if attn_avg_mode not in {
-            "global", "local", "anchor", "match_prev", "tracklet_prev", "query_match_prev",
+            "global", "local", "anchor", "match_prev", "c2f_match_prev", "query_match_prev",
             "key_match_prev", "kv_match_prev", "value_residual_prev",
         }:
             raise ValueError(
-                "attn_avg_mode must be one of: global, local, anchor, match_prev, tracklet_prev, "
+                "attn_avg_mode must be one of: global, local, anchor, match_prev, c2f_match_prev, "
                 "query_match_prev, key_match_prev, kv_match_prev, value_residual_prev"
             )
         if attn_avg_temporal_radius < 1:
@@ -807,8 +806,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             raise ValueError("attn_avg_match_confidence must lie in [0, 1)")
         if attn_avg_descriptor_dim < 1:
             raise ValueError("attn_avg_descriptor_dim must be positive")
-        if attn_avg_tracklet_max_accel <= 0.0:
-            raise ValueError("attn_avg_tracklet_max_accel must be positive")
+        if attn_avg_coarse_factor < 1:
+            raise ValueError("attn_avg_coarse_factor must be positive")
 
         attn_avg_end = num_inference_steps - 1 if attn_avg_end is None else attn_avg_end
         if attn_avg_start < 0 or attn_avg_end < attn_avg_start or attn_avg_end >= num_inference_steps:
@@ -916,9 +915,104 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     confidence = confidence * reciprocal.unsqueeze(-1).to(confidence.dtype)
                 return source_index, confidence, best_similarity, reciprocal
 
+            def _c2f_match_previous_indices(input_hidden: torch.Tensor):
+                """Globally match coarse tokens, then refine each match in a small fine-scale neighborhood."""
+                batch, num_tokens_t, height_tokens, width_tokens, _ = input_hidden.shape
+                if num_tokens_t < 2:
+                    return None, None, None, None
+
+                factor = attn_avg_coarse_factor
+                if height_tokens % factor or width_tokens % factor:
+                    raise ValueError(
+                        "c2f_match_prev requires token-grid dimensions divisible by attn_avg_coarse_factor; "
+                        f"got {(height_tokens, width_tokens)} and factor={factor}"
+                    )
+
+                descriptors = _reduced_descriptors(input_hidden)
+                descriptor_dim = descriptors.shape[-1]
+                height_coarse, width_coarse = height_tokens // factor, width_tokens // factor
+                coarse_tokens = height_coarse * width_coarse
+                frame_pairs = batch * (num_tokens_t - 1)
+
+                descriptor_4d = descriptors.permute(0, 1, 4, 2, 3).reshape(
+                    batch * num_tokens_t, descriptor_dim, height_tokens, width_tokens
+                )
+                coarse = F.avg_pool2d(descriptor_4d, kernel_size=factor, stride=factor)
+                coarse = coarse.reshape(batch, num_tokens_t, descriptor_dim, height_coarse, width_coarse)
+                coarse = F.normalize(coarse.permute(0, 1, 3, 4, 2), dim=-1, eps=1e-6)
+
+                previous_coarse = coarse[:, :-1].reshape(frame_pairs, coarse_tokens, descriptor_dim)
+                current_coarse = coarse[:, 1:].reshape(frame_pairs, coarse_tokens, descriptor_dim)
+                coarse_similarity = torch.bmm(current_coarse, previous_coarse.transpose(1, 2))
+                _, source_coarse_index = coarse_similarity.max(dim=-1)
+
+                reciprocal = None
+                if attn_avg_match_mutual:
+                    reverse_best_index = coarse_similarity.argmax(dim=1)
+                    returned_target = reverse_best_index.gather(1, source_coarse_index)
+                    current_index = torch.arange(coarse_tokens, device=input_hidden.device).view(1, -1)
+                    reciprocal = returned_target.eq(current_index).reshape(
+                        batch, num_tokens_t - 1, height_coarse, width_coarse
+                    )
+
+                source_coarse_y = torch.div(source_coarse_index, width_coarse, rounding_mode="floor").reshape(
+                    batch, num_tokens_t - 1, height_coarse, width_coarse
+                )
+                source_coarse_x = source_coarse_index.remainder(width_coarse).reshape(
+                    batch, num_tokens_t - 1, height_coarse, width_coarse
+                )
+                source_base_y = source_coarse_y.repeat_interleave(factor, dim=2).repeat_interleave(factor, dim=3)
+                source_base_x = source_coarse_x.repeat_interleave(factor, dim=2).repeat_interleave(factor, dim=3)
+                source_base_y = source_base_y * factor + factor // 2
+                source_base_x = source_base_x * factor + factor // 2
+
+                radius = attn_avg_match_radius
+                offsets_y, offsets_x = torch.meshgrid(
+                    torch.arange(-radius, radius + 1, device=input_hidden.device),
+                    torch.arange(-radius, radius + 1, device=input_hidden.device),
+                    indexing="ij",
+                )
+                offsets_y = offsets_y.reshape(1, 1, 1, 1, -1)
+                offsets_x = offsets_x.reshape(1, 1, 1, 1, -1)
+                candidate_y = (source_base_y.unsqueeze(-1) + offsets_y).clamp(0, height_tokens - 1)
+                candidate_x = (source_base_x.unsqueeze(-1) + offsets_x).clamp(0, width_tokens - 1)
+                candidate_index = (candidate_y * width_tokens + candidate_x).reshape(
+                    batch, num_tokens_t - 1, height_tokens * width_tokens, -1
+                )
+
+                spatial_tokens = height_tokens * width_tokens
+                candidates_per_token = candidate_index.shape[-1]
+                previous_fine = descriptors[:, :-1].reshape(frame_pairs, spatial_tokens, descriptor_dim)
+                current_fine = descriptors[:, 1:].reshape(
+                    batch, num_tokens_t - 1, spatial_tokens, descriptor_dim
+                )
+                gathered_previous = previous_fine.gather(
+                    1,
+                    candidate_index.reshape(frame_pairs, spatial_tokens * candidates_per_token)
+                    .unsqueeze(-1)
+                    .expand(-1, -1, descriptor_dim),
+                ).reshape(batch, num_tokens_t - 1, spatial_tokens, candidates_per_token, descriptor_dim)
+                fine_similarity = (current_fine.unsqueeze(-2) * gathered_previous).sum(dim=-1)
+                fine_best_similarity, fine_best_index = fine_similarity.max(dim=-1)
+                source_index = candidate_index.gather(-1, fine_best_index.unsqueeze(-1)).squeeze(-1)
+
+                confidence = (
+                    (fine_best_similarity - attn_avg_match_confidence)
+                    / (1.0 - attn_avg_match_confidence + 1e-6)
+                ).clamp(0.0, 1.0).reshape(batch, num_tokens_t - 1, height_tokens, width_tokens, 1)
+                if reciprocal is not None:
+                    reciprocal_fine = reciprocal.repeat_interleave(factor, dim=2).repeat_interleave(factor, dim=3)
+                    confidence = confidence * reciprocal_fine.unsqueeze(-1).to(confidence.dtype)
+                return source_index, confidence, fine_best_similarity.reshape(
+                    batch, num_tokens_t - 1, height_tokens, width_tokens
+                ), reciprocal
+
             def _match_previous_frame(hidden: torch.Tensor, input_hidden: torch.Tensor):
                 batch, num_tokens_t, height_tokens, width_tokens, channels = hidden.shape
-                source_index, confidence, best_similarity, _ = _match_previous_indices(input_hidden)
+                if attn_avg_mode == "c2f_match_prev":
+                    source_index, confidence, best_similarity, _ = _c2f_match_previous_indices(input_hidden)
+                else:
+                    source_index, confidence, best_similarity, _ = _match_previous_indices(input_hidden)
                 if source_index is None:
                     return hidden, None
 
@@ -932,63 +1026,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 mixed[:, 1:] = (
                     hidden[:, 1:].float() * (1.0 - blend) + matched_output.float() * blend
                 ).to(hidden.dtype)
-                return _preserve_conditioning_frame(mixed, hidden), best_similarity
-
-            def _match_tracklet_previous_frame(hidden: torch.Tensor, input_hidden: torch.Tensor):
-                """Propagate only three-frame, mutually confident tracks with smooth local velocity."""
-                batch, num_tokens_t, height_tokens, width_tokens, channels = hidden.shape
-                source_index, confidence, best_similarity, _ = _match_previous_indices(input_hidden)
-                if source_index is None or num_tokens_t < 3:
-                    return hidden, best_similarity, None, None
-
-                spatial_tokens = height_tokens * width_tokens
-                previous_output = hidden[:, :-1].reshape(batch, num_tokens_t - 1, spatial_tokens, channels)
-                matched_output = previous_output.gather(
-                    2, source_index.unsqueeze(-1).expand(-1, -1, -1, channels)
-                )
-
-                # Pair i maps token frame i + 1 to i. Chain pair i + 1 through pair i to form
-                # a three-frame tracklet: current -> previous -> older.
-                current_to_previous = source_index[:, 1:]
-                previous_to_older = source_index[:, :-1]
-                current_to_older = previous_to_older.gather(2, current_to_previous)
-
-                current_index = torch.arange(spatial_tokens, device=hidden.device).view(1, 1, spatial_tokens)
-                current_y = torch.div(current_index, width_tokens, rounding_mode="floor")
-                current_x = current_index.remainder(width_tokens)
-                previous_y = torch.div(current_to_previous, width_tokens, rounding_mode="floor")
-                previous_x = current_to_previous.remainder(width_tokens)
-                older_y = torch.div(current_to_older, width_tokens, rounding_mode="floor")
-                older_x = current_to_older.remainder(width_tokens)
-                current_velocity_y = previous_y - current_y
-                current_velocity_x = previous_x - current_x
-                previous_velocity_y = older_y - previous_y
-                previous_velocity_x = older_x - previous_x
-                acceleration = torch.sqrt(
-                    (current_velocity_y - previous_velocity_y).float().square()
-                    + (current_velocity_x - previous_velocity_x).float().square()
-                )
-
-                confidence_flat = confidence.reshape(batch, num_tokens_t - 1, spatial_tokens, 1)
-                current_confidence = confidence_flat[:, 1:]
-                previous_confidence = confidence_flat[:, :-1].gather(
-                    2, current_to_previous.unsqueeze(-1)
-                )
-                velocity_gate = (1.0 - acceleration / attn_avg_tracklet_max_accel).clamp(0.0, 1.0).unsqueeze(-1)
-                tracklet_confidence = torch.minimum(current_confidence, previous_confidence) * velocity_gate.to(
-                    confidence.dtype
-                )
-
-                mixed = hidden.clone()
-                blend = attn_avg_alpha * tracklet_confidence.reshape(
-                    batch, num_tokens_t - 2, height_tokens, width_tokens, 1
-                )
-                mixed[:, 2:] = (
-                    hidden[:, 2:].float() * (1.0 - blend) + matched_output[:, 1:].reshape(
-                        batch, num_tokens_t - 2, height_tokens, width_tokens, channels
-                    ).float() * blend
-                ).to(hidden.dtype)
-                return _preserve_conditioning_frame(mixed, hidden), best_similarity, tracklet_confidence, acceleration
+                return _preserve_conditioning_frame(mixed, hidden), (best_similarity, blend)
 
             def _transport_previous_qkv(
                 query: torch.Tensor,
@@ -1251,9 +1289,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         )
 
                     hidden = output.reshape(batch_size, num_tokens_t, height_tokens, width_tokens, channels)
-                    confidence = None
-                    tracklet_confidence = None
-                    tracklet_acceleration = None
+                    correspondence = None
                     if attn_avg_mode == "global":
                         target = hidden.mean(dim=1, keepdim=True).expand_as(hidden)
                         mixed = (hidden.float() * (1.0 - attn_avg_alpha) + target.float() * attn_avg_alpha).to(output.dtype)
@@ -1266,60 +1302,31 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         target = hidden[:, :1].expand_as(hidden)
                         mixed = (hidden.float() * (1.0 - attn_avg_alpha) + target.float() * attn_avg_alpha).to(output.dtype)
                         mixed = _preserve_conditioning_frame(mixed, hidden)
-                    elif attn_avg_mode == "match_prev":
+                    else:
                         if not inputs or inputs[0].ndim != 3:
                             raise ValueError("match_prev requires the attention input to have shape [B, N, C]")
                         input_hidden = inputs[0].reshape(batch_size, num_tokens_t, height_tokens, width_tokens, channels)
-                        mixed, confidence = _match_previous_frame(hidden, input_hidden)
-                    elif attn_avg_mode == "tracklet_prev":
-                        if not inputs or inputs[0].ndim != 3:
-                            raise ValueError("tracklet_prev requires the attention input to have shape [B, N, C]")
-                        input_hidden = inputs[0].reshape(batch_size, num_tokens_t, height_tokens, width_tokens, channels)
-                        mixed, confidence, tracklet_confidence, tracklet_acceleration = _match_tracklet_previous_frame(
-                            hidden, input_hidden
-                        )
-                    else:
-                        raise ValueError(f"Unsupported attention hook mode: {attn_avg_mode}")
+                        mixed, correspondence = _match_previous_frame(hidden, input_hidden)
 
                     if attn_avg_debug and layer_idx == attn_avg_layers[0]:
                         print_key = (attn_avg_state["step"], attn_avg_state["branch"])
                         if print_key not in attn_avg_state["printed"]:
                             attn_avg_state["printed"].add(print_key)
-                            if confidence is None:
+                            if correspondence is None:
                                 print(
                                     f"[attn-manip] step={attn_avg_state['step']} branch={attn_avg_state['branch']} "
                                     f"mode={attn_avg_mode} alpha={attn_avg_alpha:.3f}"
                                 )
-                            elif attn_avg_mode == "tracklet_prev":
-                                gate_info = "tracklet_gate_mean=0.000 tracklet_keep=0.000"
-                                accel_info = ""
-                                if tracklet_confidence is not None and tracklet_acceleration is not None:
-                                    active_tracklets = tracklet_confidence.squeeze(-1) > 0
-                                    gate_info = (
-                                        f"tracklet_gate_mean={tracklet_confidence.float().mean().item():.3f} "
-                                        f"tracklet_keep={active_tracklets.float().mean().item():.3f}"
-                                    )
-                                    if active_tracklets.any():
-                                        active_acceleration = tracklet_acceleration[active_tracklets].float()
-                                        accel_info = (
-                                            f" accel_mean={active_acceleration.mean().item():.2f} "
-                                            f"accel_p90={torch.quantile(active_acceleration, 0.9).item():.2f}"
-                                        )
-                                print(
-                                    f"[attn-manip] step={attn_avg_state['step']} branch={attn_avg_state['branch']} "
-                                    f"mode=tracklet_prev alpha={attn_avg_alpha:.3f} "
-                                    f"match_cos_mean={confidence.float().mean().item():.3f} "
-                                    f"match_cos_p10={torch.quantile(confidence.float(), 0.1).item():.3f} "
-                                    f"match_cos_p90={torch.quantile(confidence.float(), 0.9).item():.3f} "
-                                    f"{gate_info}{accel_info}"
-                                )
                             else:
+                                best_similarity, blend = correspondence
                                 print(
                                     f"[attn-manip] step={attn_avg_state['step']} branch={attn_avg_state['branch']} "
-                                    f"mode=match_prev alpha={attn_avg_alpha:.3f} "
-                                    f"match_cos_mean={confidence.float().mean().item():.3f} "
-                                    f"match_cos_p10={torch.quantile(confidence.float(), 0.1).item():.3f} "
-                                    f"match_cos_p90={torch.quantile(confidence.float(), 0.9).item():.3f}"
+                                    f"mode={attn_avg_mode} alpha={attn_avg_alpha:.3f} "
+                                    f"match_cos_mean={best_similarity.float().mean().item():.3f} "
+                                    f"match_cos_p10={torch.quantile(best_similarity.float(), 0.1).item():.3f} "
+                                    f"match_cos_p90={torch.quantile(best_similarity.float(), 0.9).item():.3f} "
+                                    f"active_fraction={(blend > 0).float().mean().item():.3f} "
+                                    f"mean_blend={blend.float().mean().item():.4f}"
                                 )
                     return mixed.reshape(batch_size, seq_len, channels)
 

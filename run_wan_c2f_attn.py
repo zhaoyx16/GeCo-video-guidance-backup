@@ -10,7 +10,7 @@ from diffusers import AutoencoderKLWan
 from diffusers.utils import export_to_video
 
 sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_wan")
-from pipeline_wan_i2v_attn_manip import WanImageToVideoPipeline
+from pipeline_wan_i2v_c2f_attn import WanImageToVideoPipeline
 
 
 def parse_layers(text: str):
@@ -32,7 +32,7 @@ parser.add_argument("--attn_avg_layers", default="10,15,20")
 parser.add_argument(
     "--attn_avg_mode",
     choices=(
-        "global", "local", "anchor", "match_prev", "tracklet_prev", "query_match_prev",
+        "global", "local", "anchor", "match_prev", "c2f_match_prev", "query_match_prev",
         "key_match_prev", "kv_match_prev", "value_residual_prev",
     ),
     default="global",
@@ -44,7 +44,7 @@ parser.add_argument("--attn_avg_match_radius", type=int, default=1)
 parser.add_argument("--attn_avg_match_confidence", type=float, default=0.0)
 parser.add_argument("--attn_avg_match_mutual", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--attn_avg_descriptor_dim", type=int, default=64)
-parser.add_argument("--attn_avg_tracklet_max_accel", type=float, default=1.5)
+parser.add_argument("--attn_avg_coarse_factor", type=int, default=2)
 parser.add_argument("--attn_avg_cond_only", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--attn_avg_preserve_first_frame", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--attn_avg_debug", action="store_true")
@@ -68,7 +68,7 @@ print("attn_avg_layers:", attn_avg_layers)
 print("attn_avg_mode:", args.attn_avg_mode)
 print("attn_avg_step_interval:", (args.attn_avg_start, args.attn_avg_end))
 print("attn_avg_match_mutual:", args.attn_avg_match_mutual)
-print("attn_avg_tracklet_max_accel:", args.attn_avg_tracklet_max_accel)
+print("attn_avg_coarse_factor:", args.attn_avg_coarse_factor)
 print("attn_avg_cond_only:", args.attn_avg_cond_only)
 print("attn_avg_preserve_first_frame:", args.attn_avg_preserve_first_frame)
 print("seed:", args.seed)
@@ -103,7 +103,7 @@ output = pipe(
     attn_avg_match_confidence=args.attn_avg_match_confidence,
     attn_avg_match_mutual=args.attn_avg_match_mutual,
     attn_avg_descriptor_dim=args.attn_avg_descriptor_dim,
-    attn_avg_tracklet_max_accel=args.attn_avg_tracklet_max_accel,
+    attn_avg_coarse_factor=args.attn_avg_coarse_factor,
     attn_avg_cond_only=args.attn_avg_cond_only,
     attn_avg_preserve_first_frame=args.attn_avg_preserve_first_frame,
     attn_avg_debug=args.attn_avg_debug,
