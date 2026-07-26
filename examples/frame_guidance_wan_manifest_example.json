@@ -5,11 +5,13 @@
       "image_prompt": "/absolute/path/to/sequence00_frame_000000.png",
       "source_dataset": "KITTI odometry",
       "source_sequence": "00",
-      "source_fps": 10,
       "frame_guidance": {
+        "source_fps": 10,
         "generated_fps": 24,
         "source_clip_start_frame": 0,
+        "source_clip_start_timestamp_seconds": 0.0,
         "source_clip_end_frame": 50,
+        "timestamp_tolerance_seconds": 0.05,
         "anchors": [
           {
             "frame_index": 0,

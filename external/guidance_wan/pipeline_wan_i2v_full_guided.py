@@ -116,6 +116,53 @@ def _prepare_frame_guidance_targets(
     return targets
 
 
+def _wan_causal_frame_decode_plan(
+    frame_index: int,
+    *,
+    num_frames: int,
+    latent_frames: int,
+    temporal_scale: int,
+) -> tuple[int, int, int]:
+    """Return a causal Wan latent slice and local decoded-frame index.
+
+    ``AutoencoderKLWan._decode`` clears its cache, decodes latent token zero as
+    a one-frame initial chunk, then decodes every later token as a four-frame
+    chunk.  Consequently, RGB frame ``f > 0`` belongs to latent token
+    ``(f - 1) // temporal_scale + 1``.  To decode that target after a cache
+    reset, the Frame Guidance convention is to pass the predecessor/target
+    pair and select local output ``(f - 1) % temporal_scale + 1``.  This is the
+    same index algebra used by the official Wan Frame Guidance implementation.
+
+    The pair provides the correct *local output slot*.  It does not promise
+    exact equality with a full causal decode for later frames because the
+    decoder cache before the predecessor is intentionally absent; the optional
+    parity probe reports that approximation separately.
+    """
+    if temporal_scale <= 0:
+        raise ValueError(f"Wan temporal_scale must be positive, got {temporal_scale}.")
+    if latent_frames <= 0:
+        raise ValueError(f"Wan latent_frames must be positive, got {latent_frames}.")
+    if frame_index < 0 or frame_index >= num_frames:
+        raise ValueError(f"Frame index {frame_index} is outside [0, {num_frames - 1}].")
+
+    max_decodable_frame = temporal_scale * (latent_frames - 1)
+    if frame_index > max_decodable_frame:
+        raise ValueError(
+            f"Frame {frame_index} cannot be represented by {latent_frames} Wan latent frames "
+            f"at temporal_scale={temporal_scale}."
+        )
+    if frame_index == 0:
+        return 0, 1, 0
+
+    target_latent = (frame_index - 1) // temporal_scale + 1
+    if target_latent >= latent_frames:
+        raise ValueError(
+            f"Frame {frame_index} maps to missing Wan latent token {target_latent}; "
+            f"only [0, {latent_frames - 1}] are available."
+        )
+    return target_latent - 1, target_latent + 1, (frame_index - 1) % temporal_scale + 1
+
+
 def _geco_tiled_decode_with_per_tile_checkpoint(vae: AutoencoderKLWan, z: torch.Tensor) -> torch.Tensor:
     """Match Diffusers ``tiled_decode`` while checkpointing one spatial tile at a time.
 
@@ -1106,12 +1153,20 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             step_dir = os.path.join(str(debug_x0_dir), f"step_{i:03d}")
                             os.makedirs(step_dir, exist_ok=True)
                             for fidx in debug_frames:
-                                if fidx == 0:
-                                    center_lat = 0
+                                if uses_frame_guidance:
+                                    chunk_start, chunk_end, rel = _wan_causal_frame_decode_plan(
+                                        fidx,
+                                        num_frames=num_frames,
+                                        latent_frames=T_lat,
+                                        temporal_scale=temporal_scale,
+                                    )
                                 else:
-                                    center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
-                                chunk_start = max(0, center_lat - 1)
-                                chunk_end = min(T_lat, center_lat + 2)
+                                    if fidx == 0:
+                                        center_lat = 0
+                                    else:
+                                        center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
+                                    chunk_start = max(0, center_lat - 1)
+                                    chunk_end = min(T_lat, center_lat + 2)
                                 z_chunk = _geco_move_tensor(
                                     x0_debug[:, :, chunk_start:chunk_end].contiguous(),
                                     vae_device,
@@ -1131,12 +1186,19 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 z_chunk = z_chunk / latents_std + latents_mean
                                 decoded_chunk = self.vae.decode(z_chunk, return_dict=False)[0]
                                 frames_chunk = ((decoded_chunk.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
-                                if chunk_start == 0:
-                                    chunk_first_frame = 0
+                                if uses_frame_guidance:
+                                    if rel >= frames_chunk.shape[1]:
+                                        raise RuntimeError(
+                                            f"Wan Frame Guidance debug slice for frame {fidx} produced "
+                                            f"{frames_chunk.shape[1]} frames, but needs local frame {rel}."
+                                        )
                                 else:
-                                    chunk_first_frame = 1 + (chunk_start - 1) * temporal_scale
-                                rel = fidx - chunk_first_frame
-                                rel = int(max(0, min(rel, frames_chunk.shape[1] - 1)))
+                                    if chunk_start == 0:
+                                        chunk_first_frame = 0
+                                    else:
+                                        chunk_first_frame = 1 + (chunk_start - 1) * temporal_scale
+                                    rel = fidx - chunk_first_frame
+                                    rel = int(max(0, min(rel, frames_chunk.shape[1] - 1)))
                                 frame = frames_chunk[0, rel]
                                 frame_u8 = (frame * 255.0).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
                                 PIL.Image.fromarray(frame_u8).save(os.path.join(step_dir, f"frame_{fidx:03d}.png"))
@@ -1522,52 +1584,25 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     fidx = int(max(0, min(fidx, num_frames - 1)))
                                     decoded_frame_indices.append(fidx)
 
-                                    # 把 RGB video frame index fidx 映射到 latent time index center_lat。
-                                    # 为什么需要映射？
-                                    # 你指定的 fixed_frames_ 是 RGB 视频帧编号，比如：
-                                    # fidx = 0, 12, 24, 36, 40
-                                    # 但 VAE decode 输入是 latent 时间轴：
-                                    # latent index = 0, 1, 2, ...
-                                    # Wan VAE 有 temporal compression：
-                                    # 多个 RGB frames 对应一个 latent time token
-                                    # 比如：
-                                    # temporal_scale = 4
-                                    # 大致是：
-                                    # RGB frame 0      -> latent 0
-                                    # RGB frame 1-4    -> latent 1
-                                    # RGB frame 5-8    -> latent 2
-                                    # RGB frame 9-12   -> latent 3
-                                    # ...
-                                    # 所以要把 fidx 转成对应的 latent index。
-                                    # 为什么 fidx == 0 特殊处理？
-                                    # 第 0 帧通常是 condition / first frame，对应 latent 0。
-                                    # Wan temporal VAE 的第一个 latent token 通常单独对应第一帧/起点，所以 special case。
-                                    # 为什么有 min(T_lat - 1, ...)？
-                                    # min(T_lat - 1, calculated_index)
-                                    # 防止 latent index 超出范围。
-                                    # 如果视频最后一帧 index 映射出来比 latent 时间长度还大，就 clamp 到最后一个 latent token：
-                                    # 最大 latent index = T_lat - 1
-                                    if fidx == 0:
-                                        center_lat = 0
+                                    if uses_frame_guidance:
+                                        # Use the official predecessor/target-pair convention.  In
+                                        # particular, f=60 selects local slot 4 of latent pair 14:16,
+                                        # not slot 7 of a three-token slice (which is a future token).
+                                        chunk_start, chunk_end, rel = _wan_causal_frame_decode_plan(
+                                            fidx,
+                                            num_frames=num_frames,
+                                            latent_frames=T_lat,
+                                            temporal_scale=temporal_scale,
+                                        )
                                     else:
-                                        center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
-
-                                    # Small temporal context around the target latent frame.
-                                    # 意思：取目标 latent 前后各一点 temporal context。
-                                    # 围绕目标 latent time index center_lat 取一个小的 temporal chunk，用来送进 VAE decode
-                                    # 它取的范围是什么？
-                                    # Python slicing 是左闭右开：
-                                    # x[:, :, chunk_start:chunk_end]
-                                    # 包含：
-                                    # chunk_start, ..., chunk_end - 1
-                                    # 这里：
-                                    # center_lat - 1
-                                    # center_lat
-                                    # center_lat + 1
-                                    # 也就是目标 latent 前后各取一个。
-                                    # 为什么不只取一个 latent token：VAE 是 temporal model，decode 单个 token 可能缺上下文，容易不稳定。取小 chunk 是显存和质量的折中。
-                                    chunk_start = max(0, center_lat - 1)
-                                    chunk_end = min(T_lat, center_lat + 2)
+                                        # Preserve the existing RGB-GeCo temporal slice behavior for
+                                        # pure residual_motion runs.
+                                        if fidx == 0:
+                                            center_lat = 0
+                                        else:
+                                            center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
+                                        chunk_start = max(0, center_lat - 1)
+                                        chunk_end = min(T_lat, center_lat + 2)
 
                                     # 从完整的 x0_for_decode latent 里切出刚才选好的 temporal chunk，并准备送进 VAE。
                                     # 先看 x0_for_decode 的形状
@@ -1703,15 +1738,20 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     # 映射后可能超出 [0,1]，所以 clamp。
                                     frames_chunk = ((decoded_chunk.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
 
-                                    # 这个 decoded chunk 的第 0 帧，对应原视频的第几帧
-                                    if chunk_start == 0:
-                                        chunk_first_frame = 0
+                                    if uses_frame_guidance:
+                                        if rel >= frames_chunk.shape[1]:
+                                            raise RuntimeError(
+                                                f"Wan Frame Guidance slice for frame {fidx} produced "
+                                                f"{frames_chunk.shape[1]} frames, but needs local frame {rel}."
+                                            )
                                     else:
-                                        chunk_first_frame = 1 + (chunk_start - 1) * temporal_scale
-
-                                    # 把全局 frame index 转成 chunk 内部的局部 index
-                                    rel = fidx - chunk_first_frame
-                                    rel = int(max(0, min(rel, frames_chunk.shape[1] - 1)))
+                                        # Keep the existing pure RGB-GeCo local-frame calculation.
+                                        if chunk_start == 0:
+                                            chunk_first_frame = 0
+                                        else:
+                                            chunk_first_frame = 1 + (chunk_start - 1) * temporal_scale
+                                        rel = fidx - chunk_first_frame
+                                        rel = int(max(0, min(rel, frames_chunk.shape[1] - 1)))
                                     # 这里用 slice：
                                     # rel:rel+1
                                     # 而不是：
@@ -1775,12 +1815,14 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     frame_loss = torch.stack(frame_loss_terms).mean()
 
                                 geco_loss = None
+                                geco_score = None
                                 if uses_residual_motion:
                                     # Keep the audited RGB GeCo loss/sign unchanged: the metric returns
                                     # a score whose negative is the residual minimization objective.
                                     score = additional_inputs["residual_motion_metric"](frames_01)
                                     if not score.requires_grad:
                                         raise RuntimeError("Residual motion metric returned a detached score.")
+                                    geco_score = score
                                     geco_loss = -score
 
                                 if frame_loss is None and geco_loss is None:
@@ -1796,6 +1838,39 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     )
 
                                 if uses_frame_guidance:
+                                    diagnostics = additional_inputs.get("guidance_diagnostics")
+                                    if diagnostics is not None:
+                                        if not isinstance(diagnostics, list):
+                                            raise ValueError(
+                                                "additional_inputs['guidance_diagnostics'] must be a list when provided."
+                                            )
+                                        diagnostics.append(
+                                            {
+                                                "step_index": int(i),
+                                                "repeat_index": int(rep),
+                                                "loss_fn": loss_fn,
+                                                "decoded_frame_indices": list(decoded_frame_indices),
+                                                "frame_loss_raw": float(frame_loss.detach().item()),
+                                                "geco_score_raw": (
+                                                    None
+                                                    if geco_score is None
+                                                    else float(geco_score.detach().item())
+                                                ),
+                                                "geco_loss_raw": (
+                                                    None
+                                                    if geco_loss is None
+                                                    else float(geco_loss.detach().item())
+                                                ),
+                                                "combined_loss": float(loss.detach().item()),
+                                                "frame_loss_weight": float(frame_loss_weight),
+                                                "geco_loss_weight": (
+                                                    None
+                                                    if geco_loss is None
+                                                    else float(geco_loss_weight)
+                                                ),
+                                                "weights_normalized": False,
+                                            }
+                                        )
                                     geco_value = "n/a" if geco_loss is None else f"{geco_loss.detach().item():.6f}"
                                     print(
                                         f"wan_frame_guidance_loss({i}/{rep}): "

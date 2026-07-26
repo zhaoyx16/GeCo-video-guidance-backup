@@ -1,14 +1,15 @@
-"""Controlled Frame Guidance experiments on the audited Wan RGB-GeCo pipeline.
+"""Controlled Wan x0 frame-MSE experiments on the audited RGB-GeCo pipeline.
 
 This runner deliberately leaves the existing ``run_wan_geco_case_full.py`` arm
 untouched.  It creates two paired arms from one frozen manifest:
 
-* ``fg_only``: first/middle/last frame anchor loss only.
-* ``fg_geco``: the same frame-anchor loss plus the current RGB GeCo residual loss.
+* ``fg_only``: controlled sparse first/middle/last x0 frame-MSE.
+* ``fg_geco``: the same x0 frame-MSE plus the current RGB GeCo residual loss.
 
 Both arms run the same Wan sampler, seed, prompt, anchors, resolution, FPS, step
 schedule, and latent-update schedule.  The only intended mathematical difference
-is whether the RGB GeCo term is added to the frame guidance objective.
+is whether the RGB GeCo term is added to the frame-MSE objective.  These are
+not claimed to be faithful reproductions of official Frame Guidance/VLO.
 """
 
 from __future__ import annotations
@@ -31,7 +32,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "external" / "guidance_wan"))
 
-from frame_guidance_manifest import canonical_json_hash, load_frame_guidance_case
+from frame_guidance_manifest import (
+    FrameGuidanceManifestError,
+    build_frame_guidance_time_contract,
+    canonical_json_hash,
+    load_frame_guidance_case,
+)
 from pipeline_wan_i2v_full_guided import WanImageToVideoPipeline
 
 
@@ -114,6 +120,11 @@ parser.add_argument("--case", required=True)
 parser.add_argument("--manifest", required=True, help="JSON manifest containing prompt, condition, and first/middle/last anchors.")
 parser.add_argument("--output_root", required=True)
 parser.add_argument("--mode", choices=["fg_only", "fg_geco"], required=True)
+parser.add_argument(
+    "--pair_id",
+    required=True,
+    help="Shared immutable identifier used for both fg_only and fg_geco runs in a paired comparison.",
+)
 parser.add_argument("--model", default="/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers")
 parser.add_argument("--steps", type=int, default=50)
 parser.add_argument("--frames", type=int, default=121)
@@ -155,6 +166,10 @@ if args.mode == "fg_geco" and args.geco_loss_weight <= 0:
     parser.error("--geco_loss_weight must be positive for fg_geco.")
 
 case = load_frame_guidance_case(args.manifest, args.case, path_mapper=remap_path)
+try:
+    anchor_time_contract = build_frame_guidance_time_contract(case, args.fps)
+except FrameGuidanceManifestError as error:
+    parser.error(str(error))
 anchor_indices = [anchor["frame_index"] for anchor in case["anchors"]]
 if max(anchor_indices) >= args.frames:
     parser.error(
@@ -171,7 +186,12 @@ condition_image = anchor_images[0]
 
 uses_geco = args.mode == "fg_geco"
 loss_fn = "frame_residual_motion" if uses_geco else "frame"
-geometry_guidance_variant = "rgb_geco_flow_matching_variant" if uses_geco else None
+guidance_variant = (
+    "controlled_wan_x0_frame_mse_rgb_geco_flow_matching_variant"
+    if uses_geco
+    else "controlled_wan_x0_frame_mse_variant"
+)
+guidance_diagnostics: list[dict[str, Any]] = []
 additional_inputs: dict[str, Any] = {
     "frame_guidance_targets": anchor_images,
     "frame_loss_weight": args.frame_loss_weight,
@@ -180,6 +200,7 @@ additional_inputs: dict[str, Any] = {
     "max_relative_delta": args.max_relative_delta,
     "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
     "debug_guidance_consistency": args.debug_guidance_consistency,
+    "guidance_diagnostics": guidance_diagnostics,
 }
 
 if uses_geco:
@@ -230,16 +251,23 @@ if uses_geco:
 
 out_dir = Path(args.output_root).resolve() / args.case
 out_dir.mkdir(parents=True, exist_ok=True)
-config_for_hash = {
+anchor_provenance = [
+    {
+        "frame_index": anchor["frame_index"],
+        "sha256": anchor["sha256"],
+        "source_frame_index": anchor["source_frame_index"],
+        "source_timestamp_seconds": anchor["source_timestamp_seconds"],
+    }
+    for anchor in case["anchors"]
+]
+pair_invariants = {
+    "pair_id": args.pair_id,
     "case": args.case,
-    "mode": args.mode,
-    "geometry_guidance_variant": geometry_guidance_variant,
-    "loss_fn": loss_fn,
     "model": args.model,
     "prompt": case["text_prompt"],
-    "anchors": [
-        {"frame_index": anchor["frame_index"], "sha256": anchor["sha256"]} for anchor in case["anchors"]
-    ],
+    "condition_image_sha256": case["condition_image_sha256"],
+    "anchors": anchor_provenance,
+    "anchor_time_contract": anchor_time_contract,
     "steps": args.steps,
     "frames": args.frames,
     "height": args.height,
@@ -250,13 +278,49 @@ config_for_hash = {
     "guidance_schedule": guidance_step,
     "guidance_lr": guidance_lr,
     "frame_loss_weight": args.frame_loss_weight,
-    "geco_loss_weight": args.geco_loss_weight if uses_geco else None,
+    "decode_spatial_scale": 1.0,
+    "max_relative_delta": args.max_relative_delta,
+    "transformer_jacobian": "full",
+    "selected_frame_temporal_slice": "wan_causal_predecessor_target_pair_v1",
+    "scheduler": "FlowMatchEulerDiscreteScheduler",
+    "time_travel_renoising": False,
+    "transformer_block_checkpointing": args.transformer_block_checkpointing,
+    "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
+}
+pair_config_hash = canonical_json_hash(pair_invariants)
+config_for_hash = {
+    "case": args.case,
+    "mode": args.mode,
+    "pair_id": args.pair_id,
+    "pair_config_hash": pair_config_hash,
+    "guidance_variant": guidance_variant,
+    "rgb_geco_component_variant": "rgb_geco_flow_matching_variant" if uses_geco else None,
+    "loss_fn": loss_fn,
+    "model": args.model,
+    "prompt": case["text_prompt"],
+    "anchors": anchor_provenance,
+    "anchor_time_contract": anchor_time_contract,
+    "steps": args.steps,
+    "frames": args.frames,
+    "height": args.height,
+    "width": args.width,
+    "fps": args.fps,
+    "seed": args.seed,
+    "guidance_scale": args.guidance_scale,
+    "guidance_schedule": guidance_step,
+    "guidance_lr": guidance_lr,
+    "loss_weights": {
+        "frame_loss_weight": args.frame_loss_weight,
+        "geco_loss_weight": args.geco_loss_weight if uses_geco else None,
+        "weights_normalized": False,
+    },
     "ufm_scale": args.ufm_scale if uses_geco else None,
     "decode_spatial_scale": 1.0,
     "max_relative_delta": args.max_relative_delta,
     "transformer_jacobian": "full",
     "vae_decode_spatial_scale": 1.0,
-    "selected_frame_temporal_slice": "causal_3_latent_token_context",
+    "selected_frame_temporal_slice": "wan_causal_predecessor_target_pair_v1",
+    "selected_frame_full_decode_parity": "not_assumed; optional probe required",
     "scheduler": "FlowMatchEulerDiscreteScheduler",
     "time_travel_renoising": False,
     "transformer_block_checkpointing": args.transformer_block_checkpointing,
@@ -277,22 +341,32 @@ run_record: dict[str, Any] = {
     "config_hash": config_hash,
     "config": config_for_hash,
     "manifest": case,
+    "paired_run_provenance": {
+        "pair_id": args.pair_id,
+        "pair_config_hash": pair_config_hash,
+        "expected_modes": ["fg_only", "fg_geco"],
+        "anchor_time_contract": anchor_time_contract,
+    },
     "devices": {
         "pipe_device": args.pipe_device,
         "vae_device": args.vae_device or args.pipe_device,
         "metric_device": args.metric_device if uses_geco else None,
     },
     "implementation_notes": [
+        "This is a controlled Wan x0 frame-MSE variant, not a faithful Frame Guidance/VLO reproduction.",
         "Frame MSE is computed on decoded x0 predictions at nonzero anchor indices.",
         "Frame zero is the Wan I2V condition and is recorded but does not receive a latent gradient.",
         "The audited FlowMatch scheduler, x0 conversion, and full RGB GeCo residual path are unchanged.",
-        "rgb_geco_flow_matching_variant is a Wan FlowMatch adaptation, not a faithful original-GeCo reproduction: it omits time-travel/re-noising and uses a causal-VAE selected-frame slice.",
+        "The RGB-GeCo arm is a controlled flow-matching variant, not a faithful original-GeCo reproduction: it omits time-travel/re-noising and uses a causal-VAE selected-frame approximation.",
+        "Raw frame and GeCo losses use tunable multipliers; 1.0/1.0 is not normalization.",
     ],
 }
 write_json(run_manifest_path, run_record)
 
 print("case:", args.case)
 print("mode:", args.mode)
+print("pair id:", args.pair_id)
+print("pair config hash:", pair_config_hash)
 print("condition image:", case["condition_image_path"])
 print("anchor indices:", anchor_indices)
 print("out:", out_path)
@@ -360,6 +434,7 @@ except BaseException as error:
 finally:
     run_record["runtime_seconds"] = time.perf_counter() - start_time
     run_record["cuda_peak_bytes"] = cuda_peak_stats(devices)
+    run_record["guidance_loss_diagnostics"] = guidance_diagnostics
     write_json(run_manifest_path, run_record)
 
 print("saved:", out_path)
