@@ -29,6 +29,7 @@ from transformers import AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import PipelineImageInput
 from diffusers.loaders import WanLoraLoaderMixin
+from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
 from diffusers.models import AutoencoderKLWan, WanTransformer3DModel
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import is_ftfy_available, is_torch_xla_available, logging, replace_example_docstring
@@ -46,6 +47,106 @@ else:
     XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _geco_move_tensor(
+    tensor: torch.Tensor,
+    device: torch.device | str,
+    dtype: torch.dtype | None = None,
+    *,
+    via_cpu_for_grad: bool = False,
+    via_cpu: bool = False,
+) -> torch.Tensor:
+    """Move a tensor while preserving valid multi-GPU values and VJPs."""
+    target = torch.device(device)
+    if tensor.device == target:
+        return tensor if dtype is None else tensor.to(dtype=dtype)
+    if via_cpu or (via_cpu_for_grad and torch.is_grad_enabled() and tensor.requires_grad):
+        # Direct peer copies produced invalid values (conditioning) and invalid VJPs
+        # (guidance) on this host. CPU staging preserves the same tensor values and,
+        # when gradients are enabled, retains the cross-device autograd bridge.
+        staged = tensor.to("cpu")
+        return staged.to(device=target, dtype=dtype) if dtype is not None else staged.to(target)
+    return tensor.to(device=target, dtype=dtype) if dtype is not None else tensor.to(target)
+
+
+def _geco_tiled_decode_with_per_tile_checkpoint(vae: AutoencoderKLWan, z: torch.Tensor) -> torch.Tensor:
+    """Match Diffusers ``tiled_decode`` while checkpointing one spatial tile at a time.
+
+    A whole-VAE checkpoint releases the initial forward activations, but its backward
+    recomputation still retains the causal decoder graph for every spatial tile until
+    the complete tiled video is assembled. Each tile in the upstream implementation
+    starts with an empty causal cache, so keeping that cache local to a tile makes it
+    safe to checkpoint tiles independently without changing the VAE's tile layout,
+    blending, temporal order, decoded pixels, or guidance objective.
+    """
+    _, _, num_frames, height, width = z.shape
+    sample_height = height * vae.spatial_compression_ratio
+    sample_width = width * vae.spatial_compression_ratio
+
+    tile_latent_min_height = vae.tile_sample_min_height // vae.spatial_compression_ratio
+    tile_latent_min_width = vae.tile_sample_min_width // vae.spatial_compression_ratio
+    tile_latent_stride_height = vae.tile_sample_stride_height // vae.spatial_compression_ratio
+    tile_latent_stride_width = vae.tile_sample_stride_width // vae.spatial_compression_ratio
+    tile_sample_stride_height = vae.tile_sample_stride_height
+    tile_sample_stride_width = vae.tile_sample_stride_width
+
+    if vae.config.patch_size is not None:
+        sample_height = sample_height // vae.config.patch_size
+        sample_width = sample_width // vae.config.patch_size
+        tile_sample_stride_height = tile_sample_stride_height // vae.config.patch_size
+        tile_sample_stride_width = tile_sample_stride_width // vae.config.patch_size
+        blend_height = vae.tile_sample_min_height // vae.config.patch_size - tile_sample_stride_height
+        blend_width = vae.tile_sample_min_width // vae.config.patch_size - tile_sample_stride_width
+    else:
+        blend_height = vae.tile_sample_min_height - tile_sample_stride_height
+        blend_width = vae.tile_sample_min_width - tile_sample_stride_width
+
+    vae.clear_cache()
+    rows = []
+    for top in range(0, height, tile_latent_stride_height):
+        row = []
+        for left in range(0, width, tile_latent_stride_width):
+            z_tile = z[:, :, :, top : top + tile_latent_min_height, left : left + tile_latent_min_width]
+
+            def _decode_one_tile(tile_latents: torch.Tensor) -> torch.Tensor:
+                # This is a private cache for exactly one upstream tiled_decode tile.
+                # It is deliberately not vae._feat_map, which would be mutated again
+                # when checkpoint recomputes this tile during autograd backward.
+                feat_cache = [None] * vae._cached_conv_counts["decoder"]
+                decoded_frames = []
+                for frame_idx in range(num_frames):
+                    feat_idx = [0]
+                    frame_latents = vae.post_quant_conv(tile_latents[:, :, frame_idx : frame_idx + 1])
+                    decoded_frames.append(
+                        vae.decoder(
+                            frame_latents,
+                            feat_cache=feat_cache,
+                            feat_idx=feat_idx,
+                            first_chunk=(frame_idx == 0),
+                        )
+                    )
+                return torch.cat(decoded_frames, dim=2)
+
+            row.append(checkpoint(_decode_one_tile, z_tile, use_reentrant=False))
+        rows.append(row)
+
+    result_rows = []
+    for row_idx, row in enumerate(rows):
+        result_row = []
+        for column_idx, tile in enumerate(row):
+            if row_idx > 0:
+                tile = vae.blend_v(rows[row_idx - 1][column_idx], tile, blend_height)
+            if column_idx > 0:
+                tile = vae.blend_h(row[column_idx - 1], tile, blend_width)
+            result_row.append(tile[:, :, :, :tile_sample_stride_height, :tile_sample_stride_width])
+        result_rows.append(torch.cat(result_row, dim=-1))
+
+    decoded = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
+    if vae.config.patch_size is not None:
+        decoded = unpatchify(decoded, patch_size=vae.config.patch_size)
+    vae.clear_cache()
+    return torch.clamp(decoded, min=-1.0, max=1.0)
 
 if is_ftfy_available():
     import ftfy
@@ -445,7 +546,11 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 dim=2,
             )
         vae_device = self._get_geco_vae_device()
-        video_condition = video_condition.to(device=vae_device, dtype=self.vae.dtype)
+        # The conditioning image originates on the transformer device. On this host,
+        # direct GPU-to-GPU copies can make the I2V condition non-finite.
+        video_condition = _geco_move_tensor(
+            video_condition, vae_device, self.vae.dtype, via_cpu=True
+        )
 
         latents_mean = (
             torch.tensor(self.vae.config.latents_mean)
@@ -467,7 +572,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         latent_condition = latent_condition.to(device=vae_device, dtype=self.vae.dtype)
         latent_condition = (latent_condition - latents_mean) * latents_std
-        latent_condition = latent_condition.to(device=device, dtype=dtype)
+        # Send the VAE-encoded condition back to the transformer through CPU for the
+        # same peer-copy correctness reason; this is outside the guidance objective.
+        latent_condition = _geco_move_tensor(latent_condition, device, dtype, via_cpu=True)
 
         if self.config.expand_timesteps:
             first_frame_mask = torch.ones(
@@ -889,14 +996,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             T_lat = x0_debug.shape[2]
                             temporal_scale = int(getattr(self, "vae_scale_factor_temporal", 4))
                             vae_dtype = self.vae.dtype
+                            vae_device = self._get_geco_vae_device()
                             latents_mean = (
                                 torch.tensor(self.vae.config.latents_mean)
                                 .view(1, self.vae.config.z_dim, 1, 1, 1)
-                                .to(x0_debug.device, vae_dtype)
+                                .to(vae_device, vae_dtype)
                             )
                             latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
                                 1, self.vae.config.z_dim, 1, 1, 1
-                            ).to(x0_debug.device, vae_dtype)
+                            ).to(vae_device, vae_dtype)
 
                             step_dir = os.path.join(str(debug_x0_dir), f"step_{i:03d}")
                             os.makedirs(step_dir, exist_ok=True)
@@ -907,7 +1015,12 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     center_lat = min(T_lat - 1, (fidx - 1) // temporal_scale + 1)
                                 chunk_start = max(0, center_lat - 1)
                                 chunk_end = min(T_lat, center_lat + 2)
-                                z_chunk = x0_debug[:, :, chunk_start:chunk_end].contiguous().to(vae_dtype)
+                                z_chunk = _geco_move_tensor(
+                                    x0_debug[:, :, chunk_start:chunk_end].contiguous(),
+                                    vae_device,
+                                    vae_dtype,
+                                    via_cpu=True,
+                                )
                                 if debug_decode_spatial_scale != 1.0:
                                     H_lat, W_lat = z_chunk.shape[-2:]
                                     H_new = max(1, int(round(H_lat * debug_decode_spatial_scale)))
@@ -1112,6 +1225,35 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # latents是当前 timestep 的 noisy latent：x_t，也就是还在 denoising 中间过程里的 latent，不是最终干净视频。
                                 sample=latents.float()
                                 )
+                            debug_guidance_consistency = bool(
+                                additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
+                            )
+                            if debug_guidance_consistency and rep == 0:
+                                # Debug only: the recomputed differentiable prediction must agree with
+                                # the ordinary denoising prediction before its latent update. This does
+                                # not enter the loss or alter the guidance update.
+                                with torch.no_grad():
+                                    x0_from_sampling_pred = self.scheduler.convert_model_output(
+                                        noise_pred.float(), sample=latents.float()
+                                    )
+                                    pred_abs_diff = (noise_pred_g.detach().float() - noise_pred.detach().float()).abs()
+                                    x0_abs_diff = (x0_pred.detach().float() - x0_from_sampling_pred.float()).abs()
+                                    sampling_finite = torch.isfinite(noise_pred.detach()).float().mean().item()
+                                    guidance_finite = torch.isfinite(noise_pred_g.detach()).float().mean().item()
+                                    sampling_abs_mean = torch.nan_to_num(noise_pred.detach().float()).abs().mean().item()
+                                    guidance_abs_mean = torch.nan_to_num(noise_pred_g.detach().float()).abs().mean().item()
+                                    print(
+                                        f"wan_guidance_prediction_compare({i}/{rep}): "
+                                        f"sampling_finite={sampling_finite:.6f} "
+                                        f"guidance_finite={guidance_finite:.6f} "
+                                        f"sampling_abs_mean={sampling_abs_mean:.8e} "
+                                        f"guidance_abs_mean={guidance_abs_mean:.8e} "
+                                        f"pred_mean_abs_diff={pred_abs_diff.mean().item():.8e} "
+                                        f"pred_max_abs_diff={pred_abs_diff.max().item():.8e} "
+                                        f"x0_mean_abs_diff={x0_abs_diff.mean().item():.8e} "
+                                        f"x0_max_abs_diff={x0_abs_diff.max().item():.8e}"
+                                    )
+                                del x0_from_sampling_pred, pred_abs_diff, x0_abs_diff
                                 # 对于 Wan 的 flow_prediction，Diffusers scheduler 内部基本就是：x0_pred = sample - sigma * model_output
                                 # 一句话：这个公式来自 flow matching：模型输出的是从当前 noisy latent 到 clean latent 的 velocity/flow，
                                 # 所以 clean estimate 是当前 latent 减去 sigma 加权的 predicted flow。
@@ -1212,6 +1354,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 decode_spatial_scale = float(additional_inputs.get("decode_spatial_scale", 1.0))
                                 if decode_spatial_scale != 1.0:
                                     raise ValueError('Full Wan GeCo guidance requires decode_spatial_scale=1.0')
+                                cross_device_grad_via_cpu = bool(
+                                    additional_inputs.get("cross_device_grad_via_cpu", False)
+                                )
 
                                 # Decode only the temporal chunks needed by fixed_frames.
                                 # Full-video differentiable VAE decode is too expensive at 480x832.
@@ -1334,7 +1479,13 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     # VAE decode / interpolate 等操作通常更喜欢连续内存。
                                     # .contiguous()
                                     # 会创建一个内存连续的 tensor，避免后续操作报错或变慢。
-                                    z_chunk = x0_for_decode[:, :, chunk_start:chunk_end].to(device=vae_device, dtype=vae_dtype).contiguous()
+                                    z_chunk = x0_for_decode[:, :, chunk_start:chunk_end].contiguous()
+                                    z_chunk = _geco_move_tensor(
+                                        z_chunk,
+                                        vae_device,
+                                        vae_dtype,
+                                        via_cpu_for_grad=cross_device_grad_via_cpu,
+                                    )
 
                                     # 意思：可选地缩小 latent 的 H/W。
                                     # 为什么：进一步省显存。这个操作仍然可导，所以 gradient 可以从 decoded frames 回到 z_chunk，再回到 latents
@@ -1379,10 +1530,45 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                     # 为什么必须在 torch.enable_grad() 里：
                                     # 我们需要 loss -> decoded pixels -> z_chunk -> x0_pred -> latents 的梯度路径。
                                     # IMPORTANT: 原 GeCo 代码也是只 decode selected frames 附近的 temporal chunk
-                                    def _decode_chunk_for_checkpoint(z):
-                                        return self.vae.decode(z, return_dict=False)[0]
+                                    tile_latent_height = (
+                                        self.vae.tile_sample_min_height // self.vae.spatial_compression_ratio
+                                    )
+                                    tile_latent_width = (
+                                        self.vae.tile_sample_min_width // self.vae.spatial_compression_ratio
+                                    )
+                                    use_per_tile_checkpoint = self.vae.use_tiling and (
+                                        z_chunk.shape[-2] > tile_latent_height
+                                        or z_chunk.shape[-1] > tile_latent_width
+                                    )
+                                    if use_per_tile_checkpoint:
+                                        decoded_chunk = _geco_tiled_decode_with_per_tile_checkpoint(self.vae, z_chunk)
+                                    else:
+                                        # Small non-tiled chunks keep the existing whole-VAE checkpoint.
+                                        def _decode_chunk_for_checkpoint(z):
+                                            return self.vae.decode(z, return_dict=False)[0]
 
-                                    decoded_chunk = checkpoint(_decode_chunk_for_checkpoint, z_chunk, use_reentrant=False)
+                                        decoded_chunk = checkpoint(
+                                            _decode_chunk_for_checkpoint, z_chunk, use_reentrant=False
+                                        )
+
+                                    if debug_guidance_consistency:
+                                        # Debug only: verify the memory-efficient per-tile checkpointed
+                                        # decode has the same pixels as Diffusers' native tiled decode.
+                                        # The native result is detached and never affects the loss/gradient.
+                                        with torch.no_grad():
+                                            native_decoded_chunk = self.vae.decode(
+                                                z_chunk.detach(), return_dict=False
+                                            )[0]
+                                            decode_abs_diff = (
+                                                decoded_chunk.detach().float() - native_decoded_chunk.float()
+                                            ).abs()
+                                            print(
+                                                f"wan_guidance_vae_compare({i}/{rep},frame={fidx}): "
+                                                f"per_tile={use_per_tile_checkpoint} "
+                                                f"mean_abs_diff={decode_abs_diff.mean().item():.8e} "
+                                                f"max_abs_diff={decode_abs_diff.max().item():.8e}"
+                                            )
+                                        del native_decoded_chunk, decode_abs_diff
 
                                     # 意思：把 VAE 输出从 [B,C,T,H,W] 转成 [B,T,H,W,C]，并从 [-1,1] 映射到 [0,1]。
                                     # 为什么：make_motion_metric 期望输入是 [B,F,H,W,3]，值域 [0,1]。
@@ -1430,6 +1616,16 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 它是 selected decoded frames，形状：
                                 # [B, F_selected, H, W, C]
                                 frames_01 = torch.cat(rm_frames, dim=1)
+
+                                if debug_guidance_consistency:
+                                    with torch.no_grad():
+                                        print(
+                                            f"wan_guidance_frames({i}/{rep}): "
+                                            f"shape={tuple(frames_01.shape)} "
+                                            f"min={frames_01.detach().amin().item():.8f} "
+                                            f"max={frames_01.detach().amax().item():.8f} "
+                                            f"mean={frames_01.detach().mean().item():.8f}"
+                                        )
 
                                 # 把 selected frames 输入 GeCo residual motion metric，得到 loss
                                 # additional_inputs["residual_motion_metric"] 是什么？
@@ -1671,7 +1867,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         if not output_type == "latent":
             vae_device = self._get_geco_vae_device()
-            latents = latents.to(device=vae_device, dtype=self.vae.dtype)
+            # Final non-gradient decode also crosses transformer -> VAE devices.
+            latents = _geco_move_tensor(latents, vae_device, self.vae.dtype, via_cpu=True)
             latents_mean = (
                 torch.tensor(self.vae.config.latents_mean)
                 .view(1, self.vae.config.z_dim, 1, 1, 1)

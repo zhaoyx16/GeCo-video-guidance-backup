@@ -1,0 +1,20 @@
+{
+  "hard_static_stone_gateway_120deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same traditional stone gateway and quiet courtyard. In one uninterrupted shot, the camera travels along a large, smooth 120-degree clockwise arc around the gateway, with strong natural parallax and a clearly changing viewpoint. The stone gateway, carvings, lanterns, courtyard, surrounding buildings, and vegetation remain completely stationary with stable shape, texture, and relative positions throughout. Do not add, remove, duplicate, or deform any structure. No people, no moving objects, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/001dccbc1f78146a9f03861026613d8e73f39f372b545b26118e37a23c740d5f/images_8/frame_00001.png",
+    "prompt_type": "hard_static_geometry_screen",
+    "motion_instruction": "Continuous large 120-degree clockwise orbit around a stationary stone gateway."
+  },
+  "hard_static_building_planter_forward_right_turn": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same quiet urban building facade and flower planter. The camera moves forward a short distance and then makes one smooth continuous 90-degree turn to the right, passing the planter with strong natural parallax. The building facade, windows, walkway, planter, flowers, parked cars, and surrounding architecture remain completely stationary with stable shape, texture, and relative positions throughout. Do not add, remove, duplicate, or deform any structure. No people, no moving objects, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/8dcd0ada599b8f5ad742431107e05faa39f9a4eff0044374ae4aafbc0d692bda/images_8/frame_00001.png",
+    "prompt_type": "hard_static_geometry_screen",
+    "motion_instruction": "Short forward camera motion followed by one continuous 90-degree right turn in a stationary urban scene."
+  },
+  "hard_static_home_decor_90deg_orbit": {
+    "text_prompt": "Starting from the given image, generate a realistic continuous video of the same home decor display with lamps and vases. In one uninterrupted shot, the camera travels along a large, smooth 90-degree clockwise orbit around the central display, with strong natural parallax and a clearly changing viewpoint. The lamps, vases, shelves, floor, and store interior remain completely stationary with stable shape, texture, and relative positions throughout. Do not add, remove, duplicate, or deform any object. No people, no object motion, no scene change, no cut, and no teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data/1K/92325b4a7ec41572bbf4982dede77ef1ee13a517427c66f34cea442a3837d2e9/images_8/frame_00001.png",
+    "prompt_type": "hard_static_geometry_screen",
+    "motion_instruction": "Continuous large 90-degree clockwise orbit around a stationary home decor display."
+  }
+}

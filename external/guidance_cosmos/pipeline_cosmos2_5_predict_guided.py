@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Any, Callable
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
+from PIL import Image
 from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import PipelineImageInput
+from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
 from diffusers.models import AutoencoderKLWan, CosmosTransformer3DModel
 from diffusers.schedulers import UniPCMultistepScheduler
 from diffusers.utils import (
@@ -59,6 +63,109 @@ else:
     XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _geco_move_tensor(
+    tensor: torch.Tensor,
+    device: torch.device,
+    dtype: torch.dtype | None = None,
+    *,
+    via_cpu_for_grad: bool = False,
+    force_via_cpu: bool = False,
+) -> torch.Tensor:
+    """Move a tensor without relying on unreliable direct multi-GPU copies on this host.
+
+    CPU staging is required for guidance tensors that carry gradients. It is also
+    used for the VAE conditioning/final-decode forward transfers when the VAE is
+    placed on another GPU: the direct transfer path produced constant gray videos
+    despite a valid single-GPU VAE decode. Same-device paths are unchanged.
+    """
+    target = torch.device(device)
+    if tensor.device == target:
+        return tensor if dtype is None else tensor.to(dtype=dtype)
+    if force_via_cpu or (via_cpu_for_grad and torch.is_grad_enabled() and tensor.requires_grad):
+        staged = tensor.to("cpu")
+        return staged.to(device=target, dtype=dtype) if dtype is not None else staged.to(target)
+    return tensor.to(device=target, dtype=dtype) if dtype is not None else tensor.to(target)
+
+
+def _geco_tiled_decode_with_per_tile_checkpoint(vae: AutoencoderKLWan, z: torch.Tensor) -> torch.Tensor:
+    """Match Diffusers ``tiled_decode`` while checkpointing one spatial tile at a time.
+
+    A whole-VAE checkpoint releases the initial forward activations, but its backward
+    recomputation still retains the causal decoder graph for every spatial tile until
+    the complete tiled video is assembled. Each tile in the upstream implementation
+    starts with an empty causal cache, so keeping that cache local to a tile makes it
+    safe to checkpoint tiles independently without changing the VAE's tile layout,
+    blending, temporal order, decoded pixels, or guidance objective.
+    """
+    _, _, num_frames, height, width = z.shape
+    sample_height = height * vae.spatial_compression_ratio
+    sample_width = width * vae.spatial_compression_ratio
+
+    tile_latent_min_height = vae.tile_sample_min_height // vae.spatial_compression_ratio
+    tile_latent_min_width = vae.tile_sample_min_width // vae.spatial_compression_ratio
+    tile_latent_stride_height = vae.tile_sample_stride_height // vae.spatial_compression_ratio
+    tile_latent_stride_width = vae.tile_sample_stride_width // vae.spatial_compression_ratio
+    tile_sample_stride_height = vae.tile_sample_stride_height
+    tile_sample_stride_width = vae.tile_sample_stride_width
+
+    if vae.config.patch_size is not None:
+        sample_height = sample_height // vae.config.patch_size
+        sample_width = sample_width // vae.config.patch_size
+        tile_sample_stride_height = tile_sample_stride_height // vae.config.patch_size
+        tile_sample_stride_width = tile_sample_stride_width // vae.config.patch_size
+        blend_height = vae.tile_sample_min_height // vae.config.patch_size - tile_sample_stride_height
+        blend_width = vae.tile_sample_min_width // vae.config.patch_size - tile_sample_stride_width
+    else:
+        blend_height = vae.tile_sample_min_height - tile_sample_stride_height
+        blend_width = vae.tile_sample_min_width - tile_sample_stride_width
+
+    vae.clear_cache()
+    rows = []
+    for top in range(0, height, tile_latent_stride_height):
+        row = []
+        for left in range(0, width, tile_latent_stride_width):
+            z_tile = z[:, :, :, top : top + tile_latent_min_height, left : left + tile_latent_min_width]
+
+            def _decode_one_tile(tile_latents: torch.Tensor) -> torch.Tensor:
+                # This is a private cache for exactly one upstream tiled_decode tile.
+                # It is deliberately not vae._feat_map, which would be mutated again
+                # when checkpoint recomputes this tile during autograd backward.
+                feat_cache = [None] * vae._cached_conv_counts["decoder"]
+                decoded_frames = []
+                for frame_idx in range(num_frames):
+                    feat_idx = [0]
+                    frame_latents = vae.post_quant_conv(tile_latents[:, :, frame_idx : frame_idx + 1])
+                    decoded_frames.append(
+                        vae.decoder(
+                            frame_latents,
+                            feat_cache=feat_cache,
+                            feat_idx=feat_idx,
+                            first_chunk=(frame_idx == 0),
+                        )
+                    )
+                return torch.cat(decoded_frames, dim=2)
+
+            row.append(checkpoint(_decode_one_tile, z_tile, use_reentrant=False))
+        rows.append(row)
+
+    result_rows = []
+    for row_idx, row in enumerate(rows):
+        result_row = []
+        for column_idx, tile in enumerate(row):
+            if row_idx > 0:
+                tile = vae.blend_v(rows[row_idx - 1][column_idx], tile, blend_height)
+            if column_idx > 0:
+                tile = vae.blend_h(row[column_idx - 1], tile, blend_width)
+            result_row.append(tile[:, :, :, :tile_sample_stride_height, :tile_sample_stride_width])
+        result_rows.append(torch.cat(result_row, dim=-1))
+
+    decoded = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]
+    if vae.config.patch_size is not None:
+        decoded = unpatchify(decoded, patch_size=vae.config.patch_size)
+    vae.clear_cache()
+    return torch.clamp(decoded, min=-1.0, max=1.0)
 
 DEFAULT_NEGATIVE_PROMPT = (
     "The video captures a series of frames showing ugly scenes, static with no motion, motion blur, "
@@ -234,6 +341,9 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
             scheduler=scheduler,
             safety_checker=safety_checker,
         )
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
 
         self.vae_scale_factor_temporal = 2 ** sum(self.vae.temperal_downsample) if getattr(self, "vae", None) else 4
         self.vae_scale_factor_spatial = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
@@ -437,6 +547,7 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
         H = height // self.vae_scale_factor_spatial
         W = width // self.vae_scale_factor_spatial
         shape = (B, C, T, H, W)
+        vae_device = next(self.vae.parameters()).device
 
         if num_frames_in == 0:
             if latents is None:
@@ -459,7 +570,7 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
             needs_preprocessing = not (isinstance(video, torch.Tensor) and video.ndim == 5 and video.shape[1] == 3)
             if needs_preprocessing:
                 video = self.video_processor.preprocess_video(video, height, width)
-            video = video.to(device=device, dtype=self.vae.dtype)
+            video = video.to(device=vae_device, dtype=self.vae.dtype)
             if isinstance(generator, list):
                 cond_latents = [
                     retrieve_latents(self.vae.encode(video[i].unsqueeze(0)), generator=generator[i])
@@ -470,9 +581,14 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
 
             cond_latents = torch.cat(cond_latents, dim=0).to(dtype)
 
-            latents_mean = self.latents_mean.to(device=device, dtype=dtype)
-            latents_std = self.latents_std.to(device=device, dtype=dtype)
-            cond_latents = (cond_latents - latents_mean) / latents_std
+            latents_mean = self.latents_mean.to(device=vae_device, dtype=dtype)
+            latents_std = self.latents_std.to(device=vae_device, dtype=dtype)
+            cond_latents = _geco_move_tensor(
+                (cond_latents - latents_mean) / latents_std,
+                device,
+                dtype,
+                force_via_cpu=vae_device != torch.device(device),
+            )
 
             if latents is None:
                 latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
@@ -717,6 +833,7 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                     torch.cuda.empty_cache()
 
         vae_dtype = self.vae.dtype
+        vae_device = next(self.vae.parameters()).device
         transformer_dtype = self.transformer.dtype
 
         num_frames_in = None
@@ -769,7 +886,7 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
 
         assert num_frames_in <= num_frames_out, f"expected ({num_frames_in=}) <= ({num_frames_out=})"
 
-        video = video.to(device=device, dtype=vae_dtype)
+        video = video.to(device=vae_device, dtype=vae_dtype)
 
         num_channels_latents = self.transformer.config.in_channels - 1
         print("[cosmos] prepare_latents start", flush=True)
@@ -812,7 +929,97 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
         else:
             assert len(guidance_lr) == num_inference_steps, "guidance_lr length mismatch"
 
+        transformer_activation_checkpointing = bool(
+            additional_inputs is not None and additional_inputs.get("transformer_activation_checkpointing", False)
+        )
+        vae_activation_checkpointing = bool(
+            additional_inputs is not None and additional_inputs.get("vae_activation_checkpointing", False)
+        )
+        vae_checkpoint_mode = str(
+            additional_inputs.get("vae_checkpoint_mode", "whole") if additional_inputs is not None else "whole"
+        )
+        if vae_checkpoint_mode not in {"whole", "per_tile"}:
+            raise ValueError("vae_checkpoint_mode must be 'whole' or 'per_tile'")
+        cross_device_grad_via_cpu = bool(
+            additional_inputs is not None and additional_inputs.get("cross_device_grad_via_cpu", False)
+        )
+        debug_guidance_gradient = bool(
+            additional_inputs is not None and additional_inputs.get("debug_guidance_gradient", False)
+        )
+        debug_guidance_stages = bool(
+            additional_inputs is not None and additional_inputs.get("debug_guidance_stages", False)
+        )
+        debug_guidance_dump_dir = (
+            additional_inputs.get("debug_guidance_dump_dir", None) if additional_inputs is not None else None
+        )
+        debug_x0_interval = int(additional_inputs.get("debug_x0_interval", 0) or 0) if additional_inputs else 0
+        debug_x0_dir = additional_inputs.get("debug_x0_dir", None) if additional_inputs else None
+        debug_x0_frames = additional_inputs.get("debug_x0_frames", None) if additional_inputs else None
+
+        # 这行是在处理 conditioning 区域，也就是 Cosmos I2V / V2W 里“已经给定的首帧或输入视频帧”。
+        # latents
+        # 当前 noisy latent，包含整段视频 latent。
+        # cond_latent
+        # 由输入 image/video encode 得到的 conditioning latent，比如第一帧对应的 latent。
+        # cond_mask
+        # mask，标记哪些 latent token 是 conditioning 区域：
+        # cond_mask = 1 -> 给定的 conditioning 帧，不能自由生成
+        # cond_mask = 0 -> 需要模型生成的未来帧
+        # 所以：
+        # (latents - cond_latent)
+        # 表示在 conditioning 区域，要从当前 noisy latent 回到给定 condition latent 的“速度/velocity”。
+        # 再乘：
+        # * cond_mask
+        # 只保留 conditioning 区域的 velocity，非 conditioning 区域变成 0。
         gt_velocity = (latents - cond_latent) * cond_mask
+        if debug_guidance_gradient:
+            condition_fraction_by_latent_t = (
+                cond_mask.float().mean(dim=(0, 1, 3, 4)).detach().cpu().tolist()
+            )
+            print(
+                f"[cosmos] condition_fraction_by_latent_t={condition_fraction_by_latent_t}",
+                flush=True,
+            )
+
+        def _save_x0_debug(step_idx: int, x0_debug: torch.Tensor):
+            """Save selected x0 predictions without changing sampling or guidance."""
+            if debug_x0_interval <= 0 or debug_x0_dir is None:
+                return
+            frames_to_save = debug_x0_frames
+            if frames_to_save is None:
+                frames_to_save = fixed_frames if fixed_frames is not None else [0, num_frames - 1]
+            if isinstance(frames_to_save, int):
+                frames_to_save = [frames_to_save]
+            frames_to_save = [min(max(int(f), 0), num_frames - 1) for f in frames_to_save]
+
+            with torch.no_grad():
+                latents_mean = self.latents_mean.to(x0_debug.device, x0_debug.dtype)
+                latents_std = self.latents_std.to(x0_debug.device, x0_debug.dtype)
+                decode_latents = x0_debug * latents_std + latents_mean
+                latent_t = decode_latents.shape[2]
+                frames_per_latent = max(int(getattr(self, "vae_scale_factor_temporal", 4) or 4), 1)
+                step_dir = os.path.join(str(debug_x0_dir), f"step_{step_idx:03d}")
+                os.makedirs(step_dir, exist_ok=True)
+
+                for frame_idx in frames_to_save:
+                    latent_id = 0 if frame_idx == 0 else min(latent_t - 1, (frame_idx - 1) // frames_per_latent + 1)
+                    # Cosmos uses a causal temporal VAE: retain the target token and past context.
+                    lo = max(0, latent_id - 2)
+                    hi = latent_id
+                    decode_chunk = _geco_move_tensor(
+                        decode_latents[:, :, lo : hi + 1].contiguous(),
+                        vae_device,
+                        self.vae.dtype,
+                        force_via_cpu=x0_debug.device != vae_device,
+                    )
+                    decoded_video = self.vae.decode(decode_chunk, return_dict=False)[0]
+                    chunk_num_frames = max(1, (hi - lo) * frames_per_latent + 1)
+                    decoded_video = self._match_num_frames(decoded_video, chunk_num_frames)
+                    frames_01 = ((decoded_video.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
+                    local_frame = min(max(frame_idx - lo * frames_per_latent, 0), frames_01.shape[1] - 1)
+                    frame_u8 = (frames_01[0, local_frame] * 255.0).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+                    Image.fromarray(frame_u8).save(os.path.join(step_dir, f"frame_{frame_idx:03d}.png"))
+
         print("[cosmos] denoising loop start", flush=True)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -827,38 +1034,84 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                     .unsqueeze(0)
                     .to(device=device, dtype=transformer_dtype)
                 )
-
+                
                 def _predict_noise_for_latents(current_latents):
+                    # 把 condition latent 和当前 noisy latent 拼成真正送进 transformer 的输入。
+                    # cond_mask = 1 的地方，用 cond_latent
+                    # cond_mask = 0 的地方，用当前生成 latent current_latents
+                    # 也就是：
+                    # condition frames 固定
+                    # generated frames 用当前 denoising latent
+                    # 这个是 Cosmos I2W/V2W 特有的。GeCo/CogVideoX 原来主要是 T2V/I2V，但这个 mask 逻辑是 Cosmos baseline 自带的，必须保留。                    
                     current_in_latents = cond_mask * cond_latent + (1 - cond_mask) * current_latents
+                    # 把输入转成 transformer 的 dtype，通常是 bfloat16。这和 baseline pipeline 一致。
                     current_in_latents = current_in_latents.to(transformer_dtype)
+                    # 这是 Cosmos conditioning 机制。
+                    # cond_indicator = 1 的 latent token，用固定的 conditional_frame_timestep
+                    # 其他生成区域，用当前 denoising timestep/sigma
+                    # 也就是说 condition 部分告诉模型：“这些是低噪声/条件帧”；生成部分告诉模型：“这些是当前要 denoise 的 noisy latent”。
+                    # 这个也是 Cosmos baseline 逻辑，不是我们加的 guidance。                    
                     current_in_timestep = cond_indicator * cond_timestep + (1 - cond_indicator) * sigma_t
-                    current_noise_pred = self.transformer(
-                        hidden_states=current_in_latents,
-                        condition_mask=cond_mask,
-                        timestep=current_in_timestep,
-                        encoder_hidden_states=prompt_embeds,
-                        padding_mask=padding_mask,
-                        return_dict=False,
-                    )[0]
+                    # 这是正向 prompt 的 transformer prediction。Cosmos 是 flow matching，所以这个 current_noise_pred 更准确地说是 velocity / flow prediction，不是 DDPM 里的 epsilon noise。                    
+                    def _run_transformer(encoder_hidden_states):
+                        def _transformer_forward(hidden_states):
+                            return self.transformer(
+                                hidden_states=hidden_states,
+                                condition_mask=cond_mask,
+                                timestep=current_in_timestep,
+                                encoder_hidden_states=encoder_hidden_states,
+                                padding_mask=padding_mask,
+                                return_dict=False,
+                            )[0]
+
+                        if (
+                            transformer_activation_checkpointing
+                            and torch.is_grad_enabled()
+                            and current_in_latents.requires_grad
+                        ):
+                            return checkpoint(_transformer_forward, current_in_latents, use_reentrant=False)
+                        return _transformer_forward(current_in_latents)
+
+                    current_noise_pred = _run_transformer(prompt_embeds)
                     # NOTE: replace velocity with gt_velocity for conditioning inputs only.
+                    
+                    # IMPORTANT：意思是：
+                    # conditioning 区域：不用 transformer 预测，直接用 gt_velocity = (latents - cond_latent) * cond_mask
+                    # generated 区域：用 transformer 预测的 velocity
+                    # 为什么要这样做：
+                    # Cosmos 是 world prediction / I2V 模型，输入第一帧必须保持固定。对 conditioning latent，
+                    # 模型不应该“重新生成”它，而是强制 scheduler 把这部分 latent 拉回已知的 cond_latent。
+                    # 这样 denoising 过程中第一帧/condition 部分稳定，不会被 guidance 或 transformer 改坏。  
+                    # 目的：condition frames 的轨迹被固定，不让模型/ guidance 改坏第一帧或已知输入帧。
+                    # 这和后面 guidance 的：
+                    # grad = grad * (1 - cond_mask)
+                    # 是一致的，都是保护 condition latent。                                                          
                     current_noise_pred = gt_velocity + current_noise_pred * (1 - cond_mask)
 
+                    # 这是 negative prompt 的 transformer prediction
                     if self.do_classifier_free_guidance:
-                        current_noise_pred_neg = self.transformer(
-                            hidden_states=current_in_latents,
-                            condition_mask=cond_mask,
-                            timestep=current_in_timestep,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            padding_mask=padding_mask,
-                            return_dict=False,
-                        )[0]
+                        current_noise_pred_neg = _run_transformer(negative_prompt_embeds)
                         current_noise_pred_neg = gt_velocity + current_noise_pred_neg * (1 - cond_mask)
+                        # 最终预测 = prompt预测 + guidance_scale * (prompt预测 - negative预测)
+                        # 直觉上就是：
+                        # 往 prompt 想要的方向推远一点，
+                        # 远离 negative prompt / 无条件生成方向。                        
                         current_noise_pred = current_noise_pred + self.guidance_scale * (current_noise_pred - current_noise_pred_neg)
+
+                    # 所以 _predict_noise_for_latents() 返回的是：
+                    # 当前 latents + prompt + condition frame 下的 CFG flow prediction                        
                     return current_noise_pred
 
-                noise_pred = _predict_noise_for_latents(latents)
+                do_metric_guidance = guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}
+                if not do_metric_guidance:
+                    noise_pred = _predict_noise_for_latents(latents)
+                    if debug_x0_interval > 0 and (i % debug_x0_interval == 0 or i == len(timesteps) - 1):
+                        x0_debug = latents - self.scheduler.sigmas[i].to(
+                            device=latents.device, dtype=latents.dtype
+                        ) * noise_pred
+                        _save_x0_debug(i, x0_debug)
 
-                if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
+                if do_metric_guidance:
                     if loss_fn == "residual_motion" and (
                         additional_inputs is None or not callable(additional_inputs.get("residual_motion_metric", None))
                     ):
@@ -871,13 +1124,11 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                     sigma_for_guidance = self.scheduler.sigmas[i].to(device=latents.device, dtype=latents.dtype)
 
                     for rep in range(guidance_step[i]):
-                        with torch.no_grad():
-                            noise_pred_for_guidance = _predict_noise_for_latents(latents).detach()
-
                         with torch.enable_grad():
                             latents_req = latents.detach().requires_grad_(True)
+                            noise_pred_for_guidance = _predict_noise_for_latents(latents_req)
+                            x0_pred = latents_req - sigma_for_guidance * noise_pred_for_guidance
                             if loss_fn == "latent_l2":
-                                x0_pred = latents_req - sigma_for_guidance * noise_pred_for_guidance
                                 loss = x0_pred.float().pow(2).mean()
                             else:
                                 frames = fixed_frames
@@ -889,7 +1140,6 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
 
                                 latents_mean = self.latents_mean.to(latents_req.device, latents_req.dtype)
                                 latents_std = self.latents_std.to(latents_req.device, latents_req.dtype)
-                                x0_pred = latents_req - sigma_for_guidance * noise_pred_for_guidance
                                 decode_latents = x0_pred * latents_std + latents_mean
 
                                 # Decode only the selected metric frames. For long videos, using one
@@ -898,12 +1148,18 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                                 latent_t = decode_latents.shape[2]
                                 frames_per_latent = max(int(getattr(self, "vae_scale_factor_temporal", 4) or 4), 1)
                                 selected_frames_01 = []
+                                decoded_chunk_stats = []
+                                decode_input_stats = []
                                 for f in frames:
-                                    latent_id = min(max(f // frames_per_latent, 0), latent_t - 1)
-                                    lo = max(0, latent_id - 1)
-                                    hi = min(latent_t - 1, latent_id + 1)
+                                    if f == 0:
+                                        latent_id = 0
+                                    else:
+                                        latent_id = min(latent_t - 1, (f - 1) // frames_per_latent + 1)
+                                    # The temporal VAE is causal: use the target token and its past context.
+                                    lo = max(0, latent_id - 2)
+                                    hi = latent_id
                                     decode_chunk = decode_latents[:, :, lo : hi + 1].contiguous()
-                                    decode_spatial_scale = 0.25
+                                    decode_spatial_scale = 1.0
                                     if additional_inputs is not None:
                                         decode_spatial_scale = float(additional_inputs.get("decode_spatial_scale", decode_spatial_scale))
                                     if 0.0 < decode_spatial_scale < 1.0:
@@ -916,9 +1172,78 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                                             mode="trilinear",
                                             align_corners=False,
                                         ).to(dtype=decode_chunk.dtype)
-                                    decoded_video = self.vae.decode(decode_chunk.to(self.vae.dtype), return_dict=False)[0]
+                                    decode_chunk = _geco_move_tensor(
+                                        decode_chunk,
+                                        vae_device,
+                                        self.vae.dtype,
+                                        via_cpu_for_grad=cross_device_grad_via_cpu,
+                                    )
+                                    if debug_guidance_stages:
+                                        decode_input_float = decode_chunk.detach().float()
+                                        decode_input_stats.append(
+                                            (
+                                                decode_input_float.abs().mean().item(),
+                                                decode_input_float.abs().max().item(),
+                                            )
+                                        )
+                                    if debug_guidance_dump_dir is not None:
+                                        # Diagnostic only: preserve the exact VAE input after device transfer.
+                                        # This lets native and checkpointed tiled decode be compared offline.
+                                        os.makedirs(str(debug_guidance_dump_dir), exist_ok=True)
+                                        torch.save(
+                                            {
+                                                "frame_index": f,
+                                                "latent_id": latent_id,
+                                                "lo": lo,
+                                                "hi": hi,
+                                                "decode_chunk": decode_chunk.detach().cpu(),
+                                            },
+                                            os.path.join(
+                                                str(debug_guidance_dump_dir),
+                                                f"step_{i:03d}_frame_{f:03d}.pt",
+                                            ),
+                                        )
+                                    if vae_activation_checkpointing:
+                                        tile_latent_height = (
+                                            self.vae.tile_sample_min_height // self.vae.spatial_compression_ratio
+                                        )
+                                        tile_latent_width = (
+                                            self.vae.tile_sample_min_width // self.vae.spatial_compression_ratio
+                                        )
+                                        use_per_tile_checkpoint = self.vae.use_tiling and (
+                                            decode_chunk.shape[-2] > tile_latent_height
+                                            or decode_chunk.shape[-1] > tile_latent_width
+                                        )
+                                        if vae_checkpoint_mode == "per_tile" and use_per_tile_checkpoint:
+                                            # Experimental memory fallback. It mirrors upstream tiling tile-by-tile,
+                                            # but the exact native VAE decode below is the default for formal runs.
+                                            decoded_video = _geco_tiled_decode_with_per_tile_checkpoint(
+                                                self.vae, decode_chunk
+                                            )
+                                        else:
+                                            # Formal guidance uses Diffusers' exact native tiled decode. Checkpointing
+                                            # only releases its activations; it does not alter pixels, the VAE cache
+                                            # semantics, or the gradient of the GeCo loss with respect to the latent.
+                                            def _decode_chunk_for_checkpoint(z):
+                                                return self.vae.decode(z, return_dict=False)[0]
+
+                                            decoded_video = checkpoint(
+                                                _decode_chunk_for_checkpoint, decode_chunk, use_reentrant=False
+                                            )
+                                    else:
+                                        decoded_video = self.vae.decode(decode_chunk, return_dict=False)[0]
                                     chunk_num_frames = max(1, (hi - lo) * frames_per_latent + 1)
                                     decoded_video = self._match_num_frames(decoded_video, chunk_num_frames)
+                                    if debug_guidance_stages:
+                                        decoded_float = decoded_video.detach().float()
+                                        decoded_chunk_stats.append(
+                                            (
+                                                decoded_float.abs().mean().item(),
+                                                decoded_float.abs().max().item(),
+                                                (decoded_float.abs() >= 0.99).float().mean().item(),
+                                                (decoded_float.abs() >= 0.9999).float().mean().item(),
+                                            )
+                                        )
                                     frames_01_all = ((decoded_video.permute(0, 2, 3, 4, 1).float() + 1.0) / 2.0).clamp(0, 1)
                                     local_f = min(max(f - lo * frames_per_latent, 0), frames_01_all.shape[1] - 1)
                                     selected_frames_01.append(frames_01_all[:, local_f : local_f + 1])
@@ -928,8 +1253,67 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                                     raise RuntimeError("Residual motion metric returned a detached score.")
                                 loss = -score
 
+                            if debug_guidance_stages:
+                                # This is deliberately opt-in: each VJP traverses the full guided graph.
+                                # It separates a Transformer/x0 Jacobian issue from a VAE or RGB-metric issue.
+                                def _stage_norm(value):
+                                    return "None" if value is None else f"{value.float().norm().item():.8e}"
+
+                                if loss_fn == "residual_motion":
+                                    x0_float = x0_pred.detach().float()
+                                    z_float = decode_latents.detach().float()
+                                    frame_float = frames_01.detach().float()
+                                    chunk_abs_mean = sum(item[0] for item in decoded_chunk_stats) / len(decoded_chunk_stats)
+                                    chunk_near_sat = sum(item[2] for item in decoded_chunk_stats) / len(decoded_chunk_stats)
+                                    chunk_at_sat = sum(item[3] for item in decoded_chunk_stats) / len(decoded_chunk_stats)
+                                    chunk_z_abs_mean = sum(item[0] for item in decode_input_stats) / len(decode_input_stats)
+                                    chunk_z_abs_max = max(item[1] for item in decode_input_stats)
+                                    print(
+                                        f"[cosmos] guidance_values step={i} "
+                                        f"x0_mean_abs={x0_float.abs().mean().item():.8e} "
+                                        f"x0_max_abs={x0_float.abs().max().item():.8e} "
+                                        f"vae_z_mean_abs={z_float.abs().mean().item():.8e} "
+                                        f"vae_z_max_abs={z_float.abs().max().item():.8e} "
+                                        f"chunk_z_mean_abs={chunk_z_abs_mean:.8e} "
+                                        f"chunk_z_max_abs={chunk_z_abs_max:.8e} "
+                                        f"decoded_abs_mean={chunk_abs_mean:.8e} "
+                                        f"decoded_near_sat={chunk_near_sat:.6%} "
+                                        f"decoded_at_sat={chunk_at_sat:.6%} "
+                                        f"frames_min={frame_float.min().item():.8e} "
+                                        f"frames_max={frame_float.max().item():.8e}",
+                                        flush=True,
+                                    )
+
+                                loss_stage_grads = torch.autograd.grad(
+                                    loss,
+                                    [frames_01, decode_latents, x0_pred, latents_req],
+                                    retain_graph=True,
+                                    allow_unused=True,
+                                )
+                                x0_probe_grad = torch.autograd.grad(
+                                    x0_pred.float().square().mean(),
+                                    latents_req,
+                                    retain_graph=True,
+                                    allow_unused=True,
+                                )[0]
+                                print(
+                                    f"[cosmos] guidance_stages step={i} "
+                                    f"dL_dRGB={_stage_norm(loss_stage_grads[0])} "
+                                    f"dL_dDecodeLatents={_stage_norm(loss_stage_grads[1])} "
+                                    f"dL_dx0={_stage_norm(loss_stage_grads[2])} "
+                                    f"dL_dxt={_stage_norm(loss_stage_grads[3])} "
+                                    f"d_x0_l2_dxt={_stage_norm(x0_probe_grad)}",
+                                    flush=True,
+                                )
                             grad = torch.autograd.grad(loss, latents_req, retain_graph=False, create_graph=False)[0]
+                        raw_grad_norm = grad.float().norm().item() if debug_guidance_gradient else None
                         grad = grad * (1 - cond_mask)
+                        if debug_guidance_gradient:
+                            print(
+                                f"[cosmos] guidance_grad step={i} raw_norm={raw_grad_norm:.8e} "
+                                f"generated_norm={grad.float().norm().item():.8e}",
+                                flush=True,
+                            )
                         latent_mean_abs = latents_req.detach().float().abs().mean().item()
                         grad_f = grad.float()
                         grad_norm = grad_f.norm() + 1e-8
@@ -949,7 +1333,7 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
                             flush=True,
                         )
 
-                if guidance_step[i] > 0 and loss_fn in {"latent_l2", "residual_motion"}:
+                if do_metric_guidance:
                     # Use the updated latent for the actual scheduler step as well.
                     with torch.no_grad():
                         noise_pred = _predict_noise_for_latents(latents)
@@ -979,7 +1363,13 @@ class Cosmos2_5_PredictBasePipeline(DiffusionPipeline):
             latents_mean = self.latents_mean.to(latents.device, latents.dtype)
             latents_std = self.latents_std.to(latents.device, latents.dtype)
             latents = latents * latents_std + latents_mean
-            video = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
+            decode_latents = _geco_move_tensor(
+                latents,
+                vae_device,
+                self.vae.dtype,
+                force_via_cpu=latents.device != vae_device,
+            )
+            video = self.vae.decode(decode_latents, return_dict=False)[0]
             video = self._match_num_frames(video, num_frames)
 
             if self.safety_checker is not None:

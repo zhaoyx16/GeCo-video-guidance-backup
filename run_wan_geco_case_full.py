@@ -38,16 +38,40 @@ parser.add_argument("--guidance_start", type=int, default=3)
 parser.add_argument("--guidance_end", type=int, default=7)
 parser.add_argument("--guidance_lr", type=float, default=0.05)
 parser.add_argument("--guidance_repeats", type=int, default=1)
+parser.add_argument(
+    "--guidance_schedule",
+    default="",
+    help=(
+        "Optional comma-separated step:repeats entries, e.g. '16:3,18:3,20:2'. "
+        "Overrides --guidance_start/--guidance_end/--guidance_repeats while preserving "
+        "the same full-Jacobian guidance update at each requested repeat."
+    ),
+)
 parser.add_argument("--ufm_scale", type=float, default=0.125)
 parser.add_argument("--metric_device", default="cuda")
 parser.add_argument("--pipe_device", default="cuda:0")
 parser.add_argument("--vae_device", default=None)
+parser.add_argument(
+    "--transformer_block_checkpointing",
+    action="store_true",
+    help="Use Diffusers' native per-block activation checkpointing for the exact guided Transformer Jacobian.",
+)
+parser.add_argument(
+    "--cross_device_grad_via_cpu",
+    action="store_true",
+    help="CPU-stage differentiable VAE-to-metric transfers for verified-correct multi-GPU VJPs.",
+)
 parser.add_argument("--decode_spatial_scale", type=float, default=1.0)
 parser.add_argument("--max_relative_delta", type=float, default=0.0, help="Optional cap on mean absolute latent update as a fraction of mean abs latent, e.g. 0.002 for 0.2%.")
 parser.add_argument("--debug_x0_interval", type=int, default=0, help="If >0, save decoded x0_pred frames every N denoising steps.")
 parser.add_argument("--debug_x0_dir", default=None, help="Directory for x0_pred debug PNGs. Defaults under the case output directory.")
 parser.add_argument("--debug_x0_frames", default="", help="Comma-separated frame indices to save for x0_pred debug. Defaults to fixed_frames.")
 parser.add_argument("--debug_x0_decode_spatial_scale", type=float, default=1.0, help="Optional latent spatial scale for x0_pred debug decode only.")
+parser.add_argument(
+    "--debug_guidance_consistency",
+    action="store_true",
+    help="Print debug-only comparisons between the sampling and guidance predictions and VAE decode paths.",
+)
 args = parser.parse_args()
 
 model = "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers"
@@ -106,13 +130,49 @@ if args.mode == "guided":
 
     loss_fn = "residual_motion"
     def residual_motion_metric_cross_gpu(frames_01):
-        return residual_motion_metric(frames_01.to(metric_device))
+        # Direct GPU-to-GPU CopyBackward is invalid on this host for the guidance VJP.
+        # CPU staging preserves tensor values and the checked gradient path.
+        if (
+            args.cross_device_grad_via_cpu
+            and torch.is_grad_enabled()
+            and frames_01.requires_grad
+            and frames_01.device != metric_device
+        ):
+            frames_01 = frames_01.to("cpu").to(metric_device)
+        else:
+            frames_01 = frames_01.to(metric_device)
+        return residual_motion_metric(frames_01)
 
-    additional_inputs = {"residual_motion_metric": residual_motion_metric_cross_gpu, "decode_spatial_scale": args.decode_spatial_scale, "max_relative_delta": args.max_relative_delta}
+    additional_inputs = {
+        "residual_motion_metric": residual_motion_metric_cross_gpu,
+        "decode_spatial_scale": args.decode_spatial_scale,
+        "max_relative_delta": args.max_relative_delta,
+        "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
+        "debug_guidance_consistency": args.debug_guidance_consistency,
+    }
 
-    for i in range(args.guidance_start, min(args.guidance_end, args.steps)):
-        guidance_step[i] = args.guidance_repeats
-        guidance_lr[i] = args.guidance_lr
+    if args.guidance_schedule.strip():
+        # A non-uniform schedule changes only update count/timing; the pipeline math is unchanged.
+        seen_steps = set()
+        for entry in args.guidance_schedule.split(","):
+            try:
+                step_text, repeats_text = entry.strip().split(":", 1)
+                step, repeats = int(step_text), int(repeats_text)
+            except ValueError:
+                parser.error("--guidance_schedule entries must use step:repeats, e.g. 16:3,18:3,20:2")
+            if step < 0 or step >= args.steps:
+                parser.error(f"guidance schedule step {step} must be in [0, {args.steps - 1}]")
+            if repeats <= 0:
+                parser.error(f"guidance schedule repeats for step {step} must be positive")
+            if step in seen_steps:
+                parser.error(f"guidance schedule repeats step {step}")
+            seen_steps.add(step)
+            guidance_step[step] = repeats
+            guidance_lr[step] = args.guidance_lr
+    else:
+        for i in range(args.guidance_start, min(args.guidance_end, args.steps)):
+            guidance_step[i] = args.guidance_repeats
+            guidance_lr[i] = args.guidance_lr
 
 #107-111 打印 fixed_frames / guidance_step / scale / cap
 fixed_frames = [int(x) for x in args.fixed_frames.split(",") if x.strip()]
@@ -140,7 +200,10 @@ print("fixed_frames 0-based:", fixed_frames)
 print("guidance_step:", guidance_step)
 print("max_relative_delta:", args.max_relative_delta)
 print("decode_spatial_scale:", args.decode_spatial_scale)
+print("cross_device_grad_via_cpu:", args.cross_device_grad_via_cpu)
+print("transformer_block_checkpointing:", args.transformer_block_checkpointing)
 print("debug_x0_interval:", args.debug_x0_interval)
+print("debug_guidance_consistency:", args.debug_guidance_consistency)
 if args.debug_x0_interval > 0:
     print("debug_x0_frames:", debug_x0_frames)
     print("debug_x0_dir:", additional_inputs["debug_x0_dir"])
@@ -149,9 +212,22 @@ if args.debug_x0_interval > 0:
 #114-117 加载 Wan VAE + custom Wan pipeline
 vae = AutoencoderKLWan.from_pretrained(model, subfolder="vae", torch_dtype=torch.float32)
 pipe = WanImageToVideoPipeline.from_pretrained(model, vae=vae, torch_dtype=torch.bfloat16).to(args.pipe_device)
+if args.transformer_block_checkpointing:
+    # Native Diffusers per-block checkpointing preserves the same Transformer
+    # forward and Jacobian while releasing each block's activations until backward.
+    pipe.transformer.enable_gradient_checkpointing()
 if args.vae_device is not None:
-    pipe.vae.to(args.vae_device)
-    pipe._geco_vae_device = torch.device(args.vae_device)
+    requested_vae_device = torch.device(args.vae_device)
+    current_vae_device = next(pipe.vae.parameters()).device
+    if requested_vae_device != current_vae_device:
+        # Direct GPU-to-GPU module moves produced invalid VAE values on this host.
+        # CPU staging preserves the unchanged VAE weights and its differentiable path.
+        pipe.vae.to("cpu")
+        if current_vae_device.type == "cuda":
+            with torch.cuda.device(current_vae_device):
+                torch.cuda.empty_cache()
+        pipe.vae.to(requested_vae_device)
+    pipe._geco_vae_device = requested_vae_device
 else:
     pipe._geco_vae_device = torch.device(args.pipe_device)
 pipe.vae.enable_tiling()

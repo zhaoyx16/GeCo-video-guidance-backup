@@ -1,0 +1,23 @@
+{
+  "move_apple": {
+    "text_prompt": "The input image shows a fixed camera view of a tabletop robot scene. There is one red apple near the lower-left area of the wooden table and one yellow square cloth on the right side of the table. The robot gripper first approaches the red apple, then contacts it, moves the same apple smoothly across the tabletop, and releases it on top of the yellow cloth. The apple remains visible throughout the whole motion as it travels from its initial position to the cloth. The camera stays fixed while the table, cloth, robot base, walls, and background remain in the same place.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data_manipulation/extracted_frames/move_apple/frame_first.png",
+    "source_video": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data_manipulation/raw/move_apple_on_cloth_cropped_removed.mp4",
+    "task_type": "manipulation",
+    "prompt_type": "continuous_motion_prompt"
+  },
+  "open_drawer": {
+    "text_prompt": "The input image shows a fixed camera view of a robot arm beside a wooden cabinet. The target drawer is the lower wooden drawer under the tabletop on the left side of the image. It has a black handle on the right edge of the drawer front, close to the robot gripper. The robot gripper should move to this black handle, grasp or contact it, and pull the drawer horizontally to the viewer's right. The drawer should slide out from the wooden cabinet toward the robot side. By the final frame, this lower drawer should be visibly open. Do not interact with the recessed wall opening or the background cabinet area. Keep the wall, tabletop, buttons, robot base, and cabinet body fixed. No camera motion, no scene cut, no extra robot arms, no extra drawers, and no sudden teleportation.",
+    "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data_manipulation/extracted_frames/open_drawer/frame_first.png",
+    "source_video": "/vol/dissolve/yz10325/experiments/experiments_videogpa/data_manipulation/raw/task_agnostic_open_drawer_rt1x_removed.mp4",
+    "task_type": "manipulation",
+    "prompt_type": "grounded_prompt"
+  },
+  "move_red_cube": {
+    "text_prompt": "The input image shows a fixed camera view of a tabletop with several red cubes, a white bowl, and a robot gripper. The small red cube on the wooden tabletop should move smoothly from the left side toward the right side of the table and stop beside the bowl. Keep the stacked red cubes, the bowl, the tabletop, the background, and the camera fixed. Do not create or remove cubes, do not change the red cube stack, and do not introduce extra objects or a scene cut.",
+    "image_prompt": "/vol/dissolve/yz10325/outputs/dynamic_manipulation_official_20260717/inputs/move_red_cube_first.png",
+    "source_video": "/vol/dissolve/yz10325/outputs/geco_guidance_failures_fast/robot_cube_dynamic/metric_base.mp4",
+    "task_type": "manipulation",
+    "prompt_type": "red_cube_motion_prompt"
+  }
+}
