@@ -1,0 +1,1 @@
+{"cache_path":"cache/kitti_00_clip_000123.pt","format_version":1,"record_id":"kitti_00_000123_pair_000_020","scene_id":"kitti_odometry_00","source_dataset":"KITTI-odometry","source_latent_index":0,"source_pose_index":0,"split":"train","static_scene":true,"target_latent_index":5,"target_pose_index":20}
