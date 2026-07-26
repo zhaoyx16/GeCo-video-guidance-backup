@@ -1,143 +1,170 @@
 # Controlled Navigation Benchmark Protocol
 
-This package records and validates the protocol for future comparisons between
-Frame Guidance only, Frame Guidance plus RGB GeCo, and Frame Guidance plus a
-latent geometry method. It does not generate videos or change a guided
-pipeline.
+This package defines the experiment record used for future comparisons of:
 
-## Core rule
+- Frame Guidance only;
+- Frame Guidance plus the current RGB-GeCo variant; and
+- Frame Guidance plus a future latent-geometry method.
 
-Every arm in a paired comparison must have the same condition mapping. The
-mapping is the normalized configuration: scene identity and split, source clip
-interval and FPS, first/middle/last anchor paths and hashes, prompt, seed,
-model revision, sampler, resolution, frame count, and Frame Guidance settings.
-The only fields that may differ across arms are method, output, and execution.
+It is deliberately protocol-only. It does not modify a generation pipeline,
+Frame Guidance, or a latent critic.
 
-The tooling calculates a SHA-256 condition hash over the full condition
-mapping. A changed anchor, prompt, seed, scheduler, model revision or sampling
-parameter therefore fails paired-condition validation.
+## What Is Frozen
 
-source_clip.time_origin must state whether anchor timestamps are relative to
-the selected clip or to the source sequence. This matters whenever start_frame
-is nonzero.
+Every benchmark manifest starts with one or more frozen split_manifest records.
+Each assignment contains dataset_id, scene_id, sequence_id, and split. The
+validator rejects a scene or sequence that appears in more than one frozen
+manifest, and rejects a scene or sequence assigned to different splits. A
+generation condition must name the split-manifest ID and its SHA-256. The
+referenced manifest must be present in the same run manifest and must assign
+that exact dataset/scene/sequence tuple to the claimed split.
 
-Use paths as configurable URIs rather than machine-specific absolute paths.
-Examples include dataset://DL3DV/..., relative paths, object-storage URIs, or
-an experiment artifact URI.
+The frozen split manifest is therefore created before method tuning. Do not
+create a new split to accommodate a method result.
 
-## Required provenance
+## Paired Condition
 
-A completed run must record:
+The condition mapping is hashed as condition_hash. It includes:
 
-- the git commit;
-- the method mechanism and version;
-- the full normalized condition and matching condition hash;
-- source, pose, intrinsics, and anchor hashes;
-- model ID and checkpoint revision;
-- seed;
-- device-role mapping;
-- per-device peak allocated and reserved VRAM;
-- runtime in seconds; and
-- output URI and optional output hash.
+- source clip interval, native FPS, source hash, intrinsics hash, and pose hash;
+- first, middle, and last image-anchor paths, source timestamps, and hashes;
+- the frozen split-manifest reference;
+- static-scene eligibility and an explicit scene/sequence statistical unit;
+- prompt, seed, model ID/revision/config, and complete sampler config;
+- Frame Guidance settings; and
+- source-to-generated frame and timestamp mapping.
 
-A completed record must also carry record_hash, a SHA-256 fingerprint of the
-entire completed record apart from record_hash itself. This is a lightweight
-tamper-evident immutable-record check; it does not replace artifact storage.
+For any pair_id every expected method must have exactly the same condition
+hash. Only method, output, and execution provenance may differ. This means a
+same-seed RGB-GeCo comparison is a controlled ablation, but trajectory control
+still has to be reported separately: the generated motion must not get smaller
+to obtain a better geometry score.
 
-The metric record separately records evaluator name/version, evaluator
-model/checkpoint, and the full evaluator configuration. GeCo-Eval should be
-recorded with metric_role guidance_aligned: it is useful, but not independent
-of a VGGT/UFM-based RGB-GeCo objective. The benchmark should also include an
-independent geometry metric and a trajectory-adherence metric.
+## Anchor Contract
 
-## Method provenance
+This v1 protocol fixes the anchor rule rather than accepting any three frames:
 
-method.mechanism distinguishes mechanism variants explicitly. For the current
-RGB reference, use a value such as:
+1. first is source_clip.start_frame;
+2. middle is start_frame + floor((end_frame - start_frame) / 2);
+3. last is source_clip.end_frame.
+
+Anchors must be stored in that order. Source timestamps are checked against the
+declared native FPS and time origin. frame_guidance.generated_timing then maps
+the three source anchors to generated frame 0, generated floor midpoint, and
+generated final frame. It also records both source and generated timestamps.
+
+This is the contract used by a future Frame Guidance implementation and by
+trajectory evaluation; it avoids a result being evaluated on a different set
+of frames from the ones used as trajectory anchors.
+
+## Completed Runs and Metrics
+
+A completed generation_run must include:
+
+- immutable git commit, full normalized condition hash, method parameters, and
+  mechanism/version;
+- output video URI and SHA-256;
+- device-role mapping, runtime, and peak allocated/reserved VRAM per device;
+- a record_hash calculated over the completed record; and
+- source/anchor/model/checkpoint provenance already held in the condition.
+
+A metric_result is bound to a completed run via both run_record_hash and
+evaluated_output_sha256. It must also have a SHA-256 for the metric output
+artifact, plus an evaluator descriptor with name, version, model/checkpoint,
+full config, independence policy, and evaluator fingerprint.
+
+GeCo-Eval is useful, but it is guidance_aligned when RGB-GeCo itself uses
+VGGT/UFM. It must not be described as an independent evaluator. Independent
+geometry or trajectory evaluators must state independence_policy=independent.
+
+Trajectory evaluation accepts only bound pose artifacts. A reference artifact
+must hash-match source_clip.poses_ref. A predicted artifact must name the
+generated video SHA-256. Both must expose the contractual anchors, explicit
+W2C or C2W convention, and translation units. Raw arbitrary pose matrices are
+rejected by the public trajectory interface.
+
+## Current RGB Reference Identity
+
+The current RGB path is a flow-matching RGB-GeCo variant, not an assertion of
+exact original GeCo equivalence. Its method.mechanism must record at least:
 
     {
       "id": "rgb_geco_flow_matching_x0",
-      "version": "wan-rgb-geco-v1",
+      "version": "...",
       "time_travel": "absent",
       "temporal_vae_context": "past_only_approximate",
       "guidance_schedule_state": "active_guidance"
     }
 
-This avoids calling a flow-matching x0 implementation exact original GeCo when
-it lacks GeCo time travel and uses an approximate temporal VAE slice.
+guidance_schedule_state distinguishes a true all-zero schedule from a positive
+schedule with zero learning rate. They can be visually identical under a
+correct implementation, but they exercise different sampling paths and must
+not be merged in provenance.
 
-guidance_schedule_state is mandatory and must be one of:
+## Fail-Closed Aggregation
 
-- baseline_all_zero_schedule: no guidance step is scheduled;
-- positive_schedule_zero_lr: guidance steps are scheduled, but their update
-  scale is zero; and
-- active_guidance: at least one scheduled update has a non-zero scale.
+Final aggregation requires all expected arms, all completed and hash-valid,
+with a result for the requested metric. It rejects missing, failed, duplicate,
+or unbound arms rather than skipping them. All selected metric results must use
+the same evaluator fingerprint and config.
 
-The first two are deliberately distinct. They may be expected to produce the
-same video under a correct no-op implementation, but they do not exercise the
-same code path and must not be silently merged in a reproducibility table.
+The declared independent unit is condition.scene.statistical_unit. Typical
+navigation data should use a sequence cluster when multiple clips or seeds
+share one source sequence. Confidence intervals use a cluster bootstrap, not a
+frame-level or seed-level bootstrap. At least two independent clusters are
+required; otherwise the protocol rejects the confidence interval instead of
+reporting a misleading one.
 
 ## Commands
 
-Create records in Python and stamp the canonical condition hash:
+Create a frozen split record with with_split_manifest_hash, then calculate a
+condition hash with with_condition_hash. After a generation completes, add the
+execution and output hash and call with_record_hash.
 
-    from navigation_benchmark.manifest import with_condition_hash, write_records
-    record = with_condition_hash(record)
-    write_records("runs.jsonl", [record])
-
-After a run completes and execution provenance is filled:
-
-    from navigation_benchmark.manifest import with_record_hash
-    completed_record = with_record_hash(completed_record)
-
-Validate a final three-arm pair:
+Validate a final three-arm manifest:
 
     python -m navigation_benchmark validate \
       --manifest runs.jsonl \
       --expected-method fg_only \
       --expected-method fg_rgb_geco \
       --expected-method fg_latent_geometry \
-      --require-static-scene
+      --require-static-scene \
+      --require-completed
 
-Compute trajectory adherence from externally estimated pose series and source
-GT poses:
+Evaluate externally estimated poses only after writing bound source and output
+pose artifacts:
 
     python -m navigation_benchmark trajectory \
-      --gt-poses gt_anchor_poses.json \
-      --predicted-poses predicted_anchor_poses.json \
+      --manifest runs.jsonl \
       --run-id example-run \
+      --reference-pose-artifact reference_pose_artifact.json \
+      --predicted-pose-artifact predicted_pose_artifact.json \
+      --metric-artifact-uri artifacts://pose-eval/example-run.json \
+      --metric-artifact-sha256 <sha256> \
       --metric-output trajectory_metrics.jsonl \
-      --evaluator-name pose-estimator \
+      --evaluator-name external-pose-estimator \
       --evaluator-version v1 \
       --evaluator-model-id model-id \
       --evaluator-checkpoint-revision revision \
-      --evaluator-config-json '{"pose_convention":"world_from_camera"}'
+      --evaluator-config-json '{"config_key":"value"}'
 
-Aggregate a lower-is-better metric as a paired comparison:
+Aggregate one candidate against the reference while requiring every planned
+arm in the pair:
 
     python -m navigation_benchmark aggregate \
       --manifest runs.jsonl \
       --metrics metrics.jsonl \
       --baseline-method fg_only \
       --candidate-method fg_rgb_geco \
-      --metric geco_fused
+      --expected-method fg_only \
+      --expected-method fg_rgb_geco \
+      --expected-method fg_latent_geometry \
+      --metric independent_pose_rmse
 
-The resulting improvement is positive when the candidate is better. The
-summary includes paired count, mean and median improvement, fraction improved,
-and a deterministic bootstrap confidence interval.
+## External Requirements
 
-## External data still required
-
-The protocol cannot manufacture the following source data:
-
-- sequence-disjoint train/dev/test splits;
-- source clip intervals and native FPS;
-- first/middle/last image anchors;
-- source intrinsics and GT camera poses;
-- static-scene eligibility labels and rationale; and
-- an external pose estimator or reconstruction method for trajectory evaluation.
-
-Those inputs must be frozen in a dataset manifest before hyperparameter tuning
-or critic training. The template in examples is intentionally not directly
-valid: it contains replace-with placeholders and must be hashed after filling
-real data.
+The protocol cannot manufacture dataset ground truth. Before a final study it
+still needs frozen source clips, intrinsics, poses, frame artifacts, static
+eligibility labels, an independent evaluator, and a content-addressed artifact
+store or stable URI scheme. The JSON template is illustrative only; replace
+all placeholder hashes and compute the real fingerprints before validation.

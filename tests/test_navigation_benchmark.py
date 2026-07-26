@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 import tempfile
 import unittest
@@ -9,26 +11,95 @@ from pathlib import Path
 from navigation_benchmark.manifest import (
     METRIC_RESULT_RECORD_TYPE,
     SCHEMA_VERSION,
+    ManifestValidationError,
     load_records,
     validate_manifest,
     with_condition_hash,
+    with_evaluator_fingerprint,
     with_record_hash,
+    with_split_manifest_hash,
     write_records,
 )
 from navigation_benchmark.results import aggregate_paired_metric
-from navigation_benchmark.trajectory import evaluate_anchor_trajectory, trajectory_metric_records
+from navigation_benchmark.trajectory import evaluate_bound_anchor_trajectory, trajectory_metric_records
 
 
-HASH = "a" * 64
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def valid_condition(seed: int = 7) -> dict:
+def split_assignment(scene_id: str = "synthetic-scene", sequence_id: str = "sequence-00", split: str = "test") -> dict:
+    return {
+        "dataset_id": "synthetic-dataset",
+        "scene_id": scene_id,
+        "sequence_id": sequence_id,
+        "split": split,
+    }
+
+
+def valid_split_manifest(*assignments: dict, manifest_id: str = "synthetic-split-v1") -> dict:
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "split_manifest",
+        "split_manifest_id": manifest_id,
+        "status": "frozen",
+        "assignments": list(assignments or (split_assignment(),)),
+    }
+    return with_split_manifest_hash(record)
+
+
+def valid_condition(
+    split_manifest: dict,
+    *,
+    seed: int = 7,
+    scene_id: str = "synthetic-scene",
+    sequence_id: str = "sequence-00",
+    split: str = "test",
+    start_frame: int = 0,
+    end_frame: int = 8,
+) -> dict:
+    middle = start_frame + (end_frame - start_frame) // 2
+    source_fps = 4.0
+    source_time = lambda frame: (frame - start_frame) / source_fps
+    generated_frames = 9
+    generated_fps = 4.0
+    generated_middle = (generated_frames - 1) // 2
+    anchors = []
+    generated_anchor_map = []
+    for role, source_frame, generated_frame in (
+        ("first", start_frame, 0),
+        ("middle", middle, generated_middle),
+        ("last", end_frame, generated_frames - 1),
+    ):
+        anchors.append(
+            {
+                "role": role,
+                "frame_index": source_frame,
+                "timestamp_sec": source_time(source_frame),
+                "frame_uri": f"dataset://synthetic/{sequence_id}/frame-{source_frame:05d}.png",
+                "sha256": digest(f"anchor-{sequence_id}-{source_frame}"),
+            }
+        )
+        generated_anchor_map.append(
+            {
+                "role": role,
+                "source_frame_index": source_frame,
+                "source_timestamp_sec": source_time(source_frame),
+                "generated_frame_index": generated_frame,
+                "generated_timestamp_sec": generated_frame / generated_fps,
+            }
+        )
     return {
         "protocol": {"id": "controlled-navigation-frame-guidance", "version": "v1"},
+        "split_manifest": {
+            "id": split_manifest["split_manifest_id"],
+            "sha256": split_manifest["split_manifest_hash"],
+        },
         "scene": {
-            "scene_id": "synthetic-scene",
+            "scene_id": scene_id,
             "dataset_id": "synthetic-dataset",
-            "split": "test",
+            "split": split,
+            "statistical_unit": {"cluster_id": sequence_id, "level": "sequence"},
             "static_scene_eligibility": {
                 "eligible": True,
                 "criteria_version": "static-navigation-v1",
@@ -36,74 +107,68 @@ def valid_condition(seed: int = 7) -> dict:
             },
         },
         "source_clip": {
-            "source_uri": "dataset://synthetic/sequence-00/clip-01",
-            "source_sha256": HASH,
-            "sequence_id": "sequence-00",
+            "source_uri": f"dataset://synthetic/{sequence_id}/clip-01",
+            "source_sha256": digest(f"source-{sequence_id}"),
+            "sequence_id": sequence_id,
             "clip_id": "clip-01",
-            "start_frame": 0,
-            "end_frame": 8,
-            "source_fps": 4.0,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "source_fps": source_fps,
             "time_origin": "clip_relative",
+            "anchor_policy": {"id": "first_middle_last_floor_v1", "middle_rule": "floor_midpoint"},
             "intrinsics_ref": {
-                "uri": "dataset://synthetic/sequence-00/intrinsics.json",
+                "uri": f"dataset://synthetic/{sequence_id}/intrinsics.json",
                 "format": "json",
-                "sha256": HASH,
+                "sha256": digest(f"intrinsics-{sequence_id}"),
             },
             "poses_ref": {
-                "uri": "dataset://synthetic/sequence-00/poses.json",
+                "uri": f"dataset://synthetic/{sequence_id}/poses.json",
                 "format": "json",
-                "sha256": HASH,
+                "sha256": digest(f"poses-{sequence_id}"),
+                "pose_convention": "C2W",
+                "translation_unit": "meters",
             },
-            "anchors": [
-                {
-                    "role": "first",
-                    "frame_index": 0,
-                    "timestamp_sec": 0.0,
-                    "frame_uri": "dataset://synthetic/frame-000.png",
-                    "sha256": HASH,
-                },
-                {
-                    "role": "middle",
-                    "frame_index": 4,
-                    "timestamp_sec": 1.0,
-                    "frame_uri": "dataset://synthetic/frame-004.png",
-                    "sha256": HASH,
-                },
-                {
-                    "role": "last",
-                    "frame_index": 8,
-                    "timestamp_sec": 2.0,
-                    "frame_uri": "dataset://synthetic/frame-008.png",
-                    "sha256": HASH,
-                },
-            ],
+            "anchors": anchors,
         },
         "frame_guidance": {
             "enabled": True,
             "anchor_roles": ["first", "middle", "last"],
+            "generated_timing": {
+                "mapping_policy": "first_middle_last_index_v1",
+                "generated_frame_count": generated_frames,
+                "generated_fps": generated_fps,
+                "anchor_map": generated_anchor_map,
+            },
         },
         "prompt": "A static corridor observed by a moving camera.",
         "seed": seed,
-        "model": {"model_id": "synthetic-vdm", "checkpoint_revision": "test-revision"},
+        "model": {
+            "model_id": "synthetic-vdm",
+            "checkpoint_revision": "test-revision",
+            "config": {"variant": "synthetic"},
+        },
         "sampling": {
             "height": 256,
             "width": 448,
-            "num_frames": 9,
-            "fps": 4.0,
+            "num_frames": generated_frames,
+            "fps": generated_fps,
             "num_inference_steps": 5,
-            "scheduler": {"name": "synthetic-flow-match"},
+            "scheduler": {"name": "synthetic-flow-match", "config": {"shift": 1.0}},
         },
     }
 
 
 def valid_run(
+    split_manifest: dict,
     *,
     run_id: str,
     pair_id: str,
     method_name: str,
     schedule_state: str,
-    seed: int = 7,
     completed: bool = False,
+    seed: int = 7,
+    scene_id: str = "synthetic-scene",
+    sequence_id: str = "sequence-00",
 ) -> dict:
     run = {
         "schema_version": SCHEMA_VERSION,
@@ -123,236 +188,272 @@ def valid_run(
                 "guidance_schedule_state": schedule_state,
             },
         },
-        "condition": valid_condition(seed),
+        "condition": valid_condition(
+            split_manifest,
+            seed=seed,
+            scene_id=scene_id,
+            sequence_id=sequence_id,
+        ),
         "output": {"video_uri": f"outputs://synthetic/{run_id}.mp4"},
         "execution": None,
     }
     if completed:
+        run["output"]["sha256"] = digest(f"video-{run_id}")
         run["execution"] = {
             "git_commit": "deadbeef",
             "runtime_sec": 12.5,
-            "devices": {"video_diffusion": "cuda:0", "vae": "cuda:1"},
+            "devices": {"video_diffusion": "cuda:0", "vae": "cuda:1", "metric": "cuda:2"},
             "peak_vram_mib": {
                 "cuda:0": {"allocated": 1024.0, "reserved": 1536.0},
                 "cuda:1": {"allocated": 512.0, "reserved": 768.0},
+                "cuda:2": {"allocated": 256.0, "reserved": 384.0},
             },
         }
     run = with_condition_hash(run)
     return with_record_hash(run) if completed else run
 
 
-def metric(run_id: str, value: float, *, direction: str = "lower_is_better") -> dict:
+def rehash_run(run: dict) -> dict:
+    run = with_condition_hash(run)
+    return with_record_hash(run) if run["status"] == "completed" else run
+
+
+def default_evaluator(*, policy: str = "guidance_aligned", config: dict | None = None) -> dict:
+    return with_evaluator_fingerprint(
+        {
+            "name": "synthetic-evaluator",
+            "version": "v1",
+            "model_id": "synthetic-model",
+            "checkpoint_revision": "test-revision",
+            "config": config or {"window_sec": 1.0},
+            "independence_policy": policy,
+        }
+    )
+
+
+def metric(run: dict, value: float, *, metric_name: str = "geco_fused", evaluator: dict | None = None) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "record_type": METRIC_RESULT_RECORD_TYPE,
-        "run_id": run_id,
-        "metric_name": "geco_fused",
+        "run_id": run["run_id"],
+        "run_record_hash": run["record_hash"],
+        "evaluated_output_sha256": run["output"]["sha256"],
+        "metric_name": metric_name,
         "metric_role": "guidance_aligned",
-        "direction": direction,
+        "direction": "lower_is_better",
         "value": value,
-        "evaluator": {
-            "name": "synthetic-geco-eval",
-            "version": "v1",
-            "model_id": "synthetic-vggt-ufm",
-            "checkpoint_revision": "test-revision",
-            "config": {"window_sec": 1.0},
-        },
+        "evaluator": evaluator or default_evaluator(),
+        "metric_artifact": {"uri": f"metrics://synthetic/{run['run_id']}/{metric_name}.json", "sha256": digest(f"metric-{run['run_id']}-{metric_name}")},
     }
 
 
 def pose(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> list[list[float]]:
-    return [
-        [1.0, 0.0, 0.0, x],
-        [0.0, 1.0, 0.0, y],
-        [0.0, 0.0, 1.0, z],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
+    return [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]]
+
+
+def reference_pose_artifact(run: dict, poses: list[list[list[float]]]) -> dict:
+    source = run["condition"]["source_clip"]
+    return {
+        "uri": "dataset://synthetic/poses.json",
+        "sha256": source["poses_ref"]["sha256"],
+        "pose_convention": "C2W",
+        "translation_unit": "meters",
+        "anchor_poses": [
+            {
+                "role": anchor["role"],
+                "source_frame_index": anchor["frame_index"],
+                "source_timestamp_sec": anchor["timestamp_sec"],
+                "matrix": matrix,
+            }
+            for anchor, matrix in zip(source["anchors"], poses)
+        ],
+    }
+
+
+def predicted_pose_artifact(run: dict, poses: list[list[list[float]]]) -> dict:
+    timing = run["condition"]["frame_guidance"]["generated_timing"]
+    return {
+        "uri": f"metrics://synthetic/{run['run_id']}/predicted-poses.json",
+        "sha256": digest(f"predicted-poses-{run['run_id']}"),
+        "input_video_sha256": run["output"]["sha256"],
+        "pose_convention": "C2W",
+        "translation_unit": "meters",
+        "anchor_poses": [
+            {
+                "role": mapping["role"],
+                "generated_frame_index": mapping["generated_frame_index"],
+                "generated_timestamp_sec": mapping["generated_timestamp_sec"],
+                "matrix": matrix,
+            }
+            for mapping, matrix in zip(timing["anchor_map"], poses)
+        ],
+    }
 
 
 class NavigationBenchmarkManifestTests(unittest.TestCase):
-    def test_valid_three_arm_pair(self) -> None:
+    def test_valid_three_arm_pair_with_frozen_split(self) -> None:
+        split = valid_split_manifest()
         runs = [
-            valid_run(
-                run_id="fg-only",
-                pair_id="scene-seed-7",
-                method_name="fg_only",
-                schedule_state="baseline_all_zero_schedule",
-            ),
-            valid_run(
-                run_id="fg-rgb",
-                pair_id="scene-seed-7",
-                method_name="fg_rgb_geco",
-                schedule_state="active_guidance",
-            ),
-            valid_run(
-                run_id="fg-latent",
-                pair_id="scene-seed-7",
-                method_name="fg_latent_geometry",
-                schedule_state="active_guidance",
-            ),
+            valid_run(split, run_id="fg-only", pair_id="scene-seed-7", method_name="fg_only", schedule_state="baseline_all_zero_schedule"),
+            valid_run(split, run_id="fg-rgb", pair_id="scene-seed-7", method_name="fg_rgb_geco", schedule_state="active_guidance"),
+            valid_run(split, run_id="fg-latent", pair_id="scene-seed-7", method_name="fg_latent_geometry", schedule_state="active_guidance"),
         ]
-        issues = validate_manifest(
-            runs,
-            expected_methods=("fg_only", "fg_rgb_geco", "fg_latent_geometry"),
-            require_static_scene=True,
-        )
-        self.assertEqual([], issues)
+        self.assertEqual([], validate_manifest([split, *runs], expected_methods=("fg_only", "fg_rgb_geco", "fg_latent_geometry"), require_static_scene=True))
 
-    def test_pair_validation_detects_non_method_difference(self) -> None:
-        baseline = valid_run(
-            run_id="baseline",
-            pair_id="scene-seed-7",
-            method_name="fg_only",
-            schedule_state="baseline_all_zero_schedule",
-        )
-        candidate = valid_run(
-            run_id="candidate",
-            pair_id="scene-seed-7",
-            method_name="fg_rgb_geco",
-            schedule_state="active_guidance",
-        )
-        candidate["condition"]["sampling"]["num_frames"] = 11
-        candidate = with_condition_hash(candidate)
-        issues = validate_manifest([baseline, candidate])
+    def test_global_sequence_disjointness_across_splits(self) -> None:
+        test_split = valid_split_manifest(split_assignment(split="test"), manifest_id="test-split")
+        train_split = valid_split_manifest(split_assignment(split="train"), manifest_id="train-split")
+        issues = validate_manifest([test_split, train_split])
+        self.assertTrue(any("globally assigned" in issue.message for issue in issues))
+
+    def test_run_rejects_nonmatching_frozen_split_hash(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="run", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        run["condition"]["split_manifest"]["sha256"] = digest("wrong")
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        self.assertTrue(any(issue.field == "condition.split_manifest.sha256" for issue in issues))
+
+    def test_pair_validation_detects_nonmethod_difference(self) -> None:
+        split = valid_split_manifest()
+        baseline = valid_run(split, run_id="baseline", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        candidate = valid_run(split, run_id="candidate", pair_id="pair", method_name="fg_rgb_geco", schedule_state="active_guidance")
+        candidate["condition"]["sampling"]["num_inference_steps"] = 8
+        candidate = rehash_run(candidate)
+        issues = validate_manifest([split, baseline, candidate])
         self.assertTrue(any(issue.field == "condition" for issue in issues))
 
-    def test_schedule_state_is_not_optional(self) -> None:
-        run = valid_run(
-            run_id="zero-lr",
-            pair_id="scene-seed-7",
-            method_name="fg_rgb_geco",
-            schedule_state="positive_schedule_zero_lr",
-        )
-        del run["method"]["mechanism"]["guidance_schedule_state"]
-        run = with_condition_hash(run)
-        issues = validate_manifest([run])
-        self.assertTrue(
-            any(issue.field == "method.mechanism.guidance_schedule_state" for issue in issues)
-        )
+    def test_contractual_anchors_reject_nonendpoint_or_nondeterministic_middle(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="anchors", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        run["condition"]["source_clip"]["anchors"][0]["frame_index"] = 1
+        run["condition"]["source_clip"]["anchors"][1]["frame_index"] = 3
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        fields = {issue.field for issue in issues}
+        self.assertIn("condition.source_clip.anchors[0].frame_index", fields)
+        self.assertIn("condition.source_clip.anchors[1].frame_index", fields)
 
-    def test_completed_run_requires_detailed_execution_provenance(self) -> None:
-        run = valid_run(
-            run_id="complete",
-            pair_id="scene-seed-7",
-            method_name="fg_only",
-            schedule_state="baseline_all_zero_schedule",
-            completed=True,
-        )
-        self.assertEqual([], validate_manifest([run]))
+    def test_contractual_generated_mapping_rejects_wrong_middle_frame(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="mapping", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        run["condition"]["frame_guidance"]["generated_timing"]["anchor_map"][1]["generated_frame_index"] = 3
+        run = rehash_run(run)
+        issues = validate_manifest([split, run])
+        self.assertTrue(any("generated_frame_index" in issue.field for issue in issues))
+
+    def test_completed_run_requires_hash_valid_output_and_provenance(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="complete", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        self.assertEqual([], validate_manifest([split, run]))
         invalid = copy.deepcopy(run)
-        del invalid["execution"]["peak_vram_mib"]["cuda:0"]["reserved"]
+        del invalid["output"]["sha256"]
         invalid = with_record_hash(invalid)
-        issues = validate_manifest([invalid])
-        self.assertTrue(
-            any(issue.field == "execution.peak_vram_mib.cuda:0.reserved" for issue in issues)
-        )
-
-    def test_clip_relative_anchor_timestamps_handle_nonzero_start(self) -> None:
-        run = valid_run(
-            run_id="nonzero-start",
-            pair_id="scene-seed-7",
-            method_name="fg_only",
-            schedule_state="baseline_all_zero_schedule",
-        )
-        source = run["condition"]["source_clip"]
-        source["start_frame"] = 100
-        source["end_frame"] = 108
-        for anchor, frame_index in zip(source["anchors"], (100, 104, 108)):
-            anchor["frame_index"] = frame_index
-            anchor["timestamp_sec"] = (frame_index - 100) / 4.0
-        run = with_condition_hash(run)
-        self.assertEqual([], validate_manifest([run]))
+        issues = validate_manifest([split, invalid])
+        self.assertTrue(any(issue.field == "output.sha256" for issue in issues))
 
     def test_jsonl_round_trip(self) -> None:
-        records = [
-            valid_run(
-                run_id="round-trip",
-                pair_id="scene-seed-7",
-                method_name="fg_only",
-                schedule_state="baseline_all_zero_schedule",
-            )
-        ]
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="round", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule")
+        records = [split, run]
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "runs.jsonl"
             write_records(path, records)
             self.assertEqual(records, load_records(path))
 
+    def test_schema_declares_extensions_as_only_open_ended_policy(self) -> None:
+        schema_path = Path(__file__).parents[1] / "schemas" / "navigation_benchmark_v1.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertFalse(schema["$defs"]["generationRun"]["additionalProperties"])
+        self.assertTrue(schema["$defs"]["extensions"]["additionalProperties"])
+        self.assertIn("splitManifest", schema["$defs"])
 
-class TrajectoryTests(unittest.TestCase):
-    def test_exact_trajectory_has_zero_error(self) -> None:
-        gt = [pose(), pose(1.0), pose(2.0)]
-        report = evaluate_anchor_trajectory(gt, gt)
+
+class TrajectoryBindingTests(unittest.TestCase):
+    def test_bound_exact_trajectory_has_zero_error_and_hashes(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="trajectory", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        poses = [pose(), pose(1.0), pose(2.0)]
+        evaluator = default_evaluator(policy="independent", config={"backend": "synthetic-pose"})
+        report = evaluate_bound_anchor_trajectory(run, reference_pose_artifact(run, poses), predicted_pose_artifact(run, poses), evaluator=evaluator)
         self.assertAlmostEqual(0.0, float(report["translation_rmse"]))
-        self.assertAlmostEqual(0.0, float(report["rotation_deg_mean"]))
         self.assertAlmostEqual(1.0, float(report["motion_ratio"]))
+        metrics = trajectory_metric_records(run, report, evaluator=evaluator, metric_artifact={"uri": "metrics://trajectory/report.json", "sha256": digest("trajectory-report")})
+        self.assertEqual([], validate_manifest([split, run, *metrics]))
 
-    def test_least_squares_scale_alignment(self) -> None:
-        gt = [pose(), pose(1.0), pose(2.0)]
-        predicted = [pose(), pose(0.5), pose(1.0)]
-        report = evaluate_anchor_trajectory(gt, predicted, scale_alignment="least_squares")
-        self.assertAlmostEqual(2.0, float(report["translation_scale_factor"]))
-        self.assertAlmostEqual(0.0, float(report["translation_rmse"]))
-        metric_records = trajectory_metric_records(
-            "run-id",
-            report,
-            evaluator_name="synthetic-pose",
-            evaluator_version="v1",
-            evaluator_model_id="synthetic-model",
-            evaluator_checkpoint_revision="r1",
-            evaluator_config={"pose_convention": "world_from_camera"},
-        )
-        self.assertEqual([], validate_manifest(metric_records))
+    def test_bound_trajectory_rejects_unbound_output_or_reference(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="trajectory", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        poses = [pose(), pose(1.0), pose(2.0)]
+        predicted = predicted_pose_artifact(run, poses)
+        predicted["input_video_sha256"] = digest("other-video")
+        with self.assertRaisesRegex(ValueError, "not bound to the completed output"):
+            evaluate_bound_anchor_trajectory(run, reference_pose_artifact(run, poses), predicted, evaluator=default_evaluator(policy="independent"))
+        reference = reference_pose_artifact(run, poses)
+        reference["sha256"] = digest("wrong-reference")
+        with self.assertRaisesRegex(ValueError, "does not match source_clip.poses_ref"):
+            evaluate_bound_anchor_trajectory(run, reference, predicted_pose_artifact(run, poses), evaluator=default_evaluator(policy="independent"))
+
+    def test_trajectory_rejects_guidance_aligned_evaluator(self) -> None:
+        split = valid_split_manifest()
+        run = valid_run(split, run_id="trajectory", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        poses = [pose(), pose(1.0), pose(2.0)]
+        with self.assertRaisesRegex(ValueError, "independence_policy=independent"):
+            evaluate_bound_anchor_trajectory(run, reference_pose_artifact(run, poses), predicted_pose_artifact(run, poses), evaluator=default_evaluator(policy="guidance_aligned"))
 
 
 class PairedAggregationTests(unittest.TestCase):
-    def test_lower_is_better_aggregation(self) -> None:
-        runs = [
-            valid_run(
-                run_id="baseline-a",
-                pair_id="pair-a",
-                method_name="fg_only",
-                schedule_state="baseline_all_zero_schedule",
-            ),
-            valid_run(
-                run_id="candidate-a",
-                pair_id="pair-a",
-                method_name="fg_rgb_geco",
-                schedule_state="active_guidance",
-            ),
-            valid_run(
-                run_id="baseline-b",
-                pair_id="pair-b",
-                method_name="fg_only",
-                schedule_state="baseline_all_zero_schedule",
-                seed=8,
-            ),
-            valid_run(
-                run_id="candidate-b",
-                pair_id="pair-b",
-                method_name="fg_rgb_geco",
-                schedule_state="active_guidance",
-                seed=8,
-            ),
-        ]
-        metrics = [
-            metric("baseline-a", 1.0),
-            metric("candidate-a", 0.5),
-            metric("baseline-b", 2.0),
-            metric("candidate-b", 1.5),
-        ]
-        summary = aggregate_paired_metric(
-            runs,
-            metrics,
-            baseline_method="fg_only",
-            candidate_method="fg_rgb_geco",
-            metric_name="geco_fused",
-            bootstrap_samples=100,
-            random_seed=3,
+    def _two_cluster_runs(self) -> tuple[dict, list[dict]]:
+        split = valid_split_manifest(
+            split_assignment("scene-a", "sequence-a"),
+            split_assignment("scene-b", "sequence-b"),
         )
+        runs = [
+            valid_run(split, run_id="baseline-a", pair_id="pair-a", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True, scene_id="scene-a", sequence_id="sequence-a"),
+            valid_run(split, run_id="candidate-a", pair_id="pair-a", method_name="fg_rgb_geco", schedule_state="active_guidance", completed=True, scene_id="scene-a", sequence_id="sequence-a"),
+            valid_run(split, run_id="baseline-b", pair_id="pair-b", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True, seed=8, scene_id="scene-b", sequence_id="sequence-b"),
+            valid_run(split, run_id="candidate-b", pair_id="pair-b", method_name="fg_rgb_geco", schedule_state="active_guidance", completed=True, seed=8, scene_id="scene-b", sequence_id="sequence-b"),
+        ]
+        return split, runs
+
+    def test_cluster_bootstrap_aggregation_is_fail_closed(self) -> None:
+        split, runs = self._two_cluster_runs()
+        metrics = [metric(runs[0], 1.0), metric(runs[1], 0.5), metric(runs[2], 2.0), metric(runs[3], 1.5)]
+        summary = aggregate_paired_metric([split, *runs], metrics, baseline_method="fg_only", candidate_method="fg_rgb_geco", expected_methods=("fg_only", "fg_rgb_geco"), metric_name="geco_fused", bootstrap_samples=100, random_seed=3)
         self.assertEqual(2, summary.pair_count)
+        self.assertEqual(2, summary.cluster_count)
         self.assertAlmostEqual(0.5, summary.improvement_mean)
-        self.assertAlmostEqual(1.0, summary.fraction_improved)
         self.assertTrue(math.isfinite(summary.bootstrap_ci95[0]))
+
+    def test_aggregation_rejects_missing_or_failed_expected_arm(self) -> None:
+        split = valid_split_manifest()
+        baseline = valid_run(split, run_id="baseline", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True)
+        failed_candidate = valid_run(split, run_id="candidate", pair_id="pair", method_name="fg_rgb_geco", schedule_state="active_guidance", completed=False)
+        with self.assertRaises(ManifestValidationError):
+            aggregate_paired_metric([split, baseline, failed_candidate], [metric(baseline, 1.0)], baseline_method="fg_only", candidate_method="fg_rgb_geco", expected_methods=("fg_only", "fg_rgb_geco"), metric_name="geco_fused")
+
+    def test_aggregation_rejects_metric_binding_or_evaluator_mismatch(self) -> None:
+        split, runs = self._two_cluster_runs()
+        metrics = [metric(runs[0], 1.0), metric(runs[1], 0.5), metric(runs[2], 2.0), metric(runs[3], 1.5)]
+        metrics[1]["evaluated_output_sha256"] = digest("wrong-output")
+        with self.assertRaises(ManifestValidationError):
+            aggregate_paired_metric([split, *runs], metrics, baseline_method="fg_only", candidate_method="fg_rgb_geco", expected_methods=("fg_only", "fg_rgb_geco"), metric_name="geco_fused")
+        metrics = [metric(runs[0], 1.0), metric(runs[1], 0.5, evaluator=default_evaluator(config={"window_sec": 2.0})), metric(runs[2], 2.0), metric(runs[3], 1.5)]
+        with self.assertRaisesRegex(ValueError, "identical evaluator"):
+            aggregate_paired_metric([split, *runs], metrics, baseline_method="fg_only", candidate_method="fg_rgb_geco", expected_methods=("fg_only", "fg_rgb_geco"), metric_name="geco_fused")
+        missing_artifact_hash = metric(runs[0], 1.0)
+        del missing_artifact_hash["metric_artifact"]["sha256"]
+        issues = validate_manifest([split, runs[0], missing_artifact_hash])
+        self.assertTrue(any(issue.field == "metric_artifact.sha256" for issue in issues))
+
+    def test_aggregation_rejects_ci_without_two_independent_clusters(self) -> None:
+        split = valid_split_manifest()
+        runs = [
+            valid_run(split, run_id="baseline", pair_id="pair", method_name="fg_only", schedule_state="baseline_all_zero_schedule", completed=True),
+            valid_run(split, run_id="candidate", pair_id="pair", method_name="fg_rgb_geco", schedule_state="active_guidance", completed=True),
+        ]
+        with self.assertRaisesRegex(ValueError, "at least two independent"):
+            aggregate_paired_metric([split, *runs], [metric(runs[0], 1.0), metric(runs[1], 0.5)], baseline_method="fg_only", candidate_method="fg_rgb_geco", expected_methods=("fg_only", "fg_rgb_geco"), metric_name="geco_fused")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,21 @@
   "records": [
     {
       "schema_version": "navigation-benchmark/v1",
+      "record_type": "split_manifest",
+      "split_manifest_id": "navigation-split-v1",
+      "status": "frozen",
+      "assignments": [
+        {
+          "dataset_id": "replace-with-dataset-id",
+          "scene_id": "replace-with-scene-id",
+          "sequence_id": "replace-with-sequence-id",
+          "split": "test"
+        }
+      ],
+      "split_manifest_hash": "compute-with-with_split_manifest_hash"
+    },
+    {
+      "schema_version": "navigation-benchmark/v1",
       "record_type": "generation_run",
       "run_id": "replace-with-unique-run-id",
       "pair_id": "replace-with-scene-seed-protocol-id",
@@ -19,14 +34,16 @@
         }
       },
       "condition": {
-        "protocol": {
-          "id": "controlled-navigation-frame-guidance",
-          "version": "v1"
+        "protocol": {"id": "controlled-navigation-frame-guidance", "version": "v1"},
+        "split_manifest": {
+          "id": "navigation-split-v1",
+          "sha256": "copy-the-frozen-split-manifest-hash-here"
         },
         "scene": {
-          "scene_id": "replace-with-scene-id",
           "dataset_id": "replace-with-dataset-id",
+          "scene_id": "replace-with-scene-id",
           "split": "test",
+          "statistical_unit": {"cluster_id": "replace-with-sequence-id", "level": "sequence"},
           "static_scene_eligibility": {
             "eligible": true,
             "criteria_version": "static-navigation-v1",
@@ -42,65 +59,53 @@
           "end_frame": 80,
           "source_fps": 10.0,
           "time_origin": "clip_relative",
+          "anchor_policy": {"id": "first_middle_last_floor_v1", "middle_rule": "floor_midpoint"},
           "intrinsics_ref": {
             "uri": "dataset://replace-with-dataset/intrinsics",
-            "format": "replace-with-format",
+            "format": "json",
             "sha256": "replace-with-64-character-intrinsics-sha256"
           },
           "poses_ref": {
             "uri": "dataset://replace-with-dataset/poses",
-            "format": "replace-with-format",
-            "sha256": "replace-with-64-character-poses-sha256"
+            "format": "json",
+            "sha256": "replace-with-64-character-poses-sha256",
+            "pose_convention": "C2W",
+            "translation_unit": "meters"
           },
           "anchors": [
-            {
-              "role": "first",
-              "frame_index": 0,
-              "timestamp_sec": 0.0,
-              "frame_uri": "dataset://replace-with-dataset/frame_00000.png",
-              "sha256": "replace-with-64-character-first-anchor-sha256"
-            },
-            {
-              "role": "middle",
-              "frame_index": 40,
-              "timestamp_sec": 4.0,
-              "frame_uri": "dataset://replace-with-dataset/frame_00040.png",
-              "sha256": "replace-with-64-character-middle-anchor-sha256"
-            },
-            {
-              "role": "last",
-              "frame_index": 80,
-              "timestamp_sec": 8.0,
-              "frame_uri": "dataset://replace-with-dataset/frame_00080.png",
-              "sha256": "replace-with-64-character-last-anchor-sha256"
-            }
+            {"role": "first", "frame_index": 0, "timestamp_sec": 0.0, "frame_uri": "dataset://.../frame_00000.png", "sha256": "replace-with-first-anchor-hash"},
+            {"role": "middle", "frame_index": 40, "timestamp_sec": 4.0, "frame_uri": "dataset://.../frame_00040.png", "sha256": "replace-with-middle-anchor-hash"},
+            {"role": "last", "frame_index": 80, "timestamp_sec": 8.0, "frame_uri": "dataset://.../frame_00080.png", "sha256": "replace-with-last-anchor-hash"}
           ]
         },
         "frame_guidance": {
           "enabled": true,
-          "anchor_roles": ["first", "middle", "last"]
+          "anchor_roles": ["first", "middle", "last"],
+          "generated_timing": {
+            "mapping_policy": "first_middle_last_index_v1",
+            "generated_frame_count": 93,
+            "generated_fps": 16.0,
+            "anchor_map": [
+              {"role": "first", "source_frame_index": 0, "source_timestamp_sec": 0.0, "generated_frame_index": 0, "generated_timestamp_sec": 0.0},
+              {"role": "middle", "source_frame_index": 40, "source_timestamp_sec": 4.0, "generated_frame_index": 46, "generated_timestamp_sec": 2.875},
+              {"role": "last", "source_frame_index": 80, "source_timestamp_sec": 8.0, "generated_frame_index": 92, "generated_timestamp_sec": 5.75}
+            ]
+          }
         },
         "prompt": "Replace with the fixed prompt for every arm in this pair.",
         "seed": 0,
-        "model": {
-          "model_id": "replace-with-model-id",
-          "checkpoint_revision": "replace-with-checkpoint-revision"
-        },
+        "model": {"model_id": "replace-with-model-id", "checkpoint_revision": "replace-with-revision", "config": {}},
         "sampling": {
           "height": 704,
           "width": 1280,
           "num_frames": 93,
           "fps": 16.0,
           "num_inference_steps": 36,
-          "scheduler": {
-            "name": "replace-with-scheduler-name"
-          }
+          "scheduler": {"name": "replace-with-scheduler", "config": {}}
         }
       },
-      "condition_hash": "Compute this with navigation_benchmark.manifest.with_condition_hash before validating.",
-      "output": {
-        "video_uri": "outputs://replace-with-video-output"
-      },
+      "condition_hash": "compute-with-with_condition_hash",
+      "output": {"video_uri": "outputs://replace-with-video-output"},
       "execution": null
     }
   ]

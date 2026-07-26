@@ -2,8 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ShixuanGu/GeCo/schemas/navigation_benchmark_v1.schema.json",
   "title": "Navigation Benchmark Protocol v1",
-  "description": "Structural schema. navigation_benchmark.manifest performs stricter semantic and paired-condition validation.",
+  "description": "Standalone structural contract. Unknown semantic fields are forbidden outside explicit extensions, config, parameters, and details objects. Cross-record hashes, frozen split semantics, anchor arithmetic, and pair equality are enforced by navigation_benchmark.manifest.",
   "oneOf": [
+    {"$ref": "#/$defs/splitManifest"},
     {"$ref": "#/$defs/generationRun"},
     {"$ref": "#/$defs/metricResult"}
   ],
@@ -12,182 +13,381 @@
       "type": "string",
       "pattern": "^[0-9a-fA-F]{64}$"
     },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "sha256"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
     "reference": {
       "type": "object",
       "required": ["uri", "format", "sha256"],
       "properties": {
         "uri": {"type": "string", "minLength": 1},
         "format": {"type": "string", "minLength": 1},
-        "sha256": {"$ref": "#/$defs/sha256"}
-      }
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "poseReference": {
+      "type": "object",
+      "required": ["uri", "format", "sha256", "pose_convention", "translation_unit"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "format": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "pose_convention": {"enum": ["W2C", "C2W"]},
+        "translation_unit": {"type": "string", "minLength": 1},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
     },
     "anchor": {
       "type": "object",
       "required": ["role", "frame_index", "timestamp_sec", "frame_uri", "sha256"],
       "properties": {
         "role": {"enum": ["first", "middle", "last"]},
-        "frame_index": {"type": "integer"},
+        "frame_index": {"type": "integer", "minimum": 0},
         "timestamp_sec": {"type": "number", "minimum": 0},
         "frame_uri": {"type": "string", "minLength": 1},
-        "sha256": {"$ref": "#/$defs/sha256"}
-      }
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "generatedAnchorMap": {
+      "type": "object",
+      "required": ["role", "source_frame_index", "source_timestamp_sec", "generated_frame_index", "generated_timestamp_sec"],
+      "properties": {
+        "role": {"enum": ["first", "middle", "last"]},
+        "source_frame_index": {"type": "integer", "minimum": 0},
+        "source_timestamp_sec": {"type": "number", "minimum": 0},
+        "generated_frame_index": {"type": "integer", "minimum": 0},
+        "generated_timestamp_sec": {"type": "number", "minimum": 0},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "splitAssignment": {
+      "type": "object",
+      "required": ["dataset_id", "scene_id", "sequence_id", "split"],
+      "properties": {
+        "dataset_id": {"type": "string", "minLength": 1},
+        "scene_id": {"type": "string", "minLength": 1},
+        "sequence_id": {"type": "string", "minLength": 1},
+        "split": {"enum": ["train", "dev", "test"]},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "splitManifest": {
+      "type": "object",
+      "required": ["schema_version", "record_type", "split_manifest_id", "status", "assignments", "split_manifest_hash"],
+      "properties": {
+        "schema_version": {"const": "navigation-benchmark/v1"},
+        "record_type": {"const": "split_manifest"},
+        "split_manifest_id": {"type": "string", "minLength": 1},
+        "status": {"const": "frozen"},
+        "assignments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/splitAssignment"}},
+        "split_manifest_hash": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "mechanism": {
+      "type": "object",
+      "required": ["id", "version", "time_travel", "temporal_vae_context", "guidance_schedule_state"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "time_travel": {"type": "string", "minLength": 1},
+        "temporal_vae_context": {"type": "string", "minLength": 1},
+        "guidance_schedule_state": {"enum": ["baseline_all_zero_schedule", "positive_schedule_zero_lr", "active_guidance"]},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "condition": {
+      "type": "object",
+      "required": ["protocol", "split_manifest", "scene", "source_clip", "frame_guidance", "prompt", "seed", "model", "sampling"],
+      "properties": {
+        "protocol": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "split_manifest": {
+          "type": "object",
+          "required": ["id", "sha256"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "scene": {
+          "type": "object",
+          "required": ["dataset_id", "scene_id", "split", "statistical_unit", "static_scene_eligibility"],
+          "properties": {
+            "dataset_id": {"type": "string", "minLength": 1},
+            "scene_id": {"type": "string", "minLength": 1},
+            "split": {"enum": ["train", "dev", "test"]},
+            "statistical_unit": {
+              "type": "object",
+              "required": ["cluster_id", "level"],
+              "properties": {
+                "cluster_id": {"type": "string", "minLength": 1},
+                "level": {"enum": ["scene", "sequence"]},
+                "extensions": {"$ref": "#/$defs/extensions"}
+              },
+              "additionalProperties": false
+            },
+            "static_scene_eligibility": {
+              "type": "object",
+              "required": ["eligible", "criteria_version", "rationale"],
+              "properties": {
+                "eligible": {"type": "boolean"},
+                "criteria_version": {"type": "string", "minLength": 1},
+                "rationale": {"type": "string", "minLength": 1},
+                "extensions": {"$ref": "#/$defs/extensions"}
+              },
+              "additionalProperties": false
+            },
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "source_clip": {
+          "type": "object",
+          "required": ["source_uri", "source_sha256", "sequence_id", "clip_id", "start_frame", "end_frame", "source_fps", "time_origin", "anchor_policy", "intrinsics_ref", "poses_ref", "anchors"],
+          "properties": {
+            "source_uri": {"type": "string", "minLength": 1},
+            "source_sha256": {"$ref": "#/$defs/sha256"},
+            "sequence_id": {"type": "string", "minLength": 1},
+            "clip_id": {"type": "string", "minLength": 1},
+            "start_frame": {"type": "integer", "minimum": 0},
+            "end_frame": {"type": "integer", "minimum": 1},
+            "source_fps": {"type": "number", "exclusiveMinimum": 0},
+            "time_origin": {"enum": ["clip_relative", "source_absolute"]},
+            "anchor_policy": {
+              "type": "object",
+              "required": ["id", "middle_rule"],
+              "properties": {
+                "id": {"const": "first_middle_last_floor_v1"},
+                "middle_rule": {"const": "floor_midpoint"},
+                "extensions": {"$ref": "#/$defs/extensions"}
+              },
+              "additionalProperties": false
+            },
+            "intrinsics_ref": {"$ref": "#/$defs/reference"},
+            "poses_ref": {"$ref": "#/$defs/poseReference"},
+            "anchors": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/anchor"}},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "frame_guidance": {
+          "type": "object",
+          "required": ["enabled", "anchor_roles", "generated_timing"],
+          "properties": {
+            "enabled": {"const": true},
+            "anchor_roles": {"const": ["first", "middle", "last"]},
+            "generated_timing": {
+              "type": "object",
+              "required": ["mapping_policy", "generated_frame_count", "generated_fps", "anchor_map"],
+              "properties": {
+                "mapping_policy": {"const": "first_middle_last_index_v1"},
+                "generated_frame_count": {"type": "integer", "minimum": 3},
+                "generated_fps": {"type": "number", "exclusiveMinimum": 0},
+                "anchor_map": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/generatedAnchorMap"}},
+                "extensions": {"$ref": "#/$defs/extensions"}
+              },
+              "additionalProperties": false
+            },
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "prompt": {"type": "string", "minLength": 1},
+        "seed": {"type": "integer"},
+        "model": {
+          "type": "object",
+          "required": ["model_id", "checkpoint_revision", "config"],
+          "properties": {
+            "model_id": {"type": "string", "minLength": 1},
+            "checkpoint_revision": {"type": "string", "minLength": 1},
+            "config": {"type": "object", "additionalProperties": true},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "sampling": {
+          "type": "object",
+          "required": ["height", "width", "num_frames", "fps", "num_inference_steps", "scheduler"],
+          "properties": {
+            "height": {"type": "integer", "minimum": 1},
+            "width": {"type": "integer", "minimum": 1},
+            "num_frames": {"type": "integer", "minimum": 3},
+            "fps": {"type": "number", "exclusiveMinimum": 0},
+            "num_inference_steps": {"type": "integer", "minimum": 1},
+            "scheduler": {
+              "type": "object",
+              "required": ["name", "config"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "config": {"type": "object", "additionalProperties": true},
+                "extensions": {"$ref": "#/$defs/extensions"}
+              },
+              "additionalProperties": false
+            },
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
     },
     "generationRun": {
       "type": "object",
-      "required": [
-        "schema_version",
-        "record_type",
-        "run_id",
-        "pair_id",
-        "status",
-        "method",
-        "condition",
-        "condition_hash",
-        "output"
-      ],
+      "required": ["schema_version", "record_type", "run_id", "pair_id", "status", "method", "condition", "condition_hash", "output", "execution"],
       "properties": {
         "schema_version": {"const": "navigation-benchmark/v1"},
         "record_type": {"const": "generation_run"},
         "run_id": {"type": "string", "minLength": 1},
         "pair_id": {"type": "string", "minLength": 1},
         "status": {"enum": ["planned", "completed", "failed"]},
-        "condition_hash": {"$ref": "#/$defs/sha256"},
-        "record_hash": {"$ref": "#/$defs/sha256"},
         "method": {
           "type": "object",
           "required": ["name", "version", "parameters", "mechanism"],
           "properties": {
             "name": {"type": "string", "minLength": 1},
             "version": {"type": "string", "minLength": 1},
-            "parameters": {"type": "object"},
-            "mechanism": {
-              "type": "object",
-              "required": [
-                "id",
-                "version",
-                "time_travel",
-                "temporal_vae_context",
-                "guidance_schedule_state"
-              ],
-              "properties": {
-                "id": {"type": "string", "minLength": 1},
-                "version": {"type": "string", "minLength": 1},
-                "time_travel": {"type": "string", "minLength": 1},
-                "temporal_vae_context": {"type": "string", "minLength": 1},
-                "guidance_schedule_state": {
-                  "enum": [
-                    "baseline_all_zero_schedule",
-                    "positive_schedule_zero_lr",
-                    "active_guidance"
-                  ]
-                }
-              }
-            }
-          }
+            "parameters": {"type": "object", "additionalProperties": true},
+            "mechanism": {"$ref": "#/$defs/mechanism"},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
         },
-        "condition": {
-          "type": "object",
-          "required": [
-            "protocol",
-            "scene",
-            "source_clip",
-            "prompt",
-            "seed",
-            "model",
-            "sampling",
-            "frame_guidance"
-          ],
-          "properties": {
-            "protocol": {
-              "type": "object",
-              "required": ["id", "version"]
-            },
-            "scene": {
-              "type": "object",
-              "required": ["scene_id", "dataset_id", "split", "static_scene_eligibility"]
-            },
-            "source_clip": {
-              "type": "object",
-              "required": [
-                "source_uri",
-                "source_sha256",
-                "sequence_id",
-                "clip_id",
-                "start_frame",
-                "end_frame",
-                "source_fps",
-                "time_origin",
-                "intrinsics_ref",
-                "poses_ref",
-                "anchors"
-              ],
-              "properties": {
-                "source_sha256": {"$ref": "#/$defs/sha256"},
-                "time_origin": {"enum": ["clip_relative", "source_absolute"]},
-                "intrinsics_ref": {"$ref": "#/$defs/reference"},
-                "poses_ref": {"$ref": "#/$defs/reference"},
-                "anchors": {
-                  "type": "array",
-                  "minItems": 3,
-                  "maxItems": 3,
-                  "items": {"$ref": "#/$defs/anchor"}
-                }
-              }
-            }
-          }
-        },
+        "condition": {"$ref": "#/$defs/condition"},
+        "condition_hash": {"$ref": "#/$defs/sha256"},
         "output": {
           "type": "object",
           "required": ["video_uri"],
           "properties": {
             "video_uri": {"type": "string", "minLength": 1},
-            "sha256": {"$ref": "#/$defs/sha256"}
-          }
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
         },
         "execution": {
           "type": ["object", "null"],
           "properties": {
             "git_commit": {"type": "string", "minLength": 1},
             "runtime_sec": {"type": "number", "minimum": 0},
-            "devices": {"type": "object", "minProperties": 1},
-            "peak_vram_mib": {"type": "object", "minProperties": 1}
+            "devices": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+            "peak_vram_mib": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "object",
+                "required": ["allocated", "reserved"],
+                "properties": {"allocated": {"type": "number", "minimum": 0}, "reserved": {"type": "number", "minimum": 0}},
+                "additionalProperties": false
+              }
+            },
+            "extensions": {"$ref": "#/$defs/extensions"}
+          },
+          "additionalProperties": false
+        },
+        "record_hash": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "completed"}}},
+          "then": {
+            "required": ["record_hash"],
+            "properties": {
+              "output": {"required": ["video_uri", "sha256"]},
+              "execution": {"type": "object", "required": ["git_commit", "runtime_sec", "devices", "peak_vram_mib"]}
+            }
           }
         }
-      }
+      ],
+      "additionalProperties": false
+    },
+    "evaluator": {
+      "type": "object",
+      "required": ["name", "version", "model_id", "checkpoint_revision", "config", "independence_policy", "fingerprint"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "checkpoint_revision": {"type": "string", "minLength": 1},
+        "config": {"type": "object", "additionalProperties": true},
+        "independence_policy": {"enum": ["independent", "guidance_aligned", "human_annotation"]},
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
+    },
+    "trajectoryBinding": {
+      "type": "object",
+      "required": ["reference_pose_artifact_sha256", "predicted_pose_artifact_sha256", "anchor_mapping_hash", "pose_convention", "translation_unit", "scale_alignment"],
+      "properties": {
+        "reference_pose_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "predicted_pose_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "anchor_mapping_hash": {"$ref": "#/$defs/sha256"},
+        "pose_convention": {"enum": ["W2C", "C2W"]},
+        "translation_unit": {"type": "string", "minLength": 1},
+        "scale_alignment": {"enum": ["none", "least_squares"]},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "additionalProperties": false
     },
     "metricResult": {
       "type": "object",
-      "required": [
-        "schema_version",
-        "record_type",
-        "run_id",
-        "metric_name",
-        "metric_role",
-        "direction",
-        "value",
-        "evaluator"
-      ],
+      "required": ["schema_version", "record_type", "run_id", "run_record_hash", "evaluated_output_sha256", "metric_name", "metric_role", "direction", "value", "evaluator", "metric_artifact"],
       "properties": {
         "schema_version": {"const": "navigation-benchmark/v1"},
         "record_type": {"const": "metric_result"},
         "run_id": {"type": "string", "minLength": 1},
+        "run_record_hash": {"$ref": "#/$defs/sha256"},
+        "evaluated_output_sha256": {"$ref": "#/$defs/sha256"},
         "metric_name": {"type": "string", "minLength": 1},
-        "metric_role": {
-          "enum": [
-            "guidance_aligned",
-            "independent_geometry",
-            "trajectory_adherence",
-            "motion_preservation",
-            "visual_quality"
-          ]
-        },
+        "metric_role": {"enum": ["guidance_aligned", "independent_geometry", "trajectory_adherence", "motion_preservation", "visual_quality"]},
         "direction": {"enum": ["lower_is_better", "higher_is_better"]},
         "value": {"type": "number"},
-        "evaluator": {
-          "type": "object",
-          "required": ["name", "version", "model_id", "checkpoint_revision", "config"]
+        "evaluator": {"$ref": "#/$defs/evaluator"},
+        "metric_artifact": {"$ref": "#/$defs/artifact"},
+        "trajectory_binding": {"$ref": "#/$defs/trajectoryBinding"},
+        "details": {"type": "object", "additionalProperties": true},
+        "extensions": {"$ref": "#/$defs/extensions"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"metric_role": {"const": "trajectory_adherence"}}},
+          "then": {"required": ["trajectory_binding"]}
         }
-      }
+      ],
+      "additionalProperties": false
     }
   }
 }
