@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ from torch.utils.data import Dataset
 from .geometry import make_relative_pose_target, validate_world_to_camera_se3
 
 
-CACHE_FORMAT_VERSION = 2
+CACHE_FORMAT_VERSION = 3
 MANIFEST_FORMAT_VERSION = 3
 LATENT_DOMAIN_RAW_VAE_Z0 = "raw_vae_z0"
 LATENT_DOMAIN_NORMALIZED_DIFFUSION_Z = "normalized_diffusion_z"
@@ -321,6 +322,19 @@ def _validate_latent_spec(latent_spec: Mapping[str, Any], temporal_mapping: Mapp
         raise ManifestError("latent_spec.vae must be a mapping")
     for key in ("identifier", "revision", "latent_scaling"):
         _require_nonempty_string(vae, key, "latent_spec.vae")
+    if domain == LATENT_DOMAIN_RAW_VAE_Z0:
+        for key in ("latents_mean", "latents_std"):
+            values = vae.get(key)
+            if not isinstance(values, list) or not values or not all(
+                isinstance(value, (int, float)) for value in values
+            ):
+                raise ManifestError(f"raw_vae_z0 latent_spec.vae.{key} must be a non-empty numeric list")
+        if len(vae["latents_mean"]) != len(vae["latents_std"]):
+            raise ManifestError("latent_spec.vae latents_mean and latents_std lengths must match")
+        if not all(math.isfinite(float(value)) for value in vae["latents_mean"]):
+            raise ManifestError("latent_spec.vae.latents_mean values must be finite")
+        if not all(math.isfinite(float(value)) and float(value) > 0.0 for value in vae["latents_std"]):
+            raise ManifestError("latent_spec.vae.latents_std values must be finite and positive")
     preprocessing = result.get("preprocessing")
     if not isinstance(preprocessing, Mapping):
         raise ManifestError("latent_spec.preprocessing must be a mapping")
@@ -364,7 +378,7 @@ def compute_cache_sha256(
 ) -> str:
     """Compute immutable cache identity from tensors and validated metadata."""
     digest = hashlib.sha256()
-    digest.update(b"latent_geometry_cache_v2")
+    digest.update(b"latent_geometry_cache_v3")
     for name, tensor in (
         ("z0", z0),
         ("camera_poses_w2c", camera_poses_w2c),
@@ -711,15 +725,27 @@ class CachedLatentDataset(Dataset[dict[str, Any]]):
         _validate_record_temporal_mapping(record, payload)
         z0_full = payload["z0"]
         z0_pair = z0_full[:, [record.source_latent_index, record.target_latent_index]].contiguous()
+        vae_spec = payload["latent_spec"]["vae"]
+        if len(vae_spec["latents_mean"]) != z0_pair.shape[0]:
+            raise ManifestError(
+                f"Wan latent normalization has {len(vae_spec['latents_mean'])} channels, "
+                f"but cache contains {z0_pair.shape[0]}"
+            )
+        latent_mean = torch.tensor(vae_spec["latents_mean"], dtype=z0_pair.dtype).view(-1, 1, 1, 1)
+        latent_std = torch.tensor(vae_spec["latents_std"], dtype=z0_pair.dtype).view(-1, 1, 1, 1)
+        diffusion_z0_pair = (z0_pair - latent_mean) / latent_std
         pose_target = make_relative_pose_target(
             payload["camera_poses_w2c"], record.source_pose_index, record.target_pose_index
         )
         generator = torch.Generator(device="cpu")
         generator.manual_seed(_stable_seed(self.base_seed, self.epoch, record.record_id))
-        zt_pair, timestep, _ = self.noise_schedule.sample(z0_pair, generator)
+        # Wan flow matching operates on channel-normalized VAE latents.
+        zt_pair, timestep, _ = self.noise_schedule.sample(diffusion_z0_pair, generator)
         return {
             "z0": z0_pair,
             "z0_timestep": torch.zeros((), dtype=torch.float32),
+            "diffusion_z0": diffusion_z0_pair,
+            "diffusion_z0_timestep": torch.zeros((), dtype=torch.float32),
             "zt": zt_pair,
             "timestep": timestep,
             "rotation_6d": pose_target["rotation_6d"].float(),

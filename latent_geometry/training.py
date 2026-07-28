@@ -29,9 +29,13 @@ def _select_model_input(batch: Mapping[str, Any], input_key: str) -> tuple[torch
         if "z0_timestep" not in batch:
             raise KeyError("z0 control batches must provide z0_timestep=0")
         return batch["z0"], batch["z0_timestep"]
+    if input_key == "diffusion_z0":
+        if "diffusion_z0_timestep" not in batch:
+            raise KeyError("diffusion-z0 batches must provide diffusion_z0_timestep=0")
+        return batch["diffusion_z0"], batch["diffusion_z0_timestep"]
     if input_key == "zt":
         return batch["zt"], batch["timestep"]
-    raise ValueError("input_key must be 'z0' or 'zt'")
+    raise ValueError("input_key must be 'z0', 'diffusion_z0', or 'zt'")
 
 
 def probe_loss_for_batch(

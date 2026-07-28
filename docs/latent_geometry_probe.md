@@ -8,9 +8,12 @@ Guidance, RGB GeCo guidance, or evaluation.
 
 - `raw_vae_z0`: the direct, clean output of a frozen VAE encoder. This is the
   only cache domain accepted by `CachedLatentDataset` in this branch.
-- `online_probe_zt`: generated in memory as `zt = (1 - t) z0 + t epsilon`.
-  It is a controlled robustness probe, not an assertion that it exactly equals
-  a Wan scheduler state.
+- `diffusion_z0`: the raw VAE posterior mode after Wan's exact channel-wise
+  `(z0 - latents_mean) / latents_std` normalization.
+- `online_probe_zt`: generated in memory as
+  `zt = (1 - t) diffusion_z0 + t epsilon`. It is a controlled robustness
+  probe in Wan's diffusion-latent scale, not an assertion that it exactly
+  equals a real Wan scheduler state.
 - `x0_pred`: a future domain that must be extracted from frozen Wan at a real
   scheduler timestep under a fully recorded prompt/image/CFG condition. It is
   not generated or accepted by this branch, because treating it as ordinary z0
@@ -22,7 +25,7 @@ same batch also contains an online `zt` example.
 
 ## Versioned cache and provenance contract
 
-The v2 cache is a trusted PyTorch dictionary with:
+The v3 cache is a trusted PyTorch dictionary with:
 
 ```text
 format_version: 2
@@ -140,6 +143,39 @@ python scripts/run_latent_geometry_probe_smoke.py --steps 24
 
 Both commands use synthetic tensors only. They do not download or load Wan,
 VAE, VGGT, Any4D, or any checkpoint.
+
+## Real DL3DV clean-latent pilot
+
+The real extractor converts DL3DV/nerfstudio OpenGL c2w poses to OpenCV-axis
+w2c, updates intrinsics for resize-cover/center-crop, encodes ordered 17-frame
+clips with the frozen tiled Wan VAE, and writes a scene-disjoint manifest.
+Source distortion is recorded but not corrected, so cached intrinsics must not
+yet be used for a reprojection loss. The first pilot uses only adjacent latent
+tokens (`--pair-gaps 1`) to avoid pair-gap leakage.
+
+```bash
+python scripts/cache_dl3dv_wan_z0.py \
+  --dl3dv-root /path/to/dl3dv_0718 \
+  --model /path/to/Wan2.2-TI2V-5B-Diffusers \
+  --output-root /path/to/probe_cache \
+  --val-scenes "one/source_scene_uid" \
+  --test-scenes "another/source_scene_uid" \
+  --height 704 --width 1280 \
+  --clip-frames 17 --clip-stride 16 \
+  --max-clips-per-scene 24 --pair-gaps 1
+
+python scripts/run_latent_geometry_probe_real.py \
+  --manifest /path/to/probe_cache/manifest.jsonl \
+  --output-root /path/to/probe_results \
+  --device cuda --train-domain diffusion_z0
+```
+
+The runner trains learned-constant, ordered-linear, and small 3D-Conv probes
+with identical shuffle/noise streams. It reports pair-weighted and scene-macro
+validation/test metrics, a controlled online-noise timestep curve, runtime,
+manifest digest, code commit, and checkpoints. These clean/online-noise
+results are only a gate for producing scheduler-faithful `x0_pred(t)` caches;
+they are not evidence that guidance works during Wan sampling.
 
 ## Gate before any sampling-guidance branch
 

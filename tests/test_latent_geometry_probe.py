@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from latent_geometry.data import (
     CachedLatentDataset,
+    compute_cache_sha256,
     LATENT_DOMAIN_X0_PRED,
     LinearFlowNoiseSchedule,
     ManifestError,
@@ -211,6 +212,44 @@ class LatentGeometryProbeTests(unittest.TestCase):
             self.assertIsNotNone(model.last_timestep)
             self.assertTrue(torch.equal(model.last_timestep, torch.zeros_like(model.last_timestep)))
 
+    def test_wan_channel_normalization_is_applied_before_online_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = create_synthetic_probe_manifest(
+                temporary, train_scenes=1, val_scenes=1, records_per_scene=1
+            )
+            record = _read_records(manifest)[0]
+            cache_path = Path(temporary) / str(record["cache_path"])
+            payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+            channels = int(payload["z0"].shape[0])
+            means = torch.linspace(-0.5, 0.5, channels)
+            stds = torch.linspace(0.5, 1.5, channels)
+            payload["latent_spec"]["vae"]["latents_mean"] = means.tolist()
+            payload["latent_spec"]["vae"]["latents_std"] = stds.tolist()
+            temporal = payload["temporal_mapping"]
+            payload["cache_sha256"] = compute_cache_sha256(
+                z0=payload["z0"],
+                camera_poses_w2c=payload["camera_poses_w2c"],
+                intrinsics=payload["intrinsics"],
+                frame_ids=payload["frame_ids"],
+                source_provenance=payload["source_provenance"],
+                pose_spec=payload["pose_spec"],
+                latent_spec=payload["latent_spec"],
+                temporal_mapping=temporal,
+            )
+            torch.save(payload, cache_path)
+            rows = _read_records(manifest)
+            rows[0]["cache_sha256"] = payload["cache_sha256"]
+            _write_records(Path(manifest), rows)
+            dataset = CachedLatentDataset(
+                manifest,
+                "train",
+                noise_schedule=LinearFlowNoiseSchedule(0.0, 0.0),
+            )
+            item = dataset[0]
+            expected = (item["z0"] - means.view(-1, 1, 1, 1)) / stds.view(-1, 1, 1, 1)
+            self.assertTrue(torch.allclose(item["diffusion_z0"], expected))
+            self.assertTrue(torch.equal(item["zt"], item["diffusion_z0"]))
+
     def test_models_constant_training_and_cpu_smoke_training(self) -> None:
         torch.manual_seed(0)
         with tempfile.TemporaryDirectory() as temporary:
@@ -261,6 +300,17 @@ class LatentGeometryProbeTests(unittest.TestCase):
             self.assertLess(final.loss, initial.loss)
             self.assertTrue(math.isfinite(final.rotation_deg))
             self.assertIsNotNone(final.translation_direction_deg)
+
+    def test_linear_probe_preserves_pair_order(self) -> None:
+        torch.manual_seed(7)
+        model = LinearLatentProbe(in_channels=4)
+        pair = torch.zeros(1, 4, 2, 3, 3)
+        pair[:, :, 0] = 1.0
+        pair[:, :, 1] = 2.0
+        timestep = torch.zeros(1)
+        forward = model(pair, timestep)
+        reverse = model(pair.flip(2), timestep)
+        self.assertFalse(torch.allclose(forward["rotation_6d"], reverse["rotation_6d"]))
 
     def test_incompatible_x0_pred_domain_is_rejected_by_probe_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

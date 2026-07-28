@@ -30,6 +30,7 @@ def create_synthetic_probe_manifest(
     *,
     train_scenes: int = 2,
     val_scenes: int = 1,
+    test_scenes: int = 0,
     records_per_scene: int = 4,
     channels: int = 5,
 ) -> Path:
@@ -45,13 +46,14 @@ def create_synthetic_probe_manifest(
     manifest_path = root / "synthetic_manifest.jsonl"
     generator = torch.Generator(device="cpu").manual_seed(1234)
     records: list[dict[str, object]] = []
-    scene_specs = [("train", train_scenes), ("val", val_scenes)]
+    scene_specs = [("train", train_scenes), ("val", val_scenes), ("test", test_scenes)]
+    total_records = (train_scenes + val_scenes + test_scenes) * records_per_scene
     global_index = 0
     for split, count in scene_specs:
         for scene_number in range(count):
             scene_id = f"{split}_scene_{scene_number:02d}"
             for record_number in range(records_per_scene):
-                value = global_index / max(1, train_scenes * records_per_scene + val_scenes * records_per_scene - 1)
+                value = global_index / max(1, total_records - 1)
                 angle = -0.45 + 0.9 * value
                 direction = torch.tensor([math.cos(angle), math.sin(angle), 0.35], dtype=torch.float32)
                 direction = direction / torch.linalg.vector_norm(direction)
@@ -91,6 +93,8 @@ def create_synthetic_probe_manifest(
                         "identifier": "synthetic-test-only",
                         "revision": "test",
                         "latent_scaling": "raw_encoder_output",
+                        "latents_mean": [0.0] * channels,
+                        "latents_std": [1.0] * channels,
                     },
                     "preprocessing": {
                         "image_normalization": "synthetic",

@@ -51,12 +51,12 @@ class ConstantPoseBaseline(nn.Module):
 
 
 class LinearLatentProbe(nn.Module):
-    """Linear readout from global latent mean plus scalar timestep conditioning."""
+    """Ordered linear readout from source, target, and target-source features."""
 
     def __init__(self, in_channels: int) -> None:
         super().__init__()
         self.in_channels = int(in_channels)
-        self.head = nn.Linear(self.in_channels + 1, 9)
+        self.head = nn.Linear(3 * self.in_channels + 1, 9)
         with torch.no_grad():
             self.head.bias.zero_()
             self.head.bias[:6].copy_(torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]))
@@ -67,8 +67,12 @@ class LinearLatentProbe(nn.Module):
         if latent.shape[1] != self.in_channels:
             raise ValueError(f"Expected {self.in_channels} latent channels, got {latent.shape[1]}")
         time = _expand_timestep(timestep, latent.shape[0], latent.device).unsqueeze(-1)
-        pooled = latent.mean(dim=(2, 3, 4))
-        return _pose_prediction(self.head(torch.cat((pooled, time), dim=-1)))
+        if latent.shape[2] != 2:
+            raise ValueError(f"LinearLatentProbe expects T=2, got T={latent.shape[2]}")
+        source = latent[:, :, 0].mean(dim=(2, 3))
+        target = latent[:, :, 1].mean(dim=(2, 3))
+        features = torch.cat((source, target, target - source, time), dim=-1)
+        return _pose_prediction(self.head(features))
 
 
 class SinusoidalTimestepEmbedding(nn.Module):
