@@ -1,4 +1,4 @@
-opencv-python
+opencv-python-headless
 diffusers
 transformers
 decord

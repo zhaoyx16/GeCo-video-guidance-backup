@@ -4,3 +4,5 @@ einops
 safetensors
 tqdm
 imageio[ffmpeg]
+numpy
+opencv-python-headless

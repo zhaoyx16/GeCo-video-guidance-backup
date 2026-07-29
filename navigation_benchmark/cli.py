@@ -7,6 +7,13 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from .epipolar import (
+    EpipolarConfig,
+    build_report as build_epipolar_report,
+    parse_float_list,
+    parse_video_spec,
+    write_report as write_epipolar_report,
+)
 from .manifest import ManifestValidationError, load_records, validate_manifest, write_records
 from .results import aggregate_paired_metric
 from .trajectory import evaluate_bound_anchor_trajectory, load_pose_artifact, trajectory_metric_records
@@ -48,6 +55,35 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--bootstrap-samples", type=int, default=2_000)
     aggregate.add_argument("--random-seed", type=int, default=0)
     aggregate.add_argument("--output", help="Optional JSON summary destination")
+
+    epipolar = subparsers.add_parser(
+        "epipolar",
+        help="run independent SIFT/MAGSAC epipolar and motion-observability diagnostics",
+    )
+    epipolar.add_argument(
+        "--video",
+        action="append",
+        required=True,
+        type=parse_video_spec,
+        help="LABEL=/absolute/path/video.mp4; repeat for each video",
+    )
+    epipolar.add_argument("--output", required=True, help="Destination JSON report")
+    epipolar.add_argument("--lags-sec", default="0.5,1.0", type=parse_float_list)
+    epipolar.add_argument("--max-pairs", type=int, default=8)
+    epipolar.add_argument("--max-lag-error-sec", type=float, default=0.001)
+    epipolar.add_argument("--max-side", type=int, default=960)
+    epipolar.add_argument("--sift-features", type=int, default=4096)
+    epipolar.add_argument("--ratio-threshold", type=float, default=0.75)
+    epipolar.add_argument("--min-matches", type=int, default=24)
+    epipolar.add_argument("--min-motion-ratio", type=float, default=0.002)
+    epipolar.add_argument("--ransac-threshold-px", type=float, default=1.0)
+    epipolar.add_argument("--heldout-fraction", type=float, default=0.3)
+    epipolar.add_argument("--heldout-inlier-threshold-px", type=float, default=1.5)
+    epipolar.add_argument("--capped-error-px", type=float, default=5.0)
+    epipolar.add_argument("--homography-inlier-threshold-px", type=float, default=2.0)
+    epipolar.add_argument("--homography-dominance-margin", type=float, default=0.05)
+    epipolar.add_argument("--start-frame", type=int, default=0)
+    epipolar.add_argument("--end-frame", type=int)
     return parser
 
 
@@ -117,6 +153,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             destination = Path(args.output)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return 0
+
+    if args.command == "epipolar":
+        config = EpipolarConfig(
+            lags_sec=args.lags_sec,
+            max_pairs_per_lag=args.max_pairs,
+            max_lag_error_sec=args.max_lag_error_sec,
+            max_side=args.max_side,
+            sift_features=args.sift_features,
+            ratio_threshold=args.ratio_threshold,
+            min_matches=args.min_matches,
+            min_motion_ratio=args.min_motion_ratio,
+            ransac_threshold_px=args.ransac_threshold_px,
+            heldout_fraction=args.heldout_fraction,
+            heldout_inlier_threshold_px=args.heldout_inlier_threshold_px,
+            capped_error_px=args.capped_error_px,
+            homography_inlier_threshold_px=args.homography_inlier_threshold_px,
+            homography_dominance_margin=args.homography_dominance_margin,
+        )
+        report = build_epipolar_report(
+            args.video,
+            config=config,
+            start_frame=args.start_frame,
+            end_frame=args.end_frame,
+        )
+        write_epipolar_report(args.output, report)
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
     raise AssertionError(f"unhandled command: {args.command}")

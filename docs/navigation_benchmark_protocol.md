@@ -185,3 +185,60 @@ still needs frozen source clips, intrinsics, poses, frame artifacts, static
 eligibility labels, an independent evaluator, and a content-addressed artifact
 store or stable URI scheme. The JSON template is illustrative only; replace
 all placeholder hashes and compute the real fingerprints before validation.
+
+## Independent Epipolar Pilot
+
+The package also provides a CPU-only classical diagnostic:
+
+    python -m navigation_benchmark epipolar \
+      --video fg_only=/absolute/path/fg_only.mp4 \
+      --video candidate=/absolute/path/candidate.mp4 \
+      --lags-sec 0.5,1.0 \
+      --output epipolar_report.json
+
+It uses OpenCV SIFT correspondences and a MAGSAC fundamental matrix. It does
+not use VGGT, UFM, generator features, or a learned depth model. The report
+keeps geometry and motion separate:
+
+- feature and reciprocal-match coverage are reported before geometry;
+- `parallax_observable_fraction` excludes low-motion and
+  homography-degenerate pairs;
+- the fundamental matrix is fit on one subset of reciprocal matches and
+  scored on held-out matches;
+- a capped, failure-aware Sampson error prevents failed F estimates from
+  disappearing from the aggregate; and
+- low-motion pairs explicitly abstain instead of receiving a good geometry
+  score.
+
+This diagnostic is an independent metric family, but it is not sufficient on
+its own. Textureless regions, repeated patterns, disocclusion, and non-rigid
+objects can make two-view estimation fail. Final claims still require the
+GT-bound trajectory metric, an additional temporal/track diagnostic, visual
+quality, and the predeclared static-scene eligibility rule.
+
+Before using it in a method table, calibrate it on a real source clip plus
+known controls:
+
+    python scripts/calibrate_epipolar_metric.py \
+      --reference_frames '/dataset/sequence/image_2/0000*.png' \
+      --reference_fps 10 \
+      --reference_output_width 1280 \
+      --reference_output_height 704 \
+      --reference_resize_mode stretch \
+      --video fg_only=/absolute/path/fg_only.mp4 \
+      --output_json calibration.json \
+      --output_csv calibration.csv \
+      --control_video_dir calibration_controls
+
+The calibration first encodes every control with H.264 and then evaluates the
+decoded video, matching the generated-video path. It includes a frozen-video
+control and a time-varying non-rigid warp. A frozen control must lose parallax
+observability rather than appearing geometrically superior. The non-rigid
+control should worsen robust correspondence statistics relative to the
+unmodified source clip; otherwise the configuration is not sensitive enough
+for the target failure mode. The reference resize mode must match the
+generator's actual input/anchor preprocessing; the current Wan
+`VideoProcessor` pilot uses `stretch`, not a center crop. Requested time lags
+must be exactly representable at every compared FPS within
+`max_lag_error_sec`; use 0.5 and 1.0 seconds for the current 10/16/24 FPS
+protocol.
