@@ -24,7 +24,9 @@ from geometry_selection.protocol import (
     validate_candidate_pool_against_protocol,
     validate_committed_file,
     validate_committed_test_release,
+    validate_formal_protocol,
 )
+from geometry_selection.model_lock import load_model_lock
 from geometry_selection.scorer import score_geometry
 from geometry_selection.selection import (
     CandidateScore,
@@ -73,6 +75,7 @@ def main() -> None:
 
     candidate_manifest = resolve_config_path(config.candidate_manifest)
     protocol_manifest = resolve_config_path(config.protocol_manifest)
+    model_lock_path = resolve_config_path(config.model_lock)
     dataset_root = resolve_config_path(config.dataset_root)
     geometry_cache_root = resolve_config_path(config.geometry_cache_root)
     output_root = resolve_config_path(config.output_root)
@@ -89,6 +92,21 @@ def main() -> None:
     if formal:
         validate_committed_file(config_path, REPO_ROOT, code["commit"])
         validate_committed_file(protocol_manifest, REPO_ROOT, code["commit"])
+        validate_committed_file(model_lock_path, REPO_ROOT, code["commit"])
+        protocol = validate_formal_protocol(protocol_manifest)
+        if protocol_file_sha256(model_lock_path) != protocol["_meta"]["model_lock_sha256"]:
+            raise ValueError("model lock digest differs from frozen protocol")
+        model_lock = load_model_lock(model_lock_path)
+        locked_geometry = model_lock["geometry_backbone"]
+        config_geometry = {
+            "checkpoint_sha256": config.geometry_checkpoint_sha256,
+            "source_tree_sha256": config.geometry_source_tree_sha256,
+            "source_commit": config.geometry_source_commit,
+        }
+        if any(locked_geometry.get(key) != value for key, value in config_geometry.items()):
+            raise ValueError("ranking config geometry identity differs from model lock")
+    else:
+        model_lock = None
     pool = load_and_validate_candidate_pool(
         candidate_manifest,
         expected_split=config.expected_split,
@@ -100,6 +118,7 @@ def main() -> None:
         protocol_manifest,
         dataset_root,
         formal=formal,
+        model_lock=model_lock,
     )
 
     candidate_manifest_sha256 = file_sha256(candidate_manifest)

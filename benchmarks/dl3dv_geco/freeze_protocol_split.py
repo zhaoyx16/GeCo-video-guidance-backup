@@ -65,6 +65,7 @@ def main() -> None:
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model-lock", type=Path)
     parser.add_argument("--split-seed", type=int, default=20260803)
     parser.add_argument("--test-count", type=int, default=100)
     parser.add_argument("--validation-count", type=int, default=100)
@@ -90,6 +91,9 @@ def main() -> None:
             f"formal protocol requires split counts {FORMAL_SPLIT_COUNTS}; "
             "pass --allow-nonstandard-counts only for debug fixtures"
         )
+    if not args.allow_nonstandard_counts:
+        if args.model_lock is None or not args.model_lock.resolve().is_file():
+            parser.error("formal protocol requires --model-lock")
 
     source_path = args.source_manifest.resolve()
     dataset_root = args.dataset_root.resolve()
@@ -182,6 +186,9 @@ def main() -> None:
         "_meta": {
             "schema": SCHEMA,
             "formal_protocol": not args.allow_nonstandard_counts,
+            "model_lock_sha256": (
+                sha256_file(args.model_lock.resolve()) if args.model_lock is not None else None
+            ),
             "source_manifest": str(source_path),
             "source_manifest_sha256": sha256_file(source_path),
             "dataset_root_at_freeze": str(dataset_root),

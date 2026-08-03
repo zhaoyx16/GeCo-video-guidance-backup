@@ -33,6 +33,9 @@ def validate_formal_protocol(path: Path) -> dict[str, Any]:
     metadata = payload["_meta"]
     if metadata.get("formal_protocol") is not True:
         raise ValueError("protocol is not marked formal")
+    model_lock_sha256 = metadata.get("model_lock_sha256")
+    if not isinstance(model_lock_sha256, str) or len(model_lock_sha256) != 64:
+        raise ValueError("formal protocol must bind model_lock_sha256")
     if metadata.get("split_counts") != FORMAL_SPLIT_COUNTS:
         raise ValueError(f"formal split counts must be {FORMAL_SPLIT_COUNTS}")
     cases = [value for key, value in payload.items() if not key.startswith("_")]
@@ -164,6 +167,8 @@ def validate_generation_sidecar(
     generation_profile: dict[str, Any],
     protocol_manifest_sha256: str,
     expected_git_commit: str | None,
+    model_lock_sha256: str,
+    locked_model_identity: dict[str, Any],
 ) -> None:
     metadata_value = candidate.get("generation_metadata")
     if not metadata_value:
@@ -182,6 +187,8 @@ def validate_generation_sidecar(
         "seed": candidate["seed"],
         "video_sha256": file_sha256(video),
         "backbone": "wan" if backbone.startswith("Wan") else "cosmos",
+        "model_lock_sha256": model_lock_sha256,
+        "locked_model_identity": locked_model_identity,
     }
     if expected_git_commit is not None:
         expected_generation["code_identity"] = {
@@ -241,6 +248,8 @@ def validate_generation_sidecar(
         "method": "baseline",
         "seed": candidate["seed"],
         "code_identity": expected_generation.get("code_identity"),
+        "model_lock_sha256": model_lock_sha256,
+        "locked_model_identity": locked_model_identity,
     }
     run_mismatches = {
         key: (run_config.get(key), expected)
@@ -276,12 +285,15 @@ def _validate_pool_cases_against_protocol(
     dataset_root: Path,
     *,
     formal: bool,
+    model_lock: dict[str, Any] | None,
 ) -> None:
     if formal and pool.get("artifact_mode") != "formal":
         raise ValueError("legacy-debug candidate pool cannot be promoted to formal")
     preparation = pool.get("preparation", {})
     if formal and preparation.get("dirty") is not False:
         raise ValueError("formal candidate pool was not prepared from clean code")
+    if formal and model_lock is None:
+        raise ValueError("formal candidate pool validation requires the frozen model lock")
     split = pool["cases"][0]["split"]
     frozen_cases = {
         key: value
@@ -325,6 +337,8 @@ def _validate_pool_cases_against_protocol(
                     generation_profile=case["generation"],
                     protocol_manifest_sha256=pool["protocol_manifest_sha256"],
                     expected_git_commit=preparation.get("commit"),
+                    model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
+                    locked_model_identity=model_lock["generation_models"][case["backbone"]],
                 )
 
 
@@ -334,12 +348,19 @@ def validate_candidate_pool_against_protocol(
     dataset_root: Path,
     *,
     formal: bool = True,
+    model_lock: dict[str, Any] | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != pool["protocol_manifest_sha256"]:
         raise ValueError("candidate pool does not match the protocol digest")
     protocol = validate_formal_protocol(protocol_path) if formal else load_protocol(protocol_path)
-    _validate_pool_cases_against_protocol(pool, protocol, dataset_root, formal=formal)
+    _validate_pool_cases_against_protocol(
+        pool,
+        protocol,
+        dataset_root,
+        formal=formal,
+        model_lock=model_lock,
+    )
 
 
 def validate_candidate_spec_against_protocol(
@@ -349,6 +370,7 @@ def validate_candidate_spec_against_protocol(
     *,
     formal: bool = True,
     expected_git_commit: str | None = None,
+    model_lock: dict[str, Any] | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != spec["protocol_manifest_sha256"]:
@@ -369,6 +391,8 @@ def validate_candidate_spec_against_protocol(
         raise ValueError("formal candidate generation profile differs from protocol")
     if formal and spec["candidate_count"] != len(seed_policy["candidate_seeds"]):
         raise ValueError("candidate count differs from the frozen seed policy")
+    if formal and model_lock is None:
+        raise ValueError("formal candidate spec validation requires the frozen model lock")
     for source_case in spec["cases"]:
         case_id = source_case["case_id"]
         if case_id not in protocol or case_id.startswith("_"):
@@ -408,4 +432,6 @@ def validate_candidate_spec_against_protocol(
                     generation_profile=spec["generation"],
                     protocol_manifest_sha256=spec["protocol_manifest_sha256"],
                     expected_git_commit=expected_git_commit,
+                    model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
+                    locked_model_identity=model_lock["generation_models"][spec["backbone"]],
                 )

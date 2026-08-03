@@ -39,6 +39,7 @@ from geometry_selection.protocol import (
     validate_committed_test_release,
     validate_formal_protocol,
 )
+from geometry_selection.model_lock import load_model_lock, verify_generation_model
 
 
 WAN_NEGATIVE = (
@@ -404,6 +405,7 @@ def main() -> None:
     parser.add_argument("--expected-split", choices=("debug", "validation", "test"))
     parser.add_argument("--expected-git-commit")
     parser.add_argument("--test-release", type=Path)
+    parser.add_argument("--model-lock", type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -482,6 +484,8 @@ def main() -> None:
             args.manifest, args.case_id, args.case_index
         )
     code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
+    locked_model_identity = None
+    model_lock_sha256 = None
     if is_frozen_protocol:
         if args.dataset_root is None:
             parser.error("frozen protocol requires --dataset-root")
@@ -504,6 +508,17 @@ def main() -> None:
         }
         if profile_mismatches:
             raise ValueError(f"generation profile differs from protocol: {profile_mismatches}")
+        if args.model_lock is None:
+            parser.error("frozen protocol requires --model-lock")
+        validate_committed_file(args.model_lock, REPO_ROOT, code_identity["commit"])
+        model_lock_sha256 = protocol_file_sha256(args.model_lock)
+        if model_lock_sha256 != protocol_meta["model_lock_sha256"]:
+            raise ValueError("model lock digest differs from frozen protocol")
+        locked_model_identity = verify_generation_model(
+            load_model_lock(args.model_lock),
+            profile_name,
+            Path(args.model),
+        )
         allowed_seeds = protocol_meta["candidate_seed_policy"]["candidate_seeds"]
         if args.seed not in allowed_seeds:
             raise ValueError(f"seed {args.seed} is outside frozen policy {allowed_seeds}")
@@ -592,6 +607,8 @@ def main() -> None:
         "code_identity": code_identity,
         "seed": args.seed,
         "model": model_identity(args.model),
+        "locked_model_identity": locked_model_identity,
+        "model_lock_sha256": model_lock_sha256,
         "runner_sha256": runner_sha256,
         "pipeline_sha256": pipeline_sha256,
         "vggt_model": model_identity(args.vggt_model)
@@ -776,6 +793,8 @@ def main() -> None:
         ).hexdigest(),
         "seed": args.seed,
         "model": model_identity(args.model),
+        "locked_model_identity": locked_model_identity,
+        "model_lock_sha256": model_lock_sha256,
         "vggt_model": model_identity(args.vggt_model)
         if args.method == "adapted_geco"
         else None,

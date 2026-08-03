@@ -95,6 +95,7 @@ def _small_formal_fixture(tmp_path, monkeypatch):
         "_meta": {
             "schema": protocol_module.DL3DV_PROTOCOL_SCHEMA,
             "formal_protocol": True,
+            "model_lock_sha256": "a" * 64,
             "split_counts": counts,
             "candidate_seed_policy": {
                 "candidate_seeds": [0, 1, 2, 3],
@@ -137,6 +138,14 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
     validate_formal_protocol(protocol_path)
     case_id = "case-validation"
     image, transforms = paths["validation"]
+    locked_model_identity = {
+        "snapshot_commit": "revision",
+        "json_files": [],
+        "weight_files": [{"path": "model.safetensors", "size": 1, "sha256": "b" * 64}],
+    }
+    model_lock = {
+        "generation_models": {"Wan2.2-TI2V-5B": locked_model_identity}
+    }
     candidates = []
     for seed in range(4):
         run_config = {
@@ -150,6 +159,8 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             "seed": seed,
             "model": {"requested": "model", "snapshot_commit": "revision"},
             "runner_sha256": "r" * 64,
+            "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
+            "locked_model_identity": locked_model_identity,
         }
         run_config_sha256 = hashlib.sha256(
             json.dumps(run_config, sort_keys=True, separators=(",", ":")).encode()
@@ -184,6 +195,8 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                     "generation": profile,
                     "model": run_config["model"],
                     "runner_sha256": run_config["runner_sha256"],
+                    "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
+                    "locked_model_identity": locked_model_identity,
                 }
             )
         )
@@ -220,6 +233,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         dataset,
         formal=True,
         expected_git_commit="abc",
+        model_lock=model_lock,
     )
     pool = materialize_candidate_pool(
         spec,
@@ -228,10 +242,14 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         producer_identity={"commit": "abc", "dirty": False},
         candidate_spec_sha256="f" * 64,
     )
-    validate_candidate_pool_against_protocol(pool, protocol_path, dataset, formal=True)
+    validate_candidate_pool_against_protocol(
+        pool, protocol_path, dataset, formal=True, model_lock=model_lock
+    )
     pool["artifact_mode"] = "legacy-debug"
     with pytest.raises(ValueError, match="cannot be promoted"):
-        validate_candidate_pool_against_protocol(pool, protocol_path, dataset, formal=True)
+        validate_candidate_pool_against_protocol(
+            pool, protocol_path, dataset, formal=True, model_lock=model_lock
+        )
     pool["artifact_mode"] = "formal"
 
     sidecar = candidates[1]["generation_metadata"]
@@ -240,7 +258,12 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
     open(sidecar, "w", encoding="utf-8").write(json.dumps(metadata))
     with pytest.raises(ValueError, match="generation sidecar differs"):
         validate_candidate_spec_against_protocol(
-            spec, protocol_path, dataset, formal=True, expected_git_commit="abc"
+            spec,
+            protocol_path,
+            dataset,
+            formal=True,
+            expected_git_commit="abc",
+            model_lock=model_lock,
         )
 
     metadata["seed"] = 1
@@ -248,7 +271,12 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
     transforms.write_bytes(b"changed")
     with pytest.raises(ValueError, match="transforms hash mismatch"):
         validate_candidate_spec_against_protocol(
-            spec, protocol_path, dataset, formal=True, expected_git_commit="abc"
+            spec,
+            protocol_path,
+            dataset,
+            formal=True,
+            expected_git_commit="abc",
+            model_lock=model_lock,
         )
 
 

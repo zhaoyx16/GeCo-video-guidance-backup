@@ -29,7 +29,9 @@ from geometry_selection.protocol import (
     validate_candidate_spec_against_protocol,
     validate_committed_file,
     validate_committed_test_release,
+    validate_formal_protocol,
 )
+from geometry_selection.model_lock import load_model_lock
 from scripts.extract_vggt_omega_geometry import (
     decode_video_frames,
     select_keyframes,
@@ -56,8 +58,7 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--expected-git-commit")
-    parser.add_argument("--expected-checkpoint-sha256")
-    parser.add_argument("--expected-source-tree-sha256")
+    parser.add_argument("--model-lock", type=Path)
     parser.add_argument("--test-release", type=Path)
     parser.add_argument("--num-keyframes", type=int, default=8)
     parser.add_argument("--device", default="cuda")
@@ -88,6 +89,7 @@ def main() -> None:
         ).stdout.strip()
     )
     formal = args.artifact_mode == "formal"
+    model_lock = None
     if formal:
         if args.expected_git_commit is None:
             parser.error("formal mode requires --expected-git-commit")
@@ -97,12 +99,20 @@ def main() -> None:
                 f"commit={code_commit}, dirty={dirty}"
             )
         validate_committed_file(args.protocol_manifest, REPO_ROOT, code_commit)
+        if args.model_lock is None:
+            parser.error("formal mode requires --model-lock")
+        validate_committed_file(args.model_lock, REPO_ROOT, code_commit)
+        protocol = validate_formal_protocol(args.protocol_manifest)
+        if protocol_file_sha256(args.model_lock) != protocol["_meta"]["model_lock_sha256"]:
+            raise ValueError("model lock digest differs from frozen protocol")
+        model_lock = load_model_lock(args.model_lock)
     validate_candidate_spec_against_protocol(
         spec,
         args.protocol_manifest,
         args.dataset_root,
         formal=formal,
         expected_git_commit=code_commit if formal else None,
+        model_lock=model_lock,
     )
     if formal and spec["split"] == "test":
         if args.test_release is None:
@@ -125,15 +135,7 @@ def main() -> None:
     )
     backbone_identity = adapter.cache_identity()
     if formal:
-        if not args.expected_checkpoint_sha256 or not args.expected_source_tree_sha256:
-            parser.error(
-                "formal mode requires --expected-checkpoint-sha256 and "
-                "--expected-source-tree-sha256"
-            )
-        expected_geometry = {
-            "checkpoint_sha256": args.expected_checkpoint_sha256,
-            "source_tree_sha256": args.expected_source_tree_sha256,
-        }
+        expected_geometry = model_lock["geometry_backbone"]
         geometry_mismatches = {
             key: (backbone_identity.get(key), expected)
             for key, expected in expected_geometry.items()
