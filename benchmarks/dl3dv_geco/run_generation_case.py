@@ -40,6 +40,7 @@ from geometry_selection.protocol import (
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock, verify_generation_model
+from geometry_selection.generation_lock import GenerationRunLock
 from geometry_selection.selection import validate_candidate_spec
 from geometry_selection.video_probe import probe_video
 
@@ -684,25 +685,8 @@ def main() -> None:
         )
         print(json.dumps({"status": "already_complete", "video": str(video_path)}, indent=2))
         return
-    output_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = output_dir / "RUNNING"
-    try:
-        claim_fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as error:
-        raise RuntimeError(f"Another job owns this run directory: {output_dir}") from error
-    os.write(
-        claim_fd,
-        json.dumps({"hostname": socket.gethostname(), "pid": os.getpid()}).encode(),
-    )
-    os.close(claim_fd)
-
-    def release_claim() -> None:
-        try:
-            claim_path.unlink()
-        except FileNotFoundError:
-            pass
-
-    atexit.register(release_claim)
+    run_lock = GenerationRunLock(output_dir)
+    atexit.register(run_lock.release)
 
     pipe, vae_device = build_pipeline(args)
     image = Image.open(image_path).convert("RGB")
@@ -876,7 +860,7 @@ def main() -> None:
     temporary_complete = output_dir / f".complete.{uuid.uuid4().hex}.tmp"
     temporary_complete.write_text(f"{run_id}\n")
     temporary_complete.replace(complete_path)
-    release_claim()
+    run_lock.release()
     print(json.dumps({"video": str(video_path), "metadata": str(metadata_path)}, indent=2))
 
 
