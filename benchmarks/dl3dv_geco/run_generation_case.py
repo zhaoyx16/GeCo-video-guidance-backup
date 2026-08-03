@@ -41,6 +41,7 @@ from geometry_selection.protocol import (
 )
 from geometry_selection.model_lock import load_model_lock, verify_generation_model
 from geometry_selection.selection import validate_candidate_spec
+from geometry_selection.video_probe import probe_video
 
 
 WAN_NEGATIVE = (
@@ -133,49 +134,6 @@ def model_identity(model: str) -> dict:
             for candidate in sorted(path.rglob(pattern))
         ]
     return identity
-
-
-def probe_video(path: Path, *, frames: int, height: int, width: int, fps: int) -> dict:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate,nb_frames",
-            "-of",
-            "json",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    streams = json.loads(result.stdout).get("streams", [])
-    if len(streams) != 1:
-        raise ValueError(f"Expected exactly one video stream: {path}")
-    stream = streams[0]
-    actual = {
-        "width": int(stream["width"]),
-        "height": int(stream["height"]),
-        "avg_frame_rate": stream["avg_frame_rate"],
-        "nb_frames": int(stream["nb_frames"]),
-    }
-    expected = {
-        "width": width,
-        "height": height,
-        "avg_frame_rate": f"{fps}/1",
-        "nb_frames": frames,
-    }
-    if actual != expected:
-        raise ValueError(f"Video mismatch: {actual} != {expected}")
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"],
-        check=True,
-    )
-    return actual
 
 
 def mapped_fixed_frames(num_frames: int) -> list[int]:
