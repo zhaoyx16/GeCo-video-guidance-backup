@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import uuid
 from collections import Counter
 from pathlib import Path
 
 
 SCHEMA = "dl3dv-geometry-selection-v1"
+FORMAL_SPLIT_COUNTS = {"debug": 3, "validation": 100, "test": 100}
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -67,12 +69,27 @@ def main() -> None:
     parser.add_argument("--test-count", type=int, default=100)
     parser.add_argument("--validation-count", type=int, default=100)
     parser.add_argument("--debug-count", type=int, default=3)
+    parser.add_argument(
+        "--allow-nonstandard-counts",
+        action="store_true",
+        help="Create a debug-only protocol instead of the formal 3/100/100 split.",
+    )
     args = parser.parse_args()
     if min(args.test_count, args.validation_count, args.debug_count) < 0:
         parser.error("split counts must be non-negative")
     required_count = args.test_count + args.validation_count + args.debug_count
     if required_count < 1:
         parser.error("at least one case is required")
+    requested_counts = {
+        "debug": args.debug_count,
+        "validation": args.validation_count,
+        "test": args.test_count,
+    }
+    if requested_counts != FORMAL_SPLIT_COUNTS and not args.allow_nonstandard_counts:
+        parser.error(
+            f"formal protocol requires split counts {FORMAL_SPLIT_COUNTS}; "
+            "pass --allow-nonstandard-counts only for debug fixtures"
+        )
 
     source_path = args.source_manifest.resolve()
     dataset_root = args.dataset_root.resolve()
@@ -164,6 +181,7 @@ def main() -> None:
     payload = {
         "_meta": {
             "schema": SCHEMA,
+            "formal_protocol": not args.allow_nonstandard_counts,
             "source_manifest": str(source_path),
             "source_manifest_sha256": sha256_file(source_path),
             "dataset_root_at_freeze": str(dataset_root),
@@ -187,6 +205,7 @@ def main() -> None:
                     "width": 1280,
                     "fps": 24,
                     "guidance_scale": 5.0,
+                    "wan_negative_prompt_mode": "none",
                 },
                 "Cosmos-Predict2.5-2B-post": {
                     "steps": 36,
@@ -203,7 +222,12 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_name(f".{args.output.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(args.output)
+    try:
+        os.link(temporary, args.output)
+    except FileExistsError as error:
+        raise FileExistsError(f"refusing to overwrite frozen protocol: {args.output}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
     print(json.dumps(payload["_meta"], indent=2, sort_keys=True))
 
 

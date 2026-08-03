@@ -31,7 +31,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from geometry_selection.protocol import load_protocol, resolve_protocol_image
+from geometry_selection.protocol import (
+    file_sha256 as protocol_file_sha256,
+    resolve_protocol_image,
+    resolve_protocol_transforms,
+    validate_committed_file,
+    validate_committed_test_release,
+    validate_formal_protocol,
+)
 
 
 WAN_NEGATIVE = (
@@ -387,6 +394,12 @@ def main() -> None:
     parser.add_argument("--method", choices=("baseline", "adapted_geco"), required=True)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--protocol-mode",
+        choices=("frozen", "legacy-debug"),
+        required=True,
+        help="Formal runs must explicitly select frozen; legacy-debug artifacts cannot enter formal pools.",
+    )
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--expected-split", choices=("debug", "validation", "test"))
     parser.add_argument("--expected-git-commit")
@@ -435,10 +448,13 @@ def main() -> None:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
 
     case_id, case, protocol_meta = load_case(args.manifest, args.case_id, args.case_index)
-    is_frozen_protocol = protocol_meta.get("schema") == "dl3dv-geometry-selection-v1"
-    code_identity = git_identity(args.repo.resolve())
+    is_frozen_protocol = args.protocol_mode == "frozen"
+    if is_frozen_protocol and args.repo.resolve() != REPO_ROOT.resolve():
+        raise ValueError("formal generation --repo must be the repository executing this runner")
+    code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
     if is_frozen_protocol:
-        load_protocol(args.manifest)
+        protocol = validate_formal_protocol(args.manifest)
+        protocol_meta = protocol["_meta"]
         if args.expected_split is None or case["split"] != args.expected_split:
             parser.error(
                 f"frozen case split is {case['split']}; pass the matching --expected-split"
@@ -451,6 +467,7 @@ def main() -> None:
             raise RuntimeError(
                 f"generation code is not the frozen clean commit: {code_identity}"
             )
+        validate_committed_file(args.manifest, REPO_ROOT, code_identity["commit"])
         profile_name = {
             "wan": "Wan2.2-TI2V-5B",
             "cosmos": "Cosmos-Predict2.5-2B-post",
@@ -467,22 +484,19 @@ def main() -> None:
         if args.seed not in allowed_seeds:
             raise ValueError(f"seed {args.seed} is outside frozen policy {allowed_seeds}")
         image_path = resolve_protocol_image(case, args.dataset_root)
+        resolve_protocol_transforms(case, args.dataset_root)
         if case["split"] == "test":
             if args.test_release is None:
                 parser.error("test split requires --test-release")
-            release = json.loads(args.test_release.read_text(encoding="utf-8"))
-            expected_release = {
-                "schema": "geometry-test-release-v1",
-                "protocol_manifest_sha256": sha256_file(args.manifest),
-                "code_commit": code_identity["commit"],
-            }
-            mismatches = {
-                key: (release.get(key), expected)
-                for key, expected in expected_release.items()
-                if release.get(key) != expected
-            }
-            if mismatches:
-                raise RuntimeError(f"test release mismatch: {mismatches}")
+            validate_committed_test_release(
+                args.test_release,
+                REPO_ROOT,
+                code_identity["commit"],
+                {
+                    "schema": "geometry-test-release-v1",
+                    "protocol_manifest_sha256": protocol_file_sha256(args.manifest),
+                },
+            )
     else:
         image_path = Path(case["image_prompt"])
         if not image_path.is_absolute():
@@ -719,6 +733,7 @@ def main() -> None:
         "manifest_sha256": manifest_sha256,
         "protocol": {
             "is_frozen": is_frozen_protocol,
+            "mode": args.protocol_mode,
             "split": case.get("split"),
             "expected_split": args.expected_split,
             "test_release": str(args.test_release.resolve()) if args.test_release else None,

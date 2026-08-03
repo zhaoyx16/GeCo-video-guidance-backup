@@ -18,6 +18,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from geometry_selection.cache import load_geometry_cache, load_geometry_cache_metadata
 from geometry_selection.config import load_offline_ranking_config, write_resolved_config
+from geometry_selection.protocol import (
+    FORMAL_SPLIT_COUNTS,
+    file_sha256 as protocol_file_sha256,
+    validate_candidate_pool_against_protocol,
+    validate_committed_file,
+    validate_committed_test_release,
+)
 from geometry_selection.scorer import score_geometry
 from geometry_selection.selection import (
     CandidateScore,
@@ -48,6 +55,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--expected-git-commit", required=True)
+    parser.add_argument(
+        "--artifact-mode",
+        choices=("formal", "legacy-debug"),
+        required=True,
+    )
+    parser.add_argument("--test-release", type=Path)
     parser.add_argument("--debug-skip-video-hash-verification", action="store_true")
     args = parser.parse_args()
 
@@ -59,6 +72,8 @@ def main() -> None:
         return (path if path.is_absolute() else config_path.parent / path).resolve()
 
     candidate_manifest = resolve_config_path(config.candidate_manifest)
+    protocol_manifest = resolve_config_path(config.protocol_manifest)
+    dataset_root = resolve_config_path(config.dataset_root)
     geometry_cache_root = resolve_config_path(config.geometry_cache_root)
     output_root = resolve_config_path(config.output_root)
     code = git_identity(REPO_ROOT)
@@ -68,18 +83,47 @@ def main() -> None:
         raise RuntimeError(
             f"code commit mismatch: expected {args.expected_git_commit}, got {code['commit']}"
         )
-    formal = not args.debug_skip_video_hash_verification
+    formal = args.artifact_mode == "formal"
+    if formal and args.debug_skip_video_hash_verification:
+        parser.error("formal ranking cannot skip candidate video hash verification")
+    if formal:
+        validate_committed_file(config_path, REPO_ROOT, code["commit"])
+        validate_committed_file(protocol_manifest, REPO_ROOT, code["commit"])
     pool = load_and_validate_candidate_pool(
         candidate_manifest,
         expected_split=config.expected_split,
         verify_video_hashes=formal,
+        expected_case_count=FORMAL_SPLIT_COUNTS[config.expected_split] if formal else None,
+    )
+    validate_candidate_pool_against_protocol(
+        pool,
+        protocol_manifest,
+        dataset_root,
+        formal=formal,
     )
 
     candidate_manifest_sha256 = file_sha256(candidate_manifest)
+    protocol_manifest_sha256 = protocol_file_sha256(protocol_manifest)
+    if formal and config.expected_split == "test":
+        if args.test_release is None:
+            parser.error("formal test ranking requires --test-release")
+        validate_committed_test_release(
+            args.test_release,
+            REPO_ROOT,
+            code["commit"],
+            {
+                "schema": "geometry-test-release-v1",
+                "phase": "ranking",
+                "protocol_manifest_sha256": protocol_manifest_sha256,
+                "ranking_config_hash": config.config_hash,
+                "candidate_manifest_sha256": candidate_manifest_sha256,
+            },
+        )
     run_identity = {
         "code_commit": code["commit"],
         "config_hash": config.config_hash,
         "candidate_manifest_sha256": candidate_manifest_sha256,
+        "protocol_manifest_sha256": protocol_manifest_sha256,
     }
     run_id = file_sha256(candidate_manifest)[:12] + "-" + config.config_hash[:12]
     output_root.mkdir(parents=True, exist_ok=True)
@@ -101,6 +145,30 @@ def main() -> None:
                 geometry_cache_root,
                 candidate["geometry_cache_key"],
             )
+            if formal:
+                producer = cache_metadata["provenance"].get("producer", {})
+                expected_sources = {
+                    "dirty": False,
+                    "adapter_sha256": file_sha256(
+                        REPO_ROOT / "geometry_selection/backbones/vggt_omega.py"
+                    ),
+                    "extractor_sha256": file_sha256(
+                        REPO_ROOT / "scripts/extract_vggt_omega_geometry.py"
+                    ),
+                    "preparer_sha256": file_sha256(
+                        REPO_ROOT / "scripts/prepare_candidate_pool.py"
+                    ),
+                }
+                producer_mismatches = {
+                    key: (producer.get(key), expected)
+                    for key, expected in expected_sources.items()
+                    if producer.get(key) != expected
+                }
+                if producer_mismatches or not producer.get("commit"):
+                    raise ValueError(
+                        "geometry cache producer mismatch: "
+                        f"{producer_mismatches or {'commit': 'missing'}}"
+                    )
             prediction = load_geometry_cache(
                 geometry_cache_root,
                 candidate["geometry_cache_key"],
@@ -153,6 +221,7 @@ def main() -> None:
         "verification": {
             "video_hashes": formal,
             "expected_git_commit": args.expected_git_commit,
+            "protocol_manifest_sha256": protocol_manifest_sha256,
         },
         "code": code,
         "config_hash": config.config_hash,

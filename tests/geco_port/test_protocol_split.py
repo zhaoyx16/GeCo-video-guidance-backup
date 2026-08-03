@@ -52,6 +52,7 @@ def run_split(source: Path, dataset: Path, output: Path) -> dict:
             "2",
             "--debug-count",
             "2",
+            "--allow-nonstandard-counts",
         ],
         check=True,
         capture_output=True,
@@ -71,6 +72,7 @@ def test_split_is_deterministic_and_scene_disjoint(tmp_path: Path) -> None:
     assert len({case["image_sha256"] for case in cases}) == len(cases)
     assert first["_meta"]["split_counts"] == {"debug": 2, "test": 2, "validation": 2}
     assert first["_meta"]["candidate_seed_policy"]["candidate_seeds"] == [0, 1, 2, 3]
+    assert first["_meta"]["formal_protocol"] is False
     assert all(not Path(case["image_prompt"]).is_absolute() for case in cases)
 
 
@@ -97,12 +99,68 @@ def test_split_fails_when_same_scene_has_multiple_cases(tmp_path: Path) -> None:
             "2",
             "--debug-count",
             "2",
+            "--allow-nonstandard-counts",
         ],
         capture_output=True,
         text=True,
     )
     assert completed.returncode != 0
     assert "same scene" in completed.stderr
+
+
+def test_nonstandard_counts_require_explicit_debug_flag(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--source-manifest",
+            str(source),
+            "--dataset-root",
+            str(dataset),
+            "--output",
+            str(tmp_path / "out.json"),
+            "--test-count",
+            "2",
+            "--validation-count",
+            "2",
+            "--debug-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "formal protocol requires split counts" in completed.stderr
+
+
+def test_frozen_protocol_refuses_to_overwrite_existing_output(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path)
+    output = tmp_path / "protocol.json"
+    run_split(source, dataset, output)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--source-manifest",
+            str(source),
+            "--dataset-root",
+            str(dataset),
+            "--output",
+            str(output),
+            "--test-count",
+            "2",
+            "--validation-count",
+            "2",
+            "--debug-count",
+            "2",
+            "--allow-nonstandard-counts",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "refusing to overwrite frozen protocol" in completed.stderr
 
 
 def test_split_resolves_source_relative_paths_from_manifest_directory(tmp_path: Path) -> None:

@@ -103,6 +103,18 @@ def test_all_invalid_candidates_retain_incumbent() -> None:
     json.dumps(serialized, allow_nan=False)
 
 
+def test_sparse_common_evidence_reports_measured_edge_counts() -> None:
+    incumbent = candidate("candidate0", 0.20, 0.10, incumbent=True)
+    challenger = candidate("candidate1", 0.10, 0.10)
+    result = select_candidate(
+        [incumbent, challenger],
+        SelectionConfig(min_common_local_edges=3, min_common_long_range_edges=2),
+    )
+    assert result.decision == "abstain_insufficient_common_evidence"
+    assert result.common_local_edges == 2
+    assert result.common_long_range_edges == 1
+
+
 def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     videos = []
     for index in range(2):
@@ -217,6 +229,8 @@ schema_version: 1
 method_version: offline_v1
 experiment_name: test
 candidate_manifest: /tmp/candidates.json
+protocol_manifest: /tmp/protocol.json
+dataset_root: /tmp/dataset
 geometry_cache_root: /tmp/cache
 output_root: /tmp/results
 expected_split: validation

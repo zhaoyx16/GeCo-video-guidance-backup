@@ -294,6 +294,7 @@ def load_and_validate_candidate_pool(
     *,
     expected_split: str,
     verify_video_hashes: bool = True,
+    expected_case_count: int | None = None,
 ) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema") != CANDIDATE_POOL_SCHEMA:
@@ -301,6 +302,10 @@ def load_and_validate_candidate_pool(
     cases = payload.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("candidate pool must contain a non-empty cases list")
+    if expected_case_count is not None and len(cases) != expected_case_count:
+        raise ValueError(
+            f"candidate pool has {len(cases)} cases, expected {expected_case_count}"
+        )
     protocol_hash = payload.get("protocol_manifest_sha256")
     if not isinstance(protocol_hash, str) or len(protocol_hash) != 64:
         raise ValueError("candidate pool must bind a protocol_manifest_sha256")
@@ -431,7 +436,7 @@ def _pair_map(report: GeometryScoreReport) -> dict[tuple[int, int], float]:
 def _common_comparable_scores(
     candidates: list[CandidateScore],
     config: SelectionConfig,
-) -> tuple[dict[str, float], int, int] | None:
+) -> tuple[dict[str, float], int, int]:
     valid_candidates = [
         candidate
         for candidate in candidates
@@ -440,7 +445,7 @@ def _common_comparable_scores(
     ]
     incumbent = next(candidate for candidate in candidates if candidate.is_incumbent)
     if incumbent not in valid_candidates or len(valid_candidates) < 2:
-        return None
+        return {}, 0, 0
     first_config = asdict(valid_candidates[0].report.config)
     if any(asdict(candidate.report.config) != first_config for candidate in valid_candidates[1:]):
         raise ValueError("all candidates must use the same scorer configuration")
@@ -459,9 +464,9 @@ def _common_comparable_scores(
     )
     long_keys = sorted(common - set(local_keys))
     if len(local_keys) < config.min_common_local_edges:
-        return None
+        return {}, len(local_keys), len(long_keys)
     if config.require_common_long_range and len(long_keys) < config.min_common_long_range_edges:
-        return None
+        return {}, len(local_keys), len(long_keys)
 
     scores: dict[str, float] = {}
     for candidate, pair_map in zip(valid_candidates, maps, strict=True):
@@ -489,19 +494,19 @@ def select_candidate(
         raise ValueError("exactly one candidate must be the incumbent")
     incumbent = incumbents[0]
     comparable = _common_comparable_scores(candidates, config)
-    if comparable is None:
+    comparable_scores, common_local, common_long = comparable
+    if not comparable_scores:
         return SelectionResult(
             incumbent.candidate_id,
             incumbent.candidate_id,
             "abstain_insufficient_common_evidence",
             None,
             None,
-            0,
-            0,
+            common_local,
+            common_long,
             {},
             tuple(candidates),
         )
-    comparable_scores, common_local, common_long = comparable
     comparable_candidates = [
         candidate for candidate in candidates if candidate.candidate_id in comparable_scores
     ]

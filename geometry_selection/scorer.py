@@ -48,6 +48,8 @@ class ScorerConfig:
             raise TypeError("local_offsets must contain integers")
         if self.min_long_range_gap < 2:
             raise ValueError("min_long_range_gap must be at least 2")
+        if max(self.local_offsets) >= self.min_long_range_gap:
+            raise ValueError("all local_offsets must be smaller than min_long_range_gap")
         for name, value in (
             ("confidence_quantile", self.confidence_quantile),
             ("min_pair_overlap", self.min_pair_overlap),

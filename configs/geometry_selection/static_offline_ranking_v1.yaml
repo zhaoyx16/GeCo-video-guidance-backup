@@ -2,6 +2,8 @@ schema_version: 1
 method_version: offline_reprojection_ranking_v1
 experiment_name: static_vggt_omega_ranking
 candidate_manifest: /path/to/candidate_pool.json
+protocol_manifest: /path/to/frozen_protocol.json
+dataset_root: /path/to/DL3DV
 geometry_cache_root: /path/to/geometry_cache
 output_root: /path/to/results
 expected_split: validation

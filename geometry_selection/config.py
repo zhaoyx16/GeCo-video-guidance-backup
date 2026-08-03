@@ -32,6 +32,8 @@ class OfflineRankingConfig:
     method_version: str
     experiment_name: str
     candidate_manifest: str
+    protocol_manifest: str
+    dataset_root: str
     geometry_cache_root: str
     output_root: str
     expected_split: str
@@ -58,6 +60,8 @@ class OfflineRankingConfig:
             "method_version": self.method_version,
             "experiment_name": self.experiment_name,
             "candidate_manifest": self.candidate_manifest,
+            "protocol_manifest": self.protocol_manifest,
+            "dataset_root": self.dataset_root,
             "geometry_cache_root": self.geometry_cache_root,
             "output_root": self.output_root,
             "expected_split": self.expected_split,
@@ -67,7 +71,13 @@ class OfflineRankingConfig:
 
     def semantic_dict(self) -> dict[str, Any]:
         payload = self.to_dict()
-        for key in ("candidate_manifest", "geometry_cache_root", "output_root"):
+        for key in (
+            "candidate_manifest",
+            "protocol_manifest",
+            "dataset_root",
+            "geometry_cache_root",
+            "output_root",
+        ):
             payload.pop(key)
         return payload
 
@@ -85,6 +95,8 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
         "method_version",
         "experiment_name",
         "candidate_manifest",
+        "protocol_manifest",
+        "dataset_root",
         "geometry_cache_root",
         "output_root",
         "expected_split",
