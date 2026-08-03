@@ -4,6 +4,7 @@ experiment_name: static_vggt_omega_ranking
 candidate_manifest: /path/to/candidate_pool.json
 protocol_manifest: /path/to/frozen_protocol.json
 model_lock: /path/to/model_lock.json
+experiment_lock: /path/to/experiment_lock.json
 dataset_root: /path/to/DL3DV
 geometry_cache_root: /path/to/geometry_cache
 geometry_checkpoint_sha256: c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934

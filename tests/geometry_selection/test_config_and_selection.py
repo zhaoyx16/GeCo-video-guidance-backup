@@ -311,6 +311,7 @@ experiment_name: test
 candidate_manifest: /tmp/candidates.json
 protocol_manifest: /tmp/protocol.json
 model_lock: /tmp/model_lock.json
+experiment_lock: /tmp/experiment_lock.json
 dataset_root: /tmp/dataset
 geometry_cache_root: /tmp/cache
 geometry_checkpoint_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

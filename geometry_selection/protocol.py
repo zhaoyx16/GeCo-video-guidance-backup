@@ -113,22 +113,39 @@ def resolve_protocol_transforms(case: dict[str, Any], dataset_root: Path) -> Pat
     return transforms
 
 
-def validate_committed_test_release(
-    release_path: Path,
+def validate_experiment_lock(
+    lock_path: Path,
     repo_root: Path,
     expected_commit: str,
-    expected_fields: dict[str, Any],
+    *,
+    protocol_manifest_sha256: str,
+    model_lock_sha256: str,
+    split: str,
+    ranking_config_hash: str | None = None,
 ) -> dict[str, Any]:
-    committed = validate_committed_file(release_path, repo_root, expected_commit)
-    release = json.loads(committed)
+    committed = validate_committed_file(lock_path, repo_root, expected_commit)
+    lock = json.loads(committed)
+    expected = {
+        "schema": "geometry-experiment-lock-v1",
+        "protocol_manifest_sha256": protocol_manifest_sha256,
+        "model_lock_sha256": model_lock_sha256,
+    }
     mismatches = {
-        key: (release.get(key), expected)
-        for key, expected in expected_fields.items()
-        if release.get(key) != expected
+        key: (lock.get(key), value)
+        for key, value in expected.items()
+        if lock.get(key) != value
     }
     if mismatches:
-        raise ValueError(f"test release mismatch: {mismatches}")
-    return release
+        raise ValueError(f"experiment lock mismatch: {mismatches}")
+    policies = lock.get("authorized_ranking_config_hashes", {})
+    allowed = policies.get(split)
+    if not isinstance(allowed, list) or not allowed:
+        raise ValueError(f"experiment lock does not authorize split: {split}")
+    if ranking_config_hash is not None and ranking_config_hash not in allowed:
+        raise ValueError(
+            f"ranking config {ranking_config_hash} is not authorized for split {split}"
+        )
+    return lock
 
 
 def validate_committed_file(
@@ -169,6 +186,7 @@ def validate_generation_sidecar(
     expected_git_commit: str | None,
     model_lock_sha256: str,
     locked_model_identity: dict[str, Any],
+    experiment_lock_sha256: str,
 ) -> None:
     metadata_value = candidate.get("generation_metadata")
     if not metadata_value:
@@ -189,6 +207,7 @@ def validate_generation_sidecar(
         "backbone": "wan" if backbone.startswith("Wan") else "cosmos",
         "model_lock_sha256": model_lock_sha256,
         "locked_model_identity": locked_model_identity,
+        "experiment_lock_sha256": experiment_lock_sha256,
     }
     if expected_git_commit is not None:
         expected_generation["code_identity"] = {
@@ -250,6 +269,7 @@ def validate_generation_sidecar(
         "code_identity": expected_generation.get("code_identity"),
         "model_lock_sha256": model_lock_sha256,
         "locked_model_identity": locked_model_identity,
+        "experiment_lock_sha256": experiment_lock_sha256,
     }
     run_mismatches = {
         key: (run_config.get(key), expected)
@@ -286,6 +306,7 @@ def _validate_pool_cases_against_protocol(
     *,
     formal: bool,
     model_lock: dict[str, Any] | None,
+    experiment_lock_sha256: str | None,
 ) -> None:
     if formal and pool.get("artifact_mode") != "formal":
         raise ValueError("legacy-debug candidate pool cannot be promoted to formal")
@@ -294,6 +315,10 @@ def _validate_pool_cases_against_protocol(
         raise ValueError("formal candidate pool was not prepared from clean code")
     if formal and model_lock is None:
         raise ValueError("formal candidate pool validation requires the frozen model lock")
+    if formal and not experiment_lock_sha256:
+        raise ValueError("formal candidate pool validation requires experiment lock digest")
+    if formal and preparation.get("experiment_lock_sha256") != experiment_lock_sha256:
+        raise ValueError("candidate pool preparation used a different experiment lock")
     split = pool["cases"][0]["split"]
     frozen_cases = {
         key: value
@@ -339,6 +364,7 @@ def _validate_pool_cases_against_protocol(
                     expected_git_commit=preparation.get("commit"),
                     model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
                     locked_model_identity=model_lock["generation_models"][case["backbone"]],
+                    experiment_lock_sha256=experiment_lock_sha256,
                 )
 
 
@@ -349,6 +375,7 @@ def validate_candidate_pool_against_protocol(
     *,
     formal: bool = True,
     model_lock: dict[str, Any] | None = None,
+    experiment_lock_sha256: str | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != pool["protocol_manifest_sha256"]:
@@ -360,6 +387,7 @@ def validate_candidate_pool_against_protocol(
         dataset_root,
         formal=formal,
         model_lock=model_lock,
+        experiment_lock_sha256=experiment_lock_sha256,
     )
 
 
@@ -371,6 +399,7 @@ def validate_candidate_spec_against_protocol(
     formal: bool = True,
     expected_git_commit: str | None = None,
     model_lock: dict[str, Any] | None = None,
+    experiment_lock_sha256: str | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != spec["protocol_manifest_sha256"]:
@@ -393,6 +422,8 @@ def validate_candidate_spec_against_protocol(
         raise ValueError("candidate count differs from the frozen seed policy")
     if formal and model_lock is None:
         raise ValueError("formal candidate spec validation requires the frozen model lock")
+    if formal and not experiment_lock_sha256:
+        raise ValueError("formal candidate spec validation requires experiment lock digest")
     for source_case in spec["cases"]:
         case_id = source_case["case_id"]
         if case_id not in protocol or case_id.startswith("_"):
@@ -434,4 +465,5 @@ def validate_candidate_spec_against_protocol(
                     expected_git_commit=expected_git_commit,
                     model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
                     locked_model_identity=model_lock["generation_models"][spec["backbone"]],
+                    experiment_lock_sha256=experiment_lock_sha256,
                 )

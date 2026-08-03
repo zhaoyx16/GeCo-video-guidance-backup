@@ -34,6 +34,7 @@ class OfflineRankingConfig:
     candidate_manifest: str
     protocol_manifest: str
     model_lock: str
+    experiment_lock: str
     dataset_root: str
     geometry_cache_root: str
     geometry_checkpoint_sha256: str
@@ -76,6 +77,7 @@ class OfflineRankingConfig:
             "candidate_manifest": self.candidate_manifest,
             "protocol_manifest": self.protocol_manifest,
             "model_lock": self.model_lock,
+            "experiment_lock": self.experiment_lock,
             "dataset_root": self.dataset_root,
             "geometry_cache_root": self.geometry_cache_root,
             "geometry_checkpoint_sha256": self.geometry_checkpoint_sha256,
@@ -93,6 +95,7 @@ class OfflineRankingConfig:
             "candidate_manifest",
             "protocol_manifest",
             "model_lock",
+            "experiment_lock",
             "dataset_root",
             "geometry_cache_root",
             "output_root",
@@ -116,6 +119,7 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
         "candidate_manifest",
         "protocol_manifest",
         "model_lock",
+        "experiment_lock",
         "dataset_root",
         "geometry_cache_root",
         "geometry_checkpoint_sha256",

@@ -36,7 +36,7 @@ from geometry_selection.protocol import (
     resolve_protocol_image,
     resolve_protocol_transforms,
     validate_committed_file,
-    validate_committed_test_release,
+    validate_experiment_lock,
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock, verify_generation_model
@@ -404,8 +404,8 @@ def main() -> None:
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--expected-split", choices=("debug", "validation", "test"))
     parser.add_argument("--expected-git-commit")
-    parser.add_argument("--test-release", type=Path)
     parser.add_argument("--model-lock", type=Path)
+    parser.add_argument("--experiment-lock", type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -486,6 +486,7 @@ def main() -> None:
     code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
     locked_model_identity = None
     model_lock_sha256 = None
+    experiment_lock_sha256 = None
     if is_frozen_protocol:
         if args.dataset_root is None:
             parser.error("frozen protocol requires --dataset-root")
@@ -519,23 +520,22 @@ def main() -> None:
             profile_name,
             Path(args.model),
         )
+        if args.experiment_lock is None:
+            parser.error("frozen protocol requires --experiment-lock")
+        validate_experiment_lock(
+            args.experiment_lock,
+            REPO_ROOT,
+            code_identity["commit"],
+            protocol_manifest_sha256=protocol_file_sha256(args.manifest),
+            model_lock_sha256=model_lock_sha256,
+            split=args.expected_split,
+        )
+        experiment_lock_sha256 = protocol_file_sha256(args.experiment_lock)
         allowed_seeds = protocol_meta["candidate_seed_policy"]["candidate_seeds"]
         if args.seed not in allowed_seeds:
             raise ValueError(f"seed {args.seed} is outside frozen policy {allowed_seeds}")
         image_path = resolve_protocol_image(case, args.dataset_root)
         resolve_protocol_transforms(case, args.dataset_root)
-        if case["split"] == "test":
-            if args.test_release is None:
-                parser.error("test split requires --test-release")
-            validate_committed_test_release(
-                args.test_release,
-                REPO_ROOT,
-                code_identity["commit"],
-                {
-                    "schema": "geometry-test-release-v1",
-                    "protocol_manifest_sha256": protocol_file_sha256(args.manifest),
-                },
-            )
     else:
         image_path = Path(case["image_prompt"])
         if not image_path.is_absolute():
@@ -609,6 +609,7 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
+        "experiment_lock_sha256": experiment_lock_sha256,
         "runner_sha256": runner_sha256,
         "pipeline_sha256": pipeline_sha256,
         "vggt_model": model_identity(args.vggt_model)
@@ -777,8 +778,10 @@ def main() -> None:
             "mode": args.protocol_mode,
             "split": case.get("split"),
             "expected_split": args.expected_split,
-            "test_release": str(args.test_release.resolve()) if args.test_release else None,
-            "test_release_sha256": sha256_file(args.test_release) if args.test_release else None,
+            "experiment_lock": (
+                str(args.experiment_lock.resolve()) if args.experiment_lock else None
+            ),
+            "experiment_lock_sha256": experiment_lock_sha256,
         },
         "code_identity": code_identity,
         "image_path": str(image_path.resolve()),
@@ -795,6 +798,7 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
+        "experiment_lock_sha256": experiment_lock_sha256,
         "vggt_model": model_identity(args.vggt_model)
         if args.method == "adapted_geco"
         else None,

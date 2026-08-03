@@ -28,7 +28,7 @@ from geometry_selection.protocol import (
     file_sha256 as protocol_file_sha256,
     validate_candidate_spec_against_protocol,
     validate_committed_file,
-    validate_committed_test_release,
+    validate_experiment_lock,
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock
@@ -59,7 +59,7 @@ def main() -> None:
     )
     parser.add_argument("--expected-git-commit")
     parser.add_argument("--model-lock", type=Path)
-    parser.add_argument("--test-release", type=Path)
+    parser.add_argument("--experiment-lock", type=Path)
     parser.add_argument("--num-keyframes", type=int, default=8)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image-resolution", type=int, default=512)
@@ -90,6 +90,7 @@ def main() -> None:
     )
     formal = args.artifact_mode == "formal"
     model_lock = None
+    experiment_lock_sha256 = None
     if formal:
         if args.expected_git_commit is None:
             parser.error("formal mode requires --expected-git-commit")
@@ -106,6 +107,17 @@ def main() -> None:
         if protocol_file_sha256(args.model_lock) != protocol["_meta"]["model_lock_sha256"]:
             raise ValueError("model lock digest differs from frozen protocol")
         model_lock = load_model_lock(args.model_lock)
+        if args.experiment_lock is None:
+            parser.error("formal mode requires --experiment-lock")
+        validate_experiment_lock(
+            args.experiment_lock,
+            REPO_ROOT,
+            code_commit,
+            protocol_manifest_sha256=protocol_file_sha256(args.protocol_manifest),
+            model_lock_sha256=protocol_file_sha256(args.model_lock),
+            split=spec["split"],
+        )
+        experiment_lock_sha256 = protocol_file_sha256(args.experiment_lock)
     validate_candidate_spec_against_protocol(
         spec,
         args.protocol_manifest,
@@ -113,19 +125,8 @@ def main() -> None:
         formal=formal,
         expected_git_commit=code_commit if formal else None,
         model_lock=model_lock,
+        experiment_lock_sha256=experiment_lock_sha256,
     )
-    if formal and spec["split"] == "test":
-        if args.test_release is None:
-            parser.error("formal test preparation requires --test-release")
-        validate_committed_test_release(
-            args.test_release,
-            REPO_ROOT,
-            code_commit,
-            {
-                "schema": "geometry-test-release-v1",
-                "protocol_manifest_sha256": protocol_file_sha256(args.protocol_manifest),
-            },
-        )
     adapter = VGGTOmegaAdapter(
         source_root=args.source_root,
         checkpoint=args.checkpoint,
@@ -149,6 +150,7 @@ def main() -> None:
         "adapter_sha256": file_sha256(REPO_ROOT / "geometry_selection/backbones/vggt_omega.py"),
         "extractor_sha256": file_sha256(REPO_ROOT / "scripts/extract_vggt_omega_geometry.py"),
         "preparer_sha256": file_sha256(Path(__file__).resolve()),
+        "experiment_lock_sha256": experiment_lock_sha256,
     }
     geometry_keys: dict[tuple[str, str], str] = {}
     for case in spec.get("cases", []):

@@ -23,7 +23,7 @@ from geometry_selection.protocol import (
     file_sha256 as protocol_file_sha256,
     validate_candidate_pool_against_protocol,
     validate_committed_file,
-    validate_committed_test_release,
+    validate_experiment_lock,
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock
@@ -62,7 +62,6 @@ def main() -> None:
         choices=("formal", "legacy-debug"),
         required=True,
     )
-    parser.add_argument("--test-release", type=Path)
     parser.add_argument("--debug-skip-video-hash-verification", action="store_true")
     args = parser.parse_args()
 
@@ -76,6 +75,7 @@ def main() -> None:
     candidate_manifest = resolve_config_path(config.candidate_manifest)
     protocol_manifest = resolve_config_path(config.protocol_manifest)
     model_lock_path = resolve_config_path(config.model_lock)
+    experiment_lock_path = resolve_config_path(config.experiment_lock)
     dataset_root = resolve_config_path(config.dataset_root)
     geometry_cache_root = resolve_config_path(config.geometry_cache_root)
     output_root = resolve_config_path(config.output_root)
@@ -97,6 +97,16 @@ def main() -> None:
         if protocol_file_sha256(model_lock_path) != protocol["_meta"]["model_lock_sha256"]:
             raise ValueError("model lock digest differs from frozen protocol")
         model_lock = load_model_lock(model_lock_path)
+        validate_experiment_lock(
+            experiment_lock_path,
+            REPO_ROOT,
+            code["commit"],
+            protocol_manifest_sha256=protocol_file_sha256(protocol_manifest),
+            model_lock_sha256=protocol_file_sha256(model_lock_path),
+            split=config.expected_split,
+            ranking_config_hash=config.config_hash,
+        )
+        experiment_lock_sha256 = protocol_file_sha256(experiment_lock_path)
         locked_geometry = model_lock["geometry_backbone"]
         config_geometry = {
             "checkpoint_sha256": config.geometry_checkpoint_sha256,
@@ -107,6 +117,7 @@ def main() -> None:
             raise ValueError("ranking config geometry identity differs from model lock")
     else:
         model_lock = None
+        experiment_lock_sha256 = None
     pool = load_and_validate_candidate_pool(
         candidate_manifest,
         expected_split=config.expected_split,
@@ -119,30 +130,17 @@ def main() -> None:
         dataset_root,
         formal=formal,
         model_lock=model_lock,
+        experiment_lock_sha256=experiment_lock_sha256,
     )
 
     candidate_manifest_sha256 = file_sha256(candidate_manifest)
     protocol_manifest_sha256 = protocol_file_sha256(protocol_manifest)
-    if formal and config.expected_split == "test":
-        if args.test_release is None:
-            parser.error("formal test ranking requires --test-release")
-        validate_committed_test_release(
-            args.test_release,
-            REPO_ROOT,
-            code["commit"],
-            {
-                "schema": "geometry-test-release-v1",
-                "phase": "ranking",
-                "protocol_manifest_sha256": protocol_manifest_sha256,
-                "ranking_config_hash": config.config_hash,
-                "candidate_manifest_sha256": candidate_manifest_sha256,
-            },
-        )
     run_identity = {
         "code_commit": code["commit"],
         "config_hash": config.config_hash,
         "candidate_manifest_sha256": candidate_manifest_sha256,
         "protocol_manifest_sha256": protocol_manifest_sha256,
+        "experiment_lock_sha256": experiment_lock_sha256,
     }
     run_id = file_sha256(candidate_manifest)[:12] + "-" + config.config_hash[:12]
     output_root.mkdir(parents=True, exist_ok=True)

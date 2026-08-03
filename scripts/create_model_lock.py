@@ -23,9 +23,10 @@ def parse_named_path(value: str) -> tuple[str, Path]:
     if "=" not in value:
         raise argparse.ArgumentTypeError("expected PROFILE=/absolute/model/path")
     name, raw_path = value.split("=", 1)
-    path = Path(raw_path).expanduser().resolve()
-    if not name or not path.is_absolute():
+    expanded = Path(raw_path).expanduser()
+    if not name or not expanded.is_absolute():
         raise argparse.ArgumentTypeError("expected PROFILE=/absolute/model/path")
+    path = expanded.resolve()
     return name, path
 
 

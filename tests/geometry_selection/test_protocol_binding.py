@@ -13,7 +13,7 @@ from geometry_selection.protocol import (
     file_sha256,
     validate_candidate_spec_against_protocol,
     validate_candidate_pool_against_protocol,
-    validate_committed_test_release,
+    validate_experiment_lock,
     validate_formal_protocol,
 )
 from geometry_selection.selection import CANDIDATE_SPEC_SCHEMA, materialize_candidate_pool
@@ -146,6 +146,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
     model_lock = {
         "generation_models": {"Wan2.2-TI2V-5B": locked_model_identity}
     }
+    experiment_lock_sha256 = "c" * 64
     candidates = []
     for seed in range(4):
         run_config = {
@@ -161,6 +162,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             "runner_sha256": "r" * 64,
             "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
             "locked_model_identity": locked_model_identity,
+            "experiment_lock_sha256": experiment_lock_sha256,
         }
         run_config_sha256 = hashlib.sha256(
             json.dumps(run_config, sort_keys=True, separators=(",", ":")).encode()
@@ -197,6 +199,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                     "runner_sha256": run_config["runner_sha256"],
                     "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
                     "locked_model_identity": locked_model_identity,
+                    "experiment_lock_sha256": experiment_lock_sha256,
                 }
             )
         )
@@ -234,21 +237,36 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         formal=True,
         expected_git_commit="abc",
         model_lock=model_lock,
+        experiment_lock_sha256=experiment_lock_sha256,
     )
     pool = materialize_candidate_pool(
         spec,
         {(case_id, f"candidate-{seed}"): str(seed) * 64 for seed in range(4)},
         artifact_mode="formal",
-        producer_identity={"commit": "abc", "dirty": False},
+        producer_identity={
+            "commit": "abc",
+            "dirty": False,
+            "experiment_lock_sha256": experiment_lock_sha256,
+        },
         candidate_spec_sha256="f" * 64,
     )
     validate_candidate_pool_against_protocol(
-        pool, protocol_path, dataset, formal=True, model_lock=model_lock
+        pool,
+        protocol_path,
+        dataset,
+        formal=True,
+        model_lock=model_lock,
+        experiment_lock_sha256=experiment_lock_sha256,
     )
     pool["artifact_mode"] = "legacy-debug"
     with pytest.raises(ValueError, match="cannot be promoted"):
         validate_candidate_pool_against_protocol(
-            pool, protocol_path, dataset, formal=True, model_lock=model_lock
+            pool,
+            protocol_path,
+            dataset,
+            formal=True,
+            model_lock=model_lock,
+            experiment_lock_sha256=experiment_lock_sha256,
         )
     pool["artifact_mode"] = "formal"
 
@@ -264,6 +282,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             formal=True,
             expected_git_commit="abc",
             model_lock=model_lock,
+            experiment_lock_sha256=experiment_lock_sha256,
         )
 
     metadata["seed"] = 1
@@ -277,34 +296,54 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             formal=True,
             expected_git_commit="abc",
             model_lock=model_lock,
+            experiment_lock_sha256=experiment_lock_sha256,
         )
 
 
-def test_test_release_must_be_committed_and_match_expected_fields(tmp_path) -> None:
+def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    release = repo / "release.json"
-    release.write_text(json.dumps({"schema": "geometry-test-release-v1", "phase": "ranking"}))
-    subprocess.run(["git", "-C", str(repo), "add", "release.json"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "release"], check=True)
+    lock_path = repo / "experiment_lock.json"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema": "geometry-experiment-lock-v1",
+                "protocol_manifest_sha256": "a" * 64,
+                "model_lock_sha256": "b" * 64,
+                "authorized_ranking_config_hashes": {"validation": ["c" * 64]},
+            }
+        )
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "experiment_lock.json"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "lock"], check=True)
     commit = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    validate_committed_test_release(
-        release,
+    validate_experiment_lock(
+        lock_path,
         repo,
         commit,
-        {"schema": "geometry-test-release-v1", "phase": "ranking"},
+        protocol_manifest_sha256="a" * 64,
+        model_lock_sha256="b" * 64,
+        split="validation",
+        ranking_config_hash="c" * 64,
     )
-    release.write_text(json.dumps({"schema": "geometry-test-release-v1", "phase": "changed"}))
-    with pytest.raises(ValueError, match="differs from the file committed"):
-        validate_committed_test_release(release, repo, commit, {"phase": "ranking"})
+    with pytest.raises(ValueError, match="not authorized"):
+        validate_experiment_lock(
+            lock_path,
+            repo,
+            commit,
+            protocol_manifest_sha256="a" * 64,
+            model_lock_sha256="b" * 64,
+            split="validation",
+            ranking_config_hash="d" * 64,
+        )
 
 
 def test_legacy_debug_builder_marks_artifacts_non_formal(tmp_path) -> None:
