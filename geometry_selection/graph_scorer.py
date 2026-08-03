@@ -17,6 +17,7 @@ from .scorer import GeometryScoreReport, PairScore, ScorerConfig, score_geometry
 from .schema import GeometryPrediction
 from .window_graph import (
     IndependentWindow,
+    InsufficientGraphEvidenceError,
     WindowGraphConfig,
     build_window_graph_measurements,
 )
@@ -104,7 +105,19 @@ def score_window_pose_graph(
     resolved.validate()
     direct = direct_config or ScorerConfig()
     base = score_geometry(global_prediction, direct)
-    measurements = build_window_graph_measurements(windows, resolved.window)
+    try:
+        measurements = build_window_graph_measurements(windows, resolved.window)
+    except InsufficientGraphEvidenceError as error:
+        return replace(
+            base,
+            total_score=float("inf"),
+            local_score=None,
+            long_range_score=None,
+            status="invalid_insufficient_graph_evidence",
+            pairs=(),
+            score_kind="pose_graph",
+            graph_diagnostics={"error": str(error)},
+        )
     optimized = optimize_pose_graph(
         measurements.initial_world_from_camera,
         measurements.local_measurements,

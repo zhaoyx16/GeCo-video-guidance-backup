@@ -106,3 +106,30 @@ def test_candidate_selection_uses_normalized_graph_score() -> None:
         ),
     )
     assert result.selected_candidate_id == "candidate1"
+
+
+def test_insufficient_graph_evidence_returns_invalid_report() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    disconnected = (
+        IndependentWindow(
+            "local-a",
+            "local",
+            _prediction((0, 1, 2, 3)),
+            "run-a",
+        ),
+        IndependentWindow(
+            "local-b",
+            "local",
+            _prediction((4, 5)),
+            "run-b",
+        ),
+    )
+    report = score_window_pose_graph(
+        global_prediction,
+        disconnected,
+        graph_config=GraphScoreConfig(
+            window=WindowGraphConfig(require_loop_edges=False)
+        ),
+    )
+    assert report.status == "invalid_insufficient_graph_evidence"
+    assert np.isinf(report.total_score)

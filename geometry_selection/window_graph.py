@@ -24,6 +24,10 @@ from .schema import GeometryPrediction
 from .scorer import ScorerConfig, score_pair
 
 
+class InsufficientGraphEvidenceError(ValueError):
+    """Raised when valid inputs do not contain enough evidence for a graph."""
+
+
 @dataclass(frozen=True)
 class IndependentWindow:
     window_id: str
@@ -273,7 +277,9 @@ def solve_window_scales(
     if num_windows == 1:
         return np.ones(1, dtype=np.float64), 0.0, 0
     if not constraints:
-        raise ValueError("overlapping windows provide no scale constraints")
+        raise InsufficientGraphEvidenceError(
+            "overlapping windows provide no scale constraints"
+        )
 
     matrix = np.zeros((len(constraints), num_windows - 1), dtype=np.float64)
     target = np.empty(len(constraints), dtype=np.float64)
@@ -288,7 +294,7 @@ def solve_window_scales(
 
     rank = int(np.linalg.matrix_rank(matrix))
     if rank < num_windows - 1:
-        raise ValueError(
+        raise InsufficientGraphEvidenceError(
             "window overlap graph is disconnected; every window scale must be linked to the anchor"
         )
     solution = np.zeros(num_windows - 1, dtype=np.float64)
@@ -355,7 +361,9 @@ def _initial_states(
             queue.append(target)
     missing = [node_frames[index] for index, state in enumerate(states) if state is None]
     if missing:
-        raise ValueError(f"local measurements do not connect graph nodes: {missing}")
+        raise InsufficientGraphEvidenceError(
+            f"local measurements do not connect graph nodes: {missing}"
+        )
     return np.stack(states)
 
 
@@ -487,9 +495,13 @@ def build_window_graph_measurements(
             )
             (local_edges if window.kind == "local" else loop_edges).append(edge)
     if not local_edges:
-        raise ValueError("independent local windows produced no valid pose measurements")
+        raise InsufficientGraphEvidenceError(
+            "independent local windows produced no valid pose measurements"
+        )
     if resolved.require_loop_edges and not loop_edges:
-        raise ValueError("independent loop windows produced no valid loop measurements")
+        raise InsufficientGraphEvidenceError(
+            "independent loop windows produced no valid loop measurements"
+        )
     initial = _initial_states(node_frames, local_edges)
     return WindowGraphMeasurements(
         node_frame_indices=node_frames,
