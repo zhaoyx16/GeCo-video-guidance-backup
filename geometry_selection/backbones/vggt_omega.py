@@ -43,6 +43,21 @@ def _source_commit(source_root: Path) -> str | None:
     return result.stdout.strip() or None
 
 
+def _source_tree_sha256(source_root: Path) -> str:
+    records = []
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        records.append(
+            {
+                "path": str(path.relative_to(source_root)),
+                "sha256": file_sha256(path),
+            }
+        )
+    encoded = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _homogeneous_world_to_camera(extrinsics: np.ndarray) -> np.ndarray:
     extrinsics = np.asarray(extrinsics)
     if extrinsics.ndim != 3 or extrinsics.shape[-2:] not in ((3, 4), (4, 4)):
@@ -136,6 +151,7 @@ class VGGTOmegaAdapter:
             "name": "VGGT-Omega-1B-512",
             "source_root": str(self.source_root),
             "source_commit": _source_commit(self.source_root),
+            "source_tree_sha256": _source_tree_sha256(self.source_root),
             "checkpoint": str(self.checkpoint),
             "checkpoint_size": checkpoint_stat.st_size,
             "checkpoint_sha256": self._checkpoint_sha256 if hash_checkpoint else None,

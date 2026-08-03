@@ -35,6 +35,9 @@ class OfflineRankingConfig:
     protocol_manifest: str
     dataset_root: str
     geometry_cache_root: str
+    geometry_checkpoint_sha256: str
+    geometry_source_tree_sha256: str
+    geometry_source_commit: str
     output_root: str
     expected_split: str
     scorer: ScorerConfig
@@ -49,6 +52,16 @@ class OfflineRankingConfig:
             raise ValueError("method_version and experiment_name must be non-empty")
         if self.expected_split not in {"debug", "validation", "test"}:
             raise ValueError("expected_split must be debug, validation, or test")
+        for name in (
+            "geometry_checkpoint_sha256",
+            "geometry_source_tree_sha256",
+            "geometry_source_commit",
+        ):
+            value = getattr(self, name)
+            if len(value) != 64 and name != "geometry_source_commit":
+                raise ValueError(f"{name} must be a SHA-256 digest")
+            if name == "geometry_source_commit" and len(value) != 40:
+                raise ValueError("geometry_source_commit must be a full Git commit")
         self.scorer.validate()
         self.selection.validate()
 
@@ -63,6 +76,9 @@ class OfflineRankingConfig:
             "protocol_manifest": self.protocol_manifest,
             "dataset_root": self.dataset_root,
             "geometry_cache_root": self.geometry_cache_root,
+            "geometry_checkpoint_sha256": self.geometry_checkpoint_sha256,
+            "geometry_source_tree_sha256": self.geometry_source_tree_sha256,
+            "geometry_source_commit": self.geometry_source_commit,
             "output_root": self.output_root,
             "expected_split": self.expected_split,
             "score": score,
@@ -98,6 +114,9 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
         "protocol_manifest",
         "dataset_root",
         "geometry_cache_root",
+        "geometry_checkpoint_sha256",
+        "geometry_source_tree_sha256",
+        "geometry_source_commit",
         "output_root",
         "expected_split",
         "score",

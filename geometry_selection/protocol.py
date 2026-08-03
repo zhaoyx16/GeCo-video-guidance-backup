@@ -36,6 +36,16 @@ def validate_formal_protocol(path: Path) -> dict[str, Any]:
     if metadata.get("split_counts") != FORMAL_SPLIT_COUNTS:
         raise ValueError(f"formal split counts must be {FORMAL_SPLIT_COUNTS}")
     cases = [value for key, value in payload.items() if not key.startswith("_")]
+    if len(cases) != sum(FORMAL_SPLIT_COUNTS.values()):
+        raise ValueError(
+            f"formal protocol must contain exactly {sum(FORMAL_SPLIT_COUNTS.values())} cases"
+        )
+    unknown_splits = sorted(
+        {case.get("split") for case in cases} - set(FORMAL_SPLIT_COUNTS),
+        key=str,
+    )
+    if unknown_splits:
+        raise ValueError(f"formal protocol contains unknown splits: {unknown_splits}")
     actual_counts = {
         split: sum(case.get("split") == split for case in cases)
         for split in FORMAL_SPLIT_COUNTS
@@ -139,6 +149,127 @@ def validate_committed_file(
     return committed
 
 
+def _canonical_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_generation_sidecar(
+    *,
+    candidate: dict[str, Any],
+    case_id: str,
+    frozen_case: dict[str, Any],
+    split: str,
+    backbone: str,
+    generation_profile: dict[str, Any],
+    protocol_manifest_sha256: str,
+    expected_git_commit: str | None,
+) -> None:
+    metadata_value = candidate.get("generation_metadata")
+    if not metadata_value:
+        raise FileNotFoundError(f"formal candidate requires generation_metadata: {case_id}")
+    metadata_path = Path(metadata_value).resolve()
+    if not metadata_path.is_file():
+        raise FileNotFoundError(metadata_path)
+    video = Path(candidate["video"]).resolve()
+    generation = json.loads(metadata_path.read_text(encoding="utf-8"))
+    expected_generation = {
+        "case_id": case_id,
+        "manifest_sha256": protocol_manifest_sha256,
+        "image_sha256": frozen_case["image_sha256"],
+        "prompt": frozen_case["text_prompt"],
+        "method": "baseline",
+        "seed": candidate["seed"],
+        "video_sha256": file_sha256(video),
+        "backbone": "wan" if backbone.startswith("Wan") else "cosmos",
+    }
+    if expected_git_commit is not None:
+        expected_generation["code_identity"] = {
+            "commit": expected_git_commit,
+            "dirty": False,
+        }
+    mismatches = {
+        key: (generation.get(key), expected)
+        for key, expected in expected_generation.items()
+        if generation.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            f"generation sidecar differs from candidate/protocol for {case_id}: {mismatches}"
+        )
+    expected_protocol = {
+        "mode": "frozen",
+        "split": split,
+        "expected_split": split,
+    }
+    protocol_record = generation.get("protocol", {})
+    protocol_mismatches = {
+        key: (protocol_record.get(key), expected)
+        for key, expected in expected_protocol.items()
+        if protocol_record.get(key) != expected
+    }
+    if protocol_mismatches:
+        raise ValueError(
+            f"generation sidecar protocol mismatch for {case_id}: {protocol_mismatches}"
+        )
+    generation_record = generation.get("generation", {})
+    profile_mismatches = {
+        key: (generation_record.get(key), expected)
+        for key, expected in generation_profile.items()
+        if generation_record.get(key) != expected
+    }
+    if profile_mismatches:
+        raise ValueError(
+            f"generation profile sidecar mismatch for {case_id}: {profile_mismatches}"
+        )
+    if Path(generation.get("video", "")).resolve() != video:
+        raise ValueError(f"generation sidecar video path mismatch: {case_id}")
+    run_id = generation.get("run_id")
+    run_config = generation.get("run_config")
+    if not isinstance(run_id, str) or len(run_id) != 12 or not isinstance(run_config, dict):
+        raise ValueError(f"generation sidecar lacks canonical run identity: {case_id}")
+    run_config_sha256 = _canonical_sha256(run_config)
+    if generation.get("run_config_sha256") != run_config_sha256:
+        raise ValueError(f"generation run_config digest mismatch: {case_id}")
+    if run_id != run_config_sha256[:12]:
+        raise ValueError(f"generation run_id mismatch: {case_id}")
+    run_expected = {
+        "manifest_sha256": protocol_manifest_sha256,
+        "case_id": case_id,
+        "image_sha256": frozen_case["image_sha256"],
+        "prompt": frozen_case["text_prompt"],
+        "method": "baseline",
+        "seed": candidate["seed"],
+        "code_identity": expected_generation.get("code_identity"),
+    }
+    run_mismatches = {
+        key: (run_config.get(key), expected)
+        for key, expected in run_expected.items()
+        if expected is not None and run_config.get(key) != expected
+    }
+    if run_mismatches:
+        raise ValueError(f"generation run_config mismatch for {case_id}: {run_mismatches}")
+    if generation.get("model") != run_config.get("model") or not generation.get("model"):
+        raise ValueError(f"generation model identity mismatch: {case_id}")
+    if generation.get("runner_sha256") != run_config.get("runner_sha256"):
+        raise ValueError(f"generation runner digest mismatch: {case_id}")
+    expected_metadata = video.parent / "metadata.json"
+    complete = video.parent / "COMPLETE"
+    canonical_parts = (
+        video.name == "video.mp4"
+        and metadata_path == expected_metadata
+        and video.parent.name == f"run_{run_id}"
+        and video.parent.parent.name == f"seed_{candidate['seed']}"
+        and video.parent.parent.parent.name == case_id
+        and video.parent.parent.parent.parent.name == "baseline"
+        and video.parent.parent.parent.parent.parent.name == expected_generation["backbone"]
+    )
+    if not canonical_parts:
+        raise ValueError(f"generation output is outside the canonical run layout: {case_id}")
+    if not complete.is_file() or complete.read_text(encoding="utf-8").strip() != run_id:
+        raise ValueError(f"generation COMPLETE marker mismatch: {case_id}")
+
+
 def _validate_pool_cases_against_protocol(
     pool: dict[str, Any],
     protocol: dict[str, Any],
@@ -146,6 +277,11 @@ def _validate_pool_cases_against_protocol(
     *,
     formal: bool,
 ) -> None:
+    if formal and pool.get("artifact_mode") != "formal":
+        raise ValueError("legacy-debug candidate pool cannot be promoted to formal")
+    preparation = pool.get("preparation", {})
+    if formal and preparation.get("dirty") is not False:
+        raise ValueError("formal candidate pool was not prepared from clean code")
     split = pool["cases"][0]["split"]
     frozen_cases = {
         key: value
@@ -180,6 +316,16 @@ def _validate_pool_cases_against_protocol(
                 expected_incumbent = candidate["seed"] == seed_policy["incumbent_seed"]
                 if candidate["is_incumbent"] is not expected_incumbent:
                     raise ValueError(f"candidate pool incumbent differs from protocol: {case_id}")
+                validate_generation_sidecar(
+                    candidate=candidate,
+                    case_id=case_id,
+                    frozen_case=frozen,
+                    split=split,
+                    backbone=case["backbone"],
+                    generation_profile=case["generation"],
+                    protocol_manifest_sha256=pool["protocol_manifest_sha256"],
+                    expected_git_commit=preparation.get("commit"),
+                )
 
 
 def validate_candidate_pool_against_protocol(
@@ -253,64 +399,13 @@ def validate_candidate_spec_against_protocol(
                 expected_incumbent = candidate["seed"] == seed_policy["incumbent_seed"]
                 if candidate["is_incumbent"] is not expected_incumbent:
                     raise ValueError(f"incumbent assignment differs from protocol: {case_id}")
-                metadata_path = Path(candidate.get("generation_metadata", "")).resolve()
-                if not metadata_path.is_file():
-                    raise FileNotFoundError(
-                        f"formal candidate requires generation_metadata: {case_id}"
-                    )
-                generation = json.loads(metadata_path.read_text(encoding="utf-8"))
-                video = Path(candidate["video"]).resolve()
-                expected_generation = {
-                    "case_id": case_id,
-                    "manifest_sha256": spec["protocol_manifest_sha256"],
-                    "image_sha256": frozen["image_sha256"],
-                    "prompt": frozen["text_prompt"],
-                    "method": "baseline",
-                    "seed": candidate["seed"],
-                    "video_sha256": file_sha256(video),
-                    "backbone": "wan" if spec["backbone"].startswith("Wan") else "cosmos",
-                }
-                if expected_git_commit is not None:
-                    expected_generation["code_identity"] = {
-                        "commit": expected_git_commit,
-                        "dirty": False,
-                    }
-                mismatches = {
-                    key: (generation.get(key), expected)
-                    for key, expected in expected_generation.items()
-                    if generation.get(key) != expected
-                }
-                if mismatches:
-                    raise ValueError(
-                        f"generation sidecar differs from candidate/protocol for {case_id}: "
-                        f"{mismatches}"
-                    )
-                protocol_record = generation.get("protocol", {})
-                expected_protocol = {
-                    "mode": "frozen",
-                    "split": spec["split"],
-                    "expected_split": spec["split"],
-                }
-                protocol_mismatches = {
-                    key: (protocol_record.get(key), expected)
-                    for key, expected in expected_protocol.items()
-                    if protocol_record.get(key) != expected
-                }
-                if protocol_mismatches:
-                    raise ValueError(
-                        f"generation sidecar protocol mismatch for {case_id}: "
-                        f"{protocol_mismatches}"
-                    )
-                generation_profile = generation.get("generation", {})
-                profile_mismatches = {
-                    key: (generation_profile.get(key), expected)
-                    for key, expected in spec["generation"].items()
-                    if generation_profile.get(key) != expected
-                }
-                if profile_mismatches:
-                    raise ValueError(
-                        f"generation profile sidecar mismatch for {case_id}: "
-                        f"{profile_mismatches}"
-                    )
-                if Path(generation["video"]).resolve() != video:
-                    raise ValueError(f"generation sidecar video path mismatch: {case_id}")
+                validate_generation_sidecar(
+                    candidate=candidate,
+                    case_id=case_id,
+                    frozen_case=frozen,
+                    split=spec["split"],
+                    backbone=spec["backbone"],
+                    generation_profile=spec["generation"],
+                    protocol_manifest_sha256=spec["protocol_manifest_sha256"],
+                    expected_git_commit=expected_git_commit,
+                )

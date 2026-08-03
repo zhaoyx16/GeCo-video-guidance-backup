@@ -132,6 +132,27 @@ def test_raw_confidence_above_one_is_handled_as_relative_weight(
     assert np.isfinite(report.total_score)
 
 
+def test_near_unit_expp1_confidence_is_rejected_as_low_evidence(
+    plane_prediction: GeometryPrediction,
+) -> None:
+    confidence = np.full_like(plane_prediction.confidence, 1.0 + 1e-6)
+    report = score_geometry(
+        clone_prediction(plane_prediction, confidence=confidence),
+        config(confidence_evidence_floor=1e-3),
+    )
+    assert report.status == "no_valid_local_edges"
+
+
+def test_pair_requires_minimum_comparable_fraction(
+    plane_prediction: GeometryPrediction,
+) -> None:
+    report = score_geometry(
+        plane_prediction,
+        config(min_comparable_fraction=1.0),
+    )
+    assert report.status == "no_valid_local_edges"
+
+
 def test_depth_edge_mask_marks_both_sides() -> None:
     depth = np.array([[1.0, 1.0, 10.0, 10.0]])
     mask = _depth_edge_mask(depth, relative_threshold=0.5)

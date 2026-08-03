@@ -56,6 +56,8 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--expected-git-commit")
+    parser.add_argument("--expected-checkpoint-sha256")
+    parser.add_argument("--expected-source-tree-sha256")
     parser.add_argument("--test-release", type=Path)
     parser.add_argument("--num-keyframes", type=int, default=8)
     parser.add_argument("--device", default="cuda")
@@ -122,6 +124,23 @@ def main() -> None:
         preprocessing_mode=args.preprocessing_mode,
     )
     backbone_identity = adapter.cache_identity()
+    if formal:
+        if not args.expected_checkpoint_sha256 or not args.expected_source_tree_sha256:
+            parser.error(
+                "formal mode requires --expected-checkpoint-sha256 and "
+                "--expected-source-tree-sha256"
+            )
+        expected_geometry = {
+            "checkpoint_sha256": args.expected_checkpoint_sha256,
+            "source_tree_sha256": args.expected_source_tree_sha256,
+        }
+        geometry_mismatches = {
+            key: (backbone_identity.get(key), expected)
+            for key, expected in expected_geometry.items()
+            if backbone_identity.get(key) != expected
+        }
+        if geometry_mismatches:
+            raise ValueError(f"geometry backbone identity mismatch: {geometry_mismatches}")
     producer_identity = {
         "commit": code_commit,
         "dirty": dirty,
@@ -174,7 +193,13 @@ def main() -> None:
             geometry_keys[key] = cache_key
             print(json.dumps({"case": key[0], "candidate": key[1], "status": status}))
 
-    pool = materialize_candidate_pool(spec, geometry_keys)
+    pool = materialize_candidate_pool(
+        spec,
+        geometry_keys,
+        artifact_mode=args.artifact_mode,
+        producer_identity=producer_identity,
+        candidate_spec_sha256=file_sha256(args.spec.resolve()),
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_name(f".{args.output.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(

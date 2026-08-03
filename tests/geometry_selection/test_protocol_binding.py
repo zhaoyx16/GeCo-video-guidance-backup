@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -11,10 +12,11 @@ import geometry_selection.protocol as protocol_module
 from geometry_selection.protocol import (
     file_sha256,
     validate_candidate_spec_against_protocol,
+    validate_candidate_pool_against_protocol,
     validate_committed_test_release,
     validate_formal_protocol,
 )
-from geometry_selection.selection import CANDIDATE_SPEC_SCHEMA
+from geometry_selection.selection import CANDIDATE_SPEC_SCHEMA, materialize_candidate_pool
 
 
 DEBUG_BUILDER = Path(__file__).resolve().parents[2] / "scripts/build_legacy_debug_smoke.py"
@@ -137,9 +139,27 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
     image, transforms = paths["validation"]
     candidates = []
     for seed in range(4):
-        video = tmp_path / f"video-{seed}.mp4"
+        run_config = {
+            "manifest_sha256": file_sha256(protocol_path),
+            "case_id": case_id,
+            "image_sha256": file_sha256(image),
+            "prompt": payload[case_id]["text_prompt"],
+            "backbone": "wan",
+            "method": "baseline",
+            "code_identity": {"commit": "abc", "dirty": False},
+            "seed": seed,
+            "model": {"requested": "model", "snapshot_commit": "revision"},
+            "runner_sha256": "r" * 64,
+        }
+        run_config_sha256 = hashlib.sha256(
+            json.dumps(run_config, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        run_id = run_config_sha256[:12]
+        run_dir = tmp_path / "wan" / "baseline" / case_id / f"seed_{seed}" / f"run_{run_id}"
+        run_dir.mkdir(parents=True)
+        video = run_dir / "video.mp4"
         video.write_bytes(f"video-{seed}".encode())
-        metadata = tmp_path / f"metadata-{seed}.json"
+        metadata = run_dir / "metadata.json"
         metadata.write_text(
             json.dumps(
                 {
@@ -149,6 +169,9 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                     "prompt": payload[case_id]["text_prompt"],
                     "backbone": "wan",
                     "method": "baseline",
+                    "run_id": run_id,
+                    "run_config": run_config,
+                    "run_config_sha256": run_config_sha256,
                     "seed": seed,
                     "video": str(video),
                     "video_sha256": file_sha256(video),
@@ -159,9 +182,12 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                         "expected_split": "validation",
                     },
                     "generation": profile,
+                    "model": run_config["model"],
+                    "runner_sha256": run_config["runner_sha256"],
                 }
             )
         )
+        (run_dir / "COMPLETE").write_text(f"{run_id}\n")
         candidates.append(
             {
                 "candidate_id": f"candidate-{seed}",
@@ -195,6 +221,18 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         formal=True,
         expected_git_commit="abc",
     )
+    pool = materialize_candidate_pool(
+        spec,
+        {(case_id, f"candidate-{seed}"): str(seed) * 64 for seed in range(4)},
+        artifact_mode="formal",
+        producer_identity={"commit": "abc", "dirty": False},
+        candidate_spec_sha256="f" * 64,
+    )
+    validate_candidate_pool_against_protocol(pool, protocol_path, dataset, formal=True)
+    pool["artifact_mode"] = "legacy-debug"
+    with pytest.raises(ValueError, match="cannot be promoted"):
+        validate_candidate_pool_against_protocol(pool, protocol_path, dataset, formal=True)
+    pool["artifact_mode"] = "formal"
 
     sidecar = candidates[1]["generation_metadata"]
     metadata = json.loads(open(sidecar, encoding="utf-8").read())

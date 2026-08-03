@@ -5,6 +5,9 @@ candidate_manifest: /path/to/candidate_pool.json
 protocol_manifest: /path/to/frozen_protocol.json
 dataset_root: /path/to/DL3DV
 geometry_cache_root: /path/to/geometry_cache
+geometry_checkpoint_sha256: c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934
+geometry_source_tree_sha256: 10e6b2ef6d80166b1de64fb676d8ce8d93228198dbf5baa3e68af9e351857f57
+geometry_source_commit: 39a0cb8af88554f15ddcb5354cd52bde588fa014
 output_root: /path/to/results
 expected_split: validation
 
@@ -12,11 +15,13 @@ score:
   local_offsets: [1, 2]
   min_long_range_gap: 3
   confidence_quantile: 0.20
+  confidence_evidence_floor: 0.001
   depth_edge_relative_threshold: 0.10
   occlusion_relative_tolerance: 0.05
   min_pair_overlap: 0.05
   min_long_range_overlap: 0.15
   min_valid_pixels: 64
+  min_comparable_fraction: 0.01
   min_valid_local_fraction: 0.75
   min_valid_long_range_fraction: 0.20
   pixel_stride: 4

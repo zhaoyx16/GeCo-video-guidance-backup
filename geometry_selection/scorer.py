@@ -25,11 +25,13 @@ class ScorerConfig:
     local_offsets: tuple[int, ...] = (1, 2)
     min_long_range_gap: int = 3
     confidence_quantile: float = 0.20
+    confidence_evidence_floor: float = 1e-3
     depth_edge_relative_threshold: float = 0.10
     occlusion_relative_tolerance: float = 0.05
     min_pair_overlap: float = 0.05
     min_long_range_overlap: float = 0.15
     min_valid_pixels: int = 64
+    min_comparable_fraction: float = 0.01
     min_valid_local_fraction: float = 0.75
     min_valid_long_range_fraction: float = 0.20
     pixel_stride: int = 4
@@ -52,6 +54,7 @@ class ScorerConfig:
             raise ValueError("all local_offsets must be smaller than min_long_range_gap")
         for name, value in (
             ("confidence_quantile", self.confidence_quantile),
+            ("min_comparable_fraction", self.min_comparable_fraction),
             ("min_pair_overlap", self.min_pair_overlap),
             ("min_long_range_overlap", self.min_long_range_overlap),
             ("min_valid_local_fraction", self.min_valid_local_fraction),
@@ -65,6 +68,8 @@ class ScorerConfig:
             raise ValueError("depth_edge_relative_threshold must be positive")
         if self.occlusion_relative_tolerance < 0:
             raise ValueError("occlusion_relative_tolerance must be non-negative")
+        if not np.isfinite(self.confidence_evidence_floor) or self.confidence_evidence_floor < 0:
+            raise ValueError("confidence_evidence_floor must be finite and non-negative")
         if self.min_valid_pixels < 1 or self.pixel_stride < 1:
             raise ValueError("min_valid_pixels and pixel_stride must be positive")
         if self.huber_delta <= 0:
@@ -138,25 +143,36 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _confidence_mask(confidence: np.ndarray, quantile: float) -> np.ndarray:
-    finite_positive = np.isfinite(confidence) & (confidence > 0)
+def _confidence_evidence(confidence: np.ndarray) -> np.ndarray:
+    evidence = np.asarray(confidence, dtype=np.float64) - 1.0
+    return np.where(np.isfinite(evidence), np.maximum(evidence, 0.0), 0.0)
+
+
+def _confidence_mask(
+    confidence: np.ndarray,
+    quantile: float,
+    evidence_floor: float,
+) -> np.ndarray:
+    evidence = _confidence_evidence(confidence)
+    finite_positive = np.isfinite(evidence) & (evidence > 0)
     if not finite_positive.any():
         return np.zeros_like(confidence, dtype=bool)
-    threshold = np.quantile(confidence[finite_positive], quantile)
-    return finite_positive & (confidence >= threshold)
+    threshold = max(float(np.quantile(evidence[finite_positive], quantile)), evidence_floor)
+    return finite_positive & (evidence >= threshold)
 
 
 def _normalized_confidence(confidence: np.ndarray) -> np.ndarray:
     """Convert raw positive Omega confidence to a bounded relative weight."""
 
-    finite_positive = np.isfinite(confidence) & (confidence > 0)
+    evidence = _confidence_evidence(confidence)
+    finite_positive = np.isfinite(evidence) & (evidence > 0)
     result = np.zeros_like(confidence, dtype=np.float64)
     if not finite_positive.any():
         return result
-    cap = float(np.quantile(confidence[finite_positive], 0.95))
+    cap = float(np.quantile(evidence[finite_positive], 0.95))
     if cap <= 0:
         return result
-    result[finite_positive] = np.clip(confidence[finite_positive] / cap, 0.0, 1.0)
+    result[finite_positive] = np.clip(evidence[finite_positive] / cap, 0.0, 1.0)
     return result
 
 
@@ -252,7 +268,11 @@ def score_pair(
         prediction.intrinsics[source],
         stride=config.pixel_stride,
     )
-    source_reliable = _confidence_mask(source_conf, config.confidence_quantile)[
+    source_reliable = _confidence_mask(
+        source_conf,
+        config.confidence_quantile,
+        config.confidence_evidence_floor,
+    )[
         :: config.pixel_stride, :: config.pixel_stride
     ]
     source_edges = _depth_edge_mask(
@@ -277,9 +297,15 @@ def score_pair(
     sampled_target_weight = bilinear_sample(target_conf_weight_image, target_x, target_y)
     target_edges = _depth_edge_mask(target_depth, config.depth_edge_relative_threshold)
     sampled_target_edges = bilinear_sample(target_edges.astype(np.float64), target_x, target_y)
-    target_conf_threshold = np.quantile(
-        target_conf[np.isfinite(target_conf) & (target_conf > 0)],
-        config.confidence_quantile,
+    target_evidence = _confidence_evidence(target_conf)
+    target_positive = target_evidence > 0
+    target_conf_threshold = (
+        max(
+            float(np.quantile(target_evidence[target_positive], config.confidence_quantile)),
+            config.confidence_evidence_floor,
+        )
+        if target_positive.any()
+        else float("inf")
     )
 
     projected_valid = (
@@ -300,7 +326,7 @@ def score_pair(
     overlap = float(projected_valid.sum() / max(reliable_count, 1))
     target_reliable = (
         np.isfinite(sampled_conf.values)
-        & (sampled_conf.values >= target_conf_threshold)
+        & ((_confidence_evidence(sampled_conf.values)) >= target_conf_threshold)
         & np.isfinite(sampled_target_edges.values)
         & (sampled_target_edges.values < 0.01)
     )
@@ -322,6 +348,8 @@ def score_pair(
     )
     if overlap < minimum_overlap:
         status = "insufficient_overlap"
+    elif comparable_fraction < config.min_comparable_fraction:
+        status = "insufficient_comparable_fraction"
     elif valid_pixels < config.min_valid_pixels:
         status = "insufficient_comparable_pixels"
     else:

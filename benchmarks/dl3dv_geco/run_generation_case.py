@@ -447,18 +447,42 @@ def main() -> None:
     if args.method == "adapted_geco" and args.decode_spatial_scale != 1.0:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
 
-    case_id, case, protocol_meta = load_case(args.manifest, args.case_id, args.case_index)
     is_frozen_protocol = args.protocol_mode == "frozen"
+    if is_frozen_protocol and args.overwrite:
+        parser.error("frozen protocol forbids --overwrite of completed generations")
     if is_frozen_protocol and args.repo.resolve() != REPO_ROOT.resolve():
         raise ValueError("formal generation --repo must be the repository executing this runner")
-    code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
     if is_frozen_protocol:
+        if args.expected_split is None:
+            parser.error("frozen protocol requires --expected-split")
         protocol = validate_formal_protocol(args.manifest)
         protocol_meta = protocol["_meta"]
-        if args.expected_split is None or case["split"] != args.expected_split:
-            parser.error(
-                f"frozen case split is {case['split']}; pass the matching --expected-split"
-            )
+        split_cases = sorted(
+            (
+                (key, value)
+                for key, value in protocol.items()
+                if not key.startswith("_") and value["split"] == args.expected_split
+            ),
+            key=lambda item: item[1]["split_order"],
+        )
+        if args.case_id is not None:
+            matches = [item for item in split_cases if item[0] == args.case_id]
+            if len(matches) != 1:
+                parser.error(f"case {args.case_id!r} is not in split {args.expected_split}")
+            case_id, case = matches[0]
+        else:
+            if args.case_index is None or not 0 <= args.case_index < len(split_cases):
+                parser.error(
+                    f"case_index must be in [0, {len(split_cases) - 1}] for "
+                    f"split {args.expected_split}"
+                )
+            case_id, case = split_cases[args.case_index]
+    else:
+        case_id, case, protocol_meta = load_case(
+            args.manifest, args.case_id, args.case_index
+        )
+    code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
+    if is_frozen_protocol:
         if args.dataset_root is None:
             parser.error("frozen protocol requires --dataset-root")
         if args.expected_git_commit is None:
@@ -746,6 +770,10 @@ def main() -> None:
         "backbone": args.backbone,
         "method": args.method,
         "run_id": run_id,
+        "run_config": config_for_id,
+        "run_config_sha256": hashlib.sha256(
+            json.dumps(config_for_id, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
         "seed": args.seed,
         "model": model_identity(args.model),
         "vggt_model": model_identity(args.vggt_model)

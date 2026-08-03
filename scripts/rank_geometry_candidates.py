@@ -146,6 +146,23 @@ def main() -> None:
                 candidate["geometry_cache_key"],
             )
             if formal:
+                geometry_identity = cache_metadata["provenance"].get(
+                    "geometry_backbone", {}
+                )
+                expected_geometry = {
+                    "checkpoint_sha256": config.geometry_checkpoint_sha256,
+                    "source_tree_sha256": config.geometry_source_tree_sha256,
+                    "source_commit": config.geometry_source_commit,
+                }
+                geometry_mismatches = {
+                    key: (geometry_identity.get(key), expected)
+                    for key, expected in expected_geometry.items()
+                    if geometry_identity.get(key) != expected
+                }
+                if geometry_mismatches:
+                    raise ValueError(
+                        f"geometry backbone identity mismatch: {geometry_mismatches}"
+                    )
                 producer = cache_metadata["provenance"].get("producer", {})
                 expected_sources = {
                     "dirty": False,

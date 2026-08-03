@@ -15,7 +15,7 @@ from .cache import canonical_hash
 from .scorer import GeometryScoreReport, PairScore
 
 
-CANDIDATE_POOL_SCHEMA = "geometry-candidate-pool-v1"
+CANDIDATE_POOL_SCHEMA = "geometry-candidate-pool-v2"
 CANDIDATE_SPEC_SCHEMA = "geometry-candidate-spec-v1"
 
 
@@ -133,6 +133,7 @@ def candidate_pool_id(case: dict[str, Any]) -> str:
                 "seed": candidate["seed"],
                 "video_sha256": candidate["video_sha256"],
                 "geometry_cache_key": candidate["geometry_cache_key"],
+                "generation_metadata_sha256": candidate["generation_metadata_sha256"],
                 "is_incumbent": candidate["is_incumbent"],
             }
             for candidate in sorted(case["candidates"], key=lambda item: item["candidate_id"])
@@ -144,6 +145,10 @@ def candidate_pool_id(case: dict[str, Any]) -> str:
 def materialize_candidate_pool(
     spec: dict[str, Any],
     geometry_cache_keys: dict[tuple[str, str], str],
+    *,
+    artifact_mode: str,
+    producer_identity: dict[str, Any],
+    candidate_spec_sha256: str,
 ) -> dict[str, Any]:
     """Hash immutable inputs and turn a human-written spec into a frozen pool."""
 
@@ -159,6 +164,8 @@ def materialize_candidate_pool(
             key=lambda item: item["candidate_id"],
         ):
             video = Path(source_candidate["video"]).resolve()
+            metadata_value = source_candidate.get("generation_metadata")
+            metadata_path = Path(metadata_value).resolve() if metadata_value else None
             key = (source_case["case_id"], source_candidate["candidate_id"])
             if key not in geometry_cache_keys:
                 raise ValueError(f"missing geometry cache key for {key}")
@@ -169,6 +176,10 @@ def materialize_candidate_pool(
                     "video": str(video),
                     "video_sha256": file_sha256(video),
                     "geometry_cache_key": geometry_cache_keys[key],
+                    "generation_metadata": str(metadata_path) if metadata_path else None,
+                    "generation_metadata_sha256": (
+                        file_sha256(metadata_path) if metadata_path else None
+                    ),
                     "is_incumbent": bool(source_candidate["is_incumbent"]),
                 }
             )
@@ -189,6 +200,9 @@ def materialize_candidate_pool(
         frozen_cases.append(case)
     return {
         "schema": CANDIDATE_POOL_SCHEMA,
+        "artifact_mode": artifact_mode,
+        "candidate_spec_sha256": candidate_spec_sha256,
+        "preparation": producer_identity,
         "protocol_manifest_sha256": spec["protocol_manifest_sha256"],
         "candidate_count": spec["candidate_count"],
         "cases": frozen_cases,
@@ -363,6 +377,8 @@ def load_and_validate_candidate_pool(
             "video",
             "video_sha256",
             "geometry_cache_key",
+            "generation_metadata",
+            "generation_metadata_sha256",
             "is_incumbent",
         }
         for candidate in candidates:
@@ -377,6 +393,12 @@ def load_and_validate_candidate_pool(
                 value = candidate[field]
                 if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                     raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+            metadata_hash = candidate["generation_metadata_sha256"]
+            if metadata_hash is not None and (
+                len(metadata_hash) != 64
+                or any(character not in "0123456789abcdef" for character in metadata_hash)
+            ):
+                raise ValueError("generation_metadata_sha256 must be null or lowercase SHA-256")
         ids = [candidate["candidate_id"] for candidate in candidates]
         if len(set(ids)) != len(ids):
             raise ValueError(f"duplicate candidate IDs for {case['case_id']}")
@@ -401,6 +423,16 @@ def load_and_validate_candidate_pool(
                     raise FileNotFoundError(video)
                 if file_sha256(video) != candidate["video_sha256"]:
                     raise ValueError(f"video hash mismatch: {video}")
+                metadata_path = candidate["generation_metadata"]
+                metadata_hash = candidate["generation_metadata_sha256"]
+                if (metadata_path is None) != (metadata_hash is None):
+                    raise ValueError("generation metadata path/hash must both be present or absent")
+                if metadata_path is not None:
+                    metadata = Path(metadata_path)
+                    if not metadata.is_file():
+                        raise FileNotFoundError(metadata)
+                    if file_sha256(metadata) != metadata_hash:
+                        raise ValueError(f"generation metadata hash mismatch: {metadata}")
     return payload
 
 
@@ -417,19 +449,11 @@ def deterministic_random_candidate(case: dict[str, Any], control_seed: int = 0) 
     return candidates[index]["candidate_id"]
 
 
-def _pair_map(report: GeometryScoreReport) -> dict[tuple[int, int], float]:
-    grouped: dict[tuple[int, int], list[PairScore]] = {}
-    for pair in report.pairs:
-        key = (min(pair.source, pair.target), max(pair.source, pair.target))
-        grouped.setdefault(key, []).append(pair)
+def _directed_pair_map(report: GeometryScoreReport) -> dict[tuple[int, int], PairScore]:
     result = {}
-    for key, directions in grouped.items():
-        valid = [
-            pair for pair in directions if pair.status == "ok" and math.isfinite(pair.score)
-        ]
-        if valid:
-            weights = [max(pair.comparable_fraction, 1e-8) for pair in valid]
-            result[key] = float(np.average([pair.score for pair in valid], weights=weights))
+    for pair in report.pairs:
+        if pair.status == "ok" and math.isfinite(pair.score):
+            result[(pair.source, pair.target)] = pair
     return result
 
 
@@ -449,37 +473,61 @@ def _common_comparable_scores(
     first_config = asdict(valid_candidates[0].report.config)
     if any(asdict(candidate.report.config) != first_config for candidate in valid_candidates[1:]):
         raise ValueError("all candidates must use the same scorer configuration")
-    maps = [_pair_map(candidate.report) for candidate in valid_candidates]
+    maps = [_directed_pair_map(candidate.report) for candidate in valid_candidates]
     common = set(maps[0])
     for pair_map in maps[1:]:
         common &= set(pair_map)
     common = {
         key
         for key in common
-        if all(math.isfinite(pair_map[key]) for pair_map in maps)
+        if all(math.isfinite(pair_map[key].score) for pair_map in maps)
     }
+    grouped_directions: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for source, target in common:
+        undirected = (min(source, target), max(source, target))
+        grouped_directions.setdefault(undirected, []).append((source, target))
     scorer_config = valid_candidates[0].report.config
     local_keys = sorted(
-        key for key in common if abs(key[1] - key[0]) < scorer_config.min_long_range_gap
+        key
+        for key in grouped_directions
+        if abs(key[1] - key[0]) < scorer_config.min_long_range_gap
     )
-    long_keys = sorted(common - set(local_keys))
+    long_keys = sorted(set(grouped_directions) - set(local_keys))
     if len(local_keys) < config.min_common_local_edges:
         return {}, len(local_keys), len(long_keys)
     if config.require_common_long_range and len(long_keys) < config.min_common_long_range_edges:
         return {}, len(local_keys), len(long_keys)
+    if config.require_common_long_range and any(
+        candidate.report.long_range_score is None for candidate in valid_candidates
+    ):
+        return {}, len(local_keys), len(long_keys)
 
     scores: dict[str, float] = {}
     for candidate, pair_map in zip(valid_candidates, maps, strict=True):
-        local_score = float(np.mean([pair_map[key] for key in local_keys]))
+        def undirected_score(key: tuple[int, int]) -> float:
+            directions = grouped_directions[key]
+            pair_scores = [pair_map[direction] for direction in directions]
+            weights = [max(pair.comparable_fraction, 1e-8) for pair in pair_scores]
+            return float(np.average([pair.score for pair in pair_scores], weights=weights))
+
+        local_score = float(np.mean([undirected_score(key) for key in local_keys]))
         components = [(scorer_config.local_weight, local_score)]
         if long_keys and scorer_config.long_range_weight > 0:
-            long_score = float(np.mean([pair_map[key] for key in long_keys]))
+            long_score = float(np.mean([undirected_score(key) for key in long_keys]))
             components.append((scorer_config.long_range_weight, long_score))
         weight = sum(item[0] for item in components)
         scores[candidate.candidate_id] = sum(
             component_weight * score for component_weight, score in components
         ) / weight
     return scores, len(local_keys), len(long_keys)
+
+
+def _motion_ratio(challenger_motion: float, incumbent_motion: float) -> float:
+    if incumbent_motion < 1e-8 and challenger_motion < 1e-8:
+        return 1.0
+    if incumbent_motion < 1e-8:
+        return float("inf")
+    return challenger_motion / incumbent_motion
 
 
 def select_candidate(
@@ -535,7 +583,8 @@ def select_candidate(
             continue
         challenger_score = comparable_scores[challenger.candidate_id]
         improvement = (incumbent_score - challenger_score) / max(abs(incumbent_score), 1e-8)
-        motion_ratio = challenger.report.normalized_camera_motion / max(incumbent_motion, 1e-8)
+        challenger_motion = challenger.report.normalized_camera_motion
+        motion_ratio = _motion_ratio(challenger_motion, incumbent_motion)
         if (
             improvement >= config.min_relative_improvement
             and config.min_motion_ratio <= motion_ratio <= config.max_motion_ratio
@@ -562,7 +611,10 @@ def select_candidate(
         improvement = (incumbent_score - comparable_scores[best.candidate_id]) / max(
             abs(incumbent_score), 1e-8
         )
-        motion_ratio = best.report.normalized_camera_motion / max(incumbent_motion, 1e-8)
+        motion_ratio = _motion_ratio(
+            best.report.normalized_camera_motion,
+            incumbent_motion,
+        )
     return SelectionResult(
         best.candidate_id,
         incumbent.candidate_id,
@@ -574,3 +626,11 @@ def select_candidate(
         comparable_scores,
         tuple(candidates),
     )
+    if payload.get("artifact_mode") not in {"formal", "legacy-debug"}:
+        raise ValueError("candidate pool artifact_mode must be formal or legacy-debug")
+    spec_hash = payload.get("candidate_spec_sha256")
+    if not isinstance(spec_hash, str) or len(spec_hash) != 64:
+        raise ValueError("candidate pool must bind candidate_spec_sha256")
+    preparation = payload.get("preparation")
+    if not isinstance(preparation, dict) or not preparation.get("commit"):
+        raise ValueError("candidate pool must record preparation provenance")

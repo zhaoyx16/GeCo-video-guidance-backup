@@ -39,7 +39,7 @@ def report(score: float, motion: float, status: str = "ok") -> GeometryScoreRepo
     return GeometryScoreReport(
         total_score=score,
         local_score=score if np.isfinite(score) else None,
-        long_range_score=None,
+        long_range_score=score if pairs else None,
         camera_path_length=motion * 5.0,
         normalized_translation_motion=motion,
         camera_angular_path_deg=0.0,
@@ -115,6 +115,75 @@ def test_sparse_common_evidence_reports_measured_edge_counts() -> None:
     assert result.common_long_range_edges == 1
 
 
+def test_common_support_requires_the_same_projection_direction() -> None:
+    forward_pairs = (
+        PairScore(0, 1, 1, 0.8, 0.8, 100, 0.2, 0.0, 0.2, "ok"),
+        PairScore(0, 3, 3, 0.5, 0.5, 80, 0.2, 0.0, 0.2, "ok"),
+    )
+    reverse_pairs = (
+        PairScore(1, 0, 1, 0.8, 0.8, 100, 0.1, 0.0, 0.1, "ok"),
+        PairScore(3, 0, 3, 0.5, 0.5, 80, 0.1, 0.0, 0.1, "ok"),
+    )
+
+    def directional(identifier, pairs, incumbent):
+        base = report(0.2 if incumbent else 0.1, 0.1)
+        directional_report = GeometryScoreReport(
+            **{**base.__dict__, "pairs": pairs}
+        )
+        return CandidateScore(
+            identifier,
+            int(identifier[-1]),
+            identifier[-1] * 64,
+            identifier[-1] * 64,
+            incumbent,
+            directional_report,
+        )
+
+    result = select_candidate(
+        [
+            directional("candidate0", forward_pairs, True),
+            directional("candidate1", reverse_pairs, False),
+        ],
+        SelectionConfig(min_common_local_edges=1, min_common_long_range_edges=1),
+    )
+    assert result.decision == "abstain_insufficient_common_evidence"
+    assert result.common_local_edges == 0
+    assert result.common_long_range_edges == 0
+
+
+def test_selection_requires_each_candidate_to_pass_long_range_coverage() -> None:
+    incumbent = candidate("candidate0", 0.20, 0.10, incumbent=True)
+    challenger = candidate("candidate1", 0.10, 0.10)
+    challenger = CandidateScore(
+        **{
+            **challenger.__dict__,
+            "report": GeometryScoreReport(
+                **{
+                    **challenger.report.__dict__,
+                    "status": "ok_local_only",
+                    "long_range_score": None,
+                }
+            ),
+        }
+    )
+    result = select_candidate([incumbent, challenger], SelectionConfig())
+    assert result.decision == "abstain_insufficient_common_evidence"
+    assert result.common_local_edges == 2
+    assert result.common_long_range_edges == 1
+
+
+def test_motion_guard_treats_two_zero_motion_candidates_as_equal_motion() -> None:
+    result = select_candidate(
+        [
+            candidate("candidate0", 0.20, 0.0, incumbent=True),
+            candidate("candidate1", 0.10, 0.0),
+        ],
+        SelectionConfig(),
+    )
+    assert result.selected_candidate_id == "candidate1"
+    assert result.motion_ratio == 1.0
+
+
 def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     videos = []
     for index in range(2):
@@ -138,6 +207,8 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
                 "video": str(path),
                 "video_sha256": file_sha256(path),
                 "geometry_cache_key": str(index) * 64,
+                "generation_metadata": None,
+                "generation_metadata_sha256": None,
                 "is_incumbent": index == 0,
             }
             for index, path in enumerate(videos)
@@ -148,6 +219,9 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     case["candidate_pool_id"] = candidate_pool_id(case)
     manifest = {
         "schema": CANDIDATE_POOL_SCHEMA,
+        "artifact_mode": "legacy-debug",
+        "candidate_spec_sha256": "e" * 64,
+        "preparation": {"commit": "debug", "dirty": True},
         "protocol_manifest_sha256": "d" * 64,
         "candidate_count": 2,
         "cases": [case],
@@ -215,7 +289,13 @@ def test_materialize_candidate_pool_hashes_inputs(tmp_path) -> None:
         ],
     }
     keys = {("case-1", f"candidate-{index}"): str(index) * 64 for index in range(2)}
-    pool = materialize_candidate_pool(spec, keys)
+    pool = materialize_candidate_pool(
+        spec,
+        keys,
+        artifact_mode="legacy-debug",
+        producer_identity={"commit": "debug", "dirty": True},
+        candidate_spec_sha256="e" * 64,
+    )
     assert pool["candidate_count"] == 2
     assert pool["cases"][0]["conditioning_image_sha256"] == file_sha256(image)
     path = tmp_path / "pool.json"
@@ -232,6 +312,9 @@ candidate_manifest: /tmp/candidates.json
 protocol_manifest: /tmp/protocol.json
 dataset_root: /tmp/dataset
 geometry_cache_root: /tmp/cache
+geometry_checkpoint_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+geometry_source_tree_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+geometry_source_commit: 39a0cb8af88554f15ddcb5354cd52bde588fa014
 output_root: /tmp/results
 expected_split: validation
 score:
