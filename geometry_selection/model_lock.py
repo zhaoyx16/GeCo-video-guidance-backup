@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import fcntl
+import tempfile
 from pathlib import Path
+import stat
 from typing import Any
 
 
 MODEL_LOCK_SCHEMA = "geometry-model-lock-v2"
+FROZEN_MODEL_MARKER = ".geometry_frozen_snapshot.json"
 
 
 def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -94,6 +95,44 @@ def _identity_sha256(identity: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def validate_frozen_model_snapshot(model_path: Path) -> Path:
+    """Require an atomically published snapshot immutable to normal writers."""
+
+    unresolved = model_path.expanduser().absolute()
+    if unresolved.is_symlink():
+        raise ValueError("formal generation model root must not be a symlink")
+    root = unresolved.resolve()
+    marker = root / FROZEN_MODEL_MARKER
+    if not marker.is_file() or marker.is_symlink():
+        raise ValueError(f"formal generation model lacks {FROZEN_MODEL_MARKER}")
+    try:
+        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid {FROZEN_MODEL_MARKER}") from error
+    if marker_payload.get("schema") != "geometry-frozen-model-snapshot-v1":
+        raise ValueError(f"invalid {FROZEN_MODEL_MARKER} schema")
+    if marker_payload.get("publication") != "closed-staging-read-only-atomic-rename":
+        raise ValueError(f"invalid {FROZEN_MODEL_MARKER} publication mode")
+
+    entries = [root, *root.rglob("*")]
+    writable = []
+    for entry in entries:
+        if entry.is_symlink():
+            raise ValueError(f"formal generation model contains symlink: {entry}")
+        mode = entry.stat().st_mode
+        if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+            if mode & 0o222:
+                writable.append(str(entry.relative_to(root)) if entry != root else ".")
+    if writable:
+        preview = ", ".join(writable[:5])
+        suffix = "" if len(writable) <= 5 else f" (+{len(writable) - 5} more)"
+        raise ValueError(
+            "formal generation model must be a frozen read-only snapshot; "
+            f"writable entries: {preview}{suffix}"
+        )
+    return root
+
+
 def _weight_stat_fingerprints(model_path: Path, locked: dict[str, Any]) -> list[dict[str, Any]]:
     root = model_path.resolve()
     fingerprints = []
@@ -122,39 +161,42 @@ def _verify_weight_hashes_cached(
     locked: dict[str, Any],
     verification_cache: Path,
 ) -> None:
+    """Fully verify weights and atomically publish an audit receipt.
+
+    The receipt is deliberately never trusted to skip hashing: timestamps and
+    sparse fingerprints are not authoritative on distributed filesystems.
+    """
+
     cache_root = verification_cache.resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     identity_sha256 = _identity_sha256(locked)
     cache_path = cache_root / f"{identity_sha256}.json"
-    lock_path = cache_root / f"{identity_sha256}.lock"
-    with lock_path.open("a+b") as lock_handle:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        fingerprints = _weight_stat_fingerprints(model_path, locked)
-        if cache_path.is_file():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if (
-                cached.get("schema") == "geometry-model-verification-v1"
-                and cached.get("model_path") == str(model_path.resolve())
-                and cached.get("locked_identity_sha256") == identity_sha256
-                and cached.get("weight_stat_fingerprints") == fingerprints
-            ):
-                return
-        for record in locked["weight_files"]:
-            actual = file_sha256(model_path.resolve() / record["path"])
-            if actual != record.get("sha256"):
-                raise ValueError(f"generation model weight hash mismatch: {record['path']}")
-        payload = {
-            "schema": "geometry-model-verification-v1",
-            "model_path": str(model_path.resolve()),
-            "locked_identity_sha256": identity_sha256,
-            "weight_stat_fingerprints": fingerprints,
-        }
-        temporary = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(cache_path)
+    fingerprints = _weight_stat_fingerprints(model_path, locked)
+    for record in locked["weight_files"]:
+        actual = file_sha256(model_path.resolve() / record["path"])
+        if actual != record.get("sha256"):
+            raise ValueError(f"generation model weight hash mismatch: {record['path']}")
+    verified_fingerprints = _weight_stat_fingerprints(model_path, locked)
+    if verified_fingerprints != fingerprints:
+        raise RuntimeError("generation model weights changed during verification")
+    payload = {
+        "schema": "geometry-model-verification-v2",
+        "verification_mode": "full_sha256_each_call",
+        "model_path": str(model_path.resolve()),
+        "locked_identity_sha256": identity_sha256,
+        "weight_stat_fingerprints": verified_fingerprints,
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=cache_root,
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n")
+    temporary.replace(cache_path)
 
 
 def load_model_lock(path: Path) -> dict[str, Any]:
@@ -190,6 +232,7 @@ def verify_generation_model(
 ) -> dict[str, Any]:
     if profile_name not in lock["generation_models"]:
         raise ValueError(f"generation model is absent from lock: {profile_name}")
+    validate_frozen_model_snapshot(model_path)
     runtime = model_directory_identity(model_path, hash_weights=False)
     locked = lock["generation_models"][profile_name]
     if not runtime_identity_matches_lock(runtime, locked):
@@ -201,4 +244,5 @@ def verify_generation_model(
                 raise ValueError(f"generation model weight hash mismatch: {record['path']}")
     else:
         _verify_weight_hashes_cached(model_path, locked, verification_cache)
+    validate_frozen_model_snapshot(model_path)
     return locked

@@ -152,6 +152,16 @@ def test_transform_reference_must_exist(tmp_path: Path) -> None:
         MODULE.validate_scene_files(scene)
 
 
+def test_unreferenced_extra_images_are_allowed(tmp_path: Path) -> None:
+    scene = _make_scene(tmp_path, "0" * 64)
+    Image.new("RGB", (4, 3), color=(9, 9, 9)).save(
+        scene / "images_8" / "frame_99999.png"
+    )
+
+    validation = MODULE.validate_scene_files(scene)
+    assert validation["frame_count"] == 8
+
+
 def test_scene_directory_cannot_be_relabelled_as_another_scene(tmp_path: Path) -> None:
     source = _make_scene(tmp_path, "1" * 64)
     _write_marker(source)

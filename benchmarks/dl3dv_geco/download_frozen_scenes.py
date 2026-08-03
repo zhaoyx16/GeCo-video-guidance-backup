@@ -187,10 +187,11 @@ def validate_scene_files(scene_root: Path) -> dict[str, object]:
         for path in image_root.iterdir()
         if path.name.startswith("frame_") and path.suffix.lower() == ".png"
     }
-    if actual_names != seen_names:
+    missing_names = seen_names - actual_names
+    if missing_names:
         raise ValueError(
-            f"images_8 frame set differs from transforms.json: "
-            f"required={len(seen_names)}, actual={len(actual_names)}"
+            "images_8 is missing frames referenced by transforms.json: "
+            f"{sorted(missing_names)[:5]}"
         )
     return {
         "transforms_sha256": sha256_file(transforms),
