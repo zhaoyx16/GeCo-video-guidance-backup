@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,9 @@ from geometry_selection.protocol import (
     validate_formal_protocol,
 )
 from geometry_selection.selection import CANDIDATE_SPEC_SCHEMA
+
+
+DEBUG_BUILDER = Path(__file__).resolve().parents[2] / "scripts/build_legacy_debug_smoke.py"
 
 
 def test_candidate_spec_is_bound_to_protocol_split_prompt_and_image(tmp_path) -> None:
@@ -234,3 +239,62 @@ def test_test_release_must_be_committed_and_match_expected_fields(tmp_path) -> N
     release.write_text(json.dumps({"schema": "geometry-test-release-v1", "phase": "changed"}))
     with pytest.raises(ValueError, match="differs from the file committed"):
         validate_committed_test_release(release, repo, commit, {"phase": "ranking"})
+
+
+def test_legacy_debug_builder_marks_artifacts_non_formal(tmp_path) -> None:
+    dataset = tmp_path / "dataset"
+    videos = tmp_path / "videos"
+    source = {}
+    case_ids = []
+    for index in range(3):
+        case_id = f"case-{index}"
+        case_ids.append(case_id)
+        scene = dataset / f"scene-{index}"
+        images = scene / "images_4"
+        images.mkdir(parents=True)
+        image = images / "frame.png"
+        image.write_bytes(f"image-{index}".encode())
+        (scene / "transforms.json").write_bytes(f"poses-{index}".encode())
+        source[case_id] = {
+            "image_prompt": str(image),
+            "text_prompt": f"prompt-{index}",
+        }
+        case_video_root = videos / case_id
+        case_video_root.mkdir(parents=True)
+        for seed in (0, 1):
+            (case_video_root / f"baseline_seed{seed}_steps50_frames121.mp4").write_bytes(
+                f"video-{index}-{seed}".encode()
+            )
+    source_path = tmp_path / "source.json"
+    source_path.write_text(json.dumps(source))
+    protocol_path = tmp_path / "protocol.json"
+    spec_path = tmp_path / "spec.json"
+    command = [
+        sys.executable,
+        str(DEBUG_BUILDER),
+        "--source-manifest",
+        str(source_path),
+        "--dataset-root",
+        str(dataset),
+        "--video-root",
+        str(videos),
+        "--case-ids",
+        *case_ids,
+        "--seeds",
+        "0",
+        "1",
+        "--protocol-output",
+        str(protocol_path),
+        "--spec-output",
+        str(spec_path),
+    ]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    protocol = json.loads(protocol_path.read_text())
+    spec = json.loads(spec_path.read_text())
+    assert protocol["_meta"]["formal_protocol"] is False
+    assert spec["artifact_mode"] == "legacy-debug"
+    assert spec["candidate_count"] == 2
+    assert len(spec["cases"]) == 3
+    completed = subprocess.run(command, capture_output=True, text=True)
+    assert completed.returncode != 0
+    assert "refusing to overwrite debug artifact" in completed.stderr
