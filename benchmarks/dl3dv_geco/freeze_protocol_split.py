@@ -33,6 +33,31 @@ def relative_to_root(path: Path, root: Path) -> str:
         raise ValueError(f"{path} is outside dataset root {root}") from error
 
 
+def resolve_source_path(value: str, source_directory: Path) -> Path:
+    path = Path(value).expanduser()
+    return (path if path.is_absolute() else source_directory / path).resolve()
+
+
+def stratified_order(prepared: list[tuple[str, dict]], seed: int) -> list[tuple[str, dict]]:
+    by_motion: dict[str, list[tuple[str, dict]]] = {}
+    for item in prepared:
+        by_motion.setdefault(item[1]["motion_instruction"], []).append(item)
+    for items in by_motion.values():
+        items.sort(key=lambda item: deterministic_key(seed, item[1]["scene_uid"]))
+    ordered = []
+    active = sorted(by_motion)
+    while active:
+        next_active = []
+        for motion in active:
+            items = by_motion[motion]
+            if items:
+                ordered.append(items.pop(0))
+            if items:
+                next_active.append(motion)
+        active = next_active
+    return ordered
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-manifest", type=Path, required=True)
@@ -74,13 +99,14 @@ def main() -> None:
         missing = sorted(required - set(case))
         if missing:
             raise ValueError(f"source case {case_id} is missing fields: {missing}")
-        image = Path(case["image_prompt"]).resolve()
-        transforms = Path(case["transforms_path"]).resolve()
+        image = resolve_source_path(case["image_prompt"], source_path.parent)
+        transforms = resolve_source_path(case["transforms_path"], source_path.parent)
         if not image.is_file() or not transforms.is_file():
             raise FileNotFoundError(f"missing image/transforms for {case_id}: {image}, {transforms}")
         transforms_sha = sha256_file(transforms)
         image_sha = sha256_file(image)
-        scene_uid = f"dl3dv:{transforms_sha}"
+        relative_scene = relative_to_root(transforms.parent, dataset_root)
+        scene_uid = f"dl3dv:{relative_scene}"
         if scene_uid in scene_uids:
             raise ValueError(
                 f"multiple clips from the same scene are not allowed in the frozen pool: {scene_uid}"
@@ -93,6 +119,8 @@ def main() -> None:
             {
                 "dataset": "dl3dv",
                 "scene_uid": scene_uid,
+                "image_prompt": relative_to_root(image, dataset_root),
+                "transforms_path": relative_to_root(transforms, dataset_root),
                 "image_sha256": image_sha,
                 "transforms_sha256": transforms_sha,
                 "dataset_relative_image": relative_to_root(image, dataset_root),
@@ -108,8 +136,7 @@ def main() -> None:
 
     if len(prepared) < required_count:
         raise ValueError(f"need {required_count} scene-disjoint cases, found {len(prepared)}")
-    prepared.sort(key=lambda item: deterministic_key(args.split_seed, item[1]["scene_uid"]))
-    selected = prepared[:required_count]
+    selected = stratified_order(prepared, args.split_seed)[:required_count]
     boundaries = (
         ("test", 0, args.test_count),
         ("validation", args.test_count, args.test_count + args.validation_count),
@@ -141,12 +168,35 @@ def main() -> None:
             "source_manifest_sha256": sha256_file(source_path),
             "dataset_root_at_freeze": str(dataset_root),
             "split_seed": args.split_seed,
-            "split_algorithm": "sha256(dl3dv-split-v1:seed:scene_uid)",
+            "split_algorithm": "motion-stratified round robin; sha256 within each family",
             "split_counts": dict(split_counts),
             "motion_counts": motion_counts,
             "scene_disjoint": True,
             "conditioning_image_disjoint": True,
             "test_policy": "held out until code and configuration are frozen",
+            "candidate_seed_policy": {
+                "version": "fixed-four-v1",
+                "candidate_seeds": [0, 1, 2, 3],
+                "incumbent_seed": 0,
+            },
+            "generation_profiles": {
+                "Wan2.2-TI2V-5B": {
+                    "steps": 50,
+                    "frames": 121,
+                    "height": 704,
+                    "width": 1280,
+                    "fps": 24,
+                    "guidance_scale": 5.0,
+                },
+                "Cosmos-Predict2.5-2B-post": {
+                    "steps": 36,
+                    "frames": 93,
+                    "height": 704,
+                    "width": 1280,
+                    "fps": 16,
+                    "guidance_scale": 7.0,
+                },
+            },
         },
         **split_cases,
     }

@@ -70,6 +70,8 @@ def test_split_is_deterministic_and_scene_disjoint(tmp_path: Path) -> None:
     assert len({case["scene_uid"] for case in cases}) == len(cases)
     assert len({case["image_sha256"] for case in cases}) == len(cases)
     assert first["_meta"]["split_counts"] == {"debug": 2, "test": 2, "validation": 2}
+    assert first["_meta"]["candidate_seed_policy"]["candidate_seeds"] == [0, 1, 2, 3]
+    assert all(not Path(case["image_prompt"]).is_absolute() for case in cases)
 
 
 def test_split_fails_when_same_scene_has_multiple_cases(tmp_path: Path) -> None:
@@ -101,3 +103,35 @@ def test_split_fails_when_same_scene_has_multiple_cases(tmp_path: Path) -> None:
     )
     assert completed.returncode != 0
     assert "same scene" in completed.stderr
+
+
+def test_split_resolves_source_relative_paths_from_manifest_directory(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path)
+    payload = json.loads(source.read_text())
+    for key, case in payload.items():
+        if key.startswith("_"):
+            continue
+        case["image_prompt"] = str(Path(case["image_prompt"]).relative_to(tmp_path))
+        case["transforms_path"] = str(Path(case["transforms_path"]).relative_to(tmp_path))
+    source.write_text(json.dumps(payload))
+    result = run_split(source, dataset, tmp_path / "relative.json")
+    assert result["_meta"]["split_counts"] == {"debug": 2, "test": 2, "validation": 2}
+
+
+def test_scene_uid_is_stable_when_transforms_serialization_changes(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path)
+    first = run_split(source, dataset, tmp_path / "first.json")
+    transforms = dataset / "scene_00" / "transforms.json"
+    transforms.write_text('{\n  "scene": 0\n}\n')
+    second = run_split(source, dataset, tmp_path / "second.json")
+    first_uid = {
+        case["dataset_relative_transforms"]: case["scene_uid"]
+        for key, case in first.items()
+        if not key.startswith("_")
+    }
+    second_uid = {
+        case["dataset_relative_transforms"]: case["scene_uid"]
+        for key, case in second.items()
+        if not key.startswith("_")
+    }
+    assert first_uid == second_uid

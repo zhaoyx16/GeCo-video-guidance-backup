@@ -111,6 +111,7 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
         videos.append(path)
     case = {
         "case_id": "case-1",
+        "protocol_manifest_sha256": "d" * 64,
         "scene_uid": "dl3dv:abc",
         "split": "validation",
         "conditioning_image": str(videos[0]),
@@ -135,6 +136,7 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     case["candidate_pool_id"] = candidate_pool_id(case)
     manifest = {
         "schema": CANDIDATE_POOL_SCHEMA,
+        "protocol_manifest_sha256": "d" * 64,
         "candidate_count": 2,
         "cases": [case],
     }
@@ -147,6 +149,12 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     loaded["cases"][0]["candidates"][0]["geometry_cache_key"] = "f" * 64
     path.write_text(json.dumps(loaded))
     with pytest.raises(ValueError, match="candidate_pool_id mismatch"):
+        load_and_validate_candidate_pool(path, expected_split="validation")
+
+    loaded = json.loads(json.dumps(manifest))
+    loaded["cases"][0]["split"] = "test"
+    path.write_text(json.dumps(loaded))
+    with pytest.raises(ValueError, match="belongs to split|pairing_id mismatch"):
         load_and_validate_candidate_pool(path, expected_split="validation")
 
     loaded = json.loads(json.dumps(manifest))
@@ -174,6 +182,7 @@ def test_materialize_candidate_pool_hashes_inputs(tmp_path) -> None:
         "split": "debug",
         "candidate_count": 2,
         "backbone": "wan2.2-ti2v-5b",
+        "protocol_manifest_sha256": "d" * 64,
         "generation": {"steps": 50, "frames": 121},
         "cases": [
             {

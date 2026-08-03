@@ -31,6 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from geometry_selection.protocol import load_protocol, resolve_protocol_image
+
 
 WAN_NEGATIVE = (
     "Bright tones, overexposed, static, blurred details, subtitles, style, works, "
@@ -194,16 +196,40 @@ def adapted_geco_schedule(
     return repeats, [learning_rate if repeat else 0.0 for repeat in repeats]
 
 
-def load_case(manifest_path: Path, case_id: str | None, case_index: int | None) -> tuple[str, dict]:
+def load_case(
+    manifest_path: Path,
+    case_id: str | None,
+    case_index: int | None,
+) -> tuple[str, dict, dict]:
     payload = json.loads(manifest_path.read_text())
+    metadata = payload.get("_meta", {})
     cases = [(key, value) for key, value in payload.items() if not key.startswith("_")]
     if case_id is not None:
         if case_id not in payload or case_id.startswith("_"):
             raise KeyError(f"Unknown case id: {case_id}")
-        return case_id, payload[case_id]
+        return case_id, payload[case_id], metadata
     if case_index is None or not 0 <= case_index < len(cases):
         raise IndexError(f"case_index must be in [0, {len(cases) - 1}]")
-    return cases[case_index]
+    selected_id, selected_case = cases[case_index]
+    return selected_id, selected_case, metadata
+
+
+def git_identity(repo: Path) -> dict:
+    commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return {"commit": commit, "dirty": dirty}
 
 
 def load_metric(args: argparse.Namespace):
@@ -361,6 +387,10 @@ def main() -> None:
     parser.add_argument("--method", choices=("baseline", "adapted_geco"), required=True)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument("--expected-split", choices=("debug", "validation", "test"))
+    parser.add_argument("--expected-git-commit")
+    parser.add_argument("--test-release", type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -404,10 +434,59 @@ def main() -> None:
     if args.method == "adapted_geco" and args.decode_spatial_scale != 1.0:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
 
-    case_id, case = load_case(args.manifest, args.case_id, args.case_index)
-    image_path = Path(case["image_prompt"])
-    if not image_path.is_absolute():
-        image_path = args.manifest.resolve().parent / image_path
+    case_id, case, protocol_meta = load_case(args.manifest, args.case_id, args.case_index)
+    is_frozen_protocol = protocol_meta.get("schema") == "dl3dv-geometry-selection-v1"
+    code_identity = git_identity(args.repo.resolve())
+    if is_frozen_protocol:
+        load_protocol(args.manifest)
+        if args.expected_split is None or case["split"] != args.expected_split:
+            parser.error(
+                f"frozen case split is {case['split']}; pass the matching --expected-split"
+            )
+        if args.dataset_root is None:
+            parser.error("frozen protocol requires --dataset-root")
+        if args.expected_git_commit is None:
+            parser.error("frozen protocol requires --expected-git-commit")
+        if code_identity["dirty"] or code_identity["commit"] != args.expected_git_commit:
+            raise RuntimeError(
+                f"generation code is not the frozen clean commit: {code_identity}"
+            )
+        profile_name = {
+            "wan": "Wan2.2-TI2V-5B",
+            "cosmos": "Cosmos-Predict2.5-2B-post",
+        }[args.backbone]
+        profile = protocol_meta["generation_profiles"][profile_name]
+        profile_mismatches = {
+            key: (getattr(args, key), expected)
+            for key, expected in profile.items()
+            if getattr(args, key) != expected
+        }
+        if profile_mismatches:
+            raise ValueError(f"generation profile differs from protocol: {profile_mismatches}")
+        allowed_seeds = protocol_meta["candidate_seed_policy"]["candidate_seeds"]
+        if args.seed not in allowed_seeds:
+            raise ValueError(f"seed {args.seed} is outside frozen policy {allowed_seeds}")
+        image_path = resolve_protocol_image(case, args.dataset_root)
+        if case["split"] == "test":
+            if args.test_release is None:
+                parser.error("test split requires --test-release")
+            release = json.loads(args.test_release.read_text(encoding="utf-8"))
+            expected_release = {
+                "schema": "geometry-test-release-v1",
+                "protocol_manifest_sha256": sha256_file(args.manifest),
+                "code_commit": code_identity["commit"],
+            }
+            mismatches = {
+                key: (release.get(key), expected)
+                for key, expected in expected_release.items()
+                if release.get(key) != expected
+            }
+            if mismatches:
+                raise RuntimeError(f"test release mismatch: {mismatches}")
+    else:
+        image_path = Path(case["image_prompt"])
+        if not image_path.is_absolute():
+            image_path = args.manifest.resolve().parent / image_path
     if not image_path.is_file():
         raise FileNotFoundError(f"Conditioning image not found: {image_path}")
     prompt = case["text_prompt"]
@@ -472,6 +551,7 @@ def main() -> None:
         "prompt": prompt,
         "backbone": args.backbone,
         "method": args.method,
+        "code_identity": code_identity,
         "seed": args.seed,
         "model": model_identity(args.model),
         "runner_sha256": runner_sha256,
@@ -637,6 +717,14 @@ def main() -> None:
         "case": case,
         "manifest": str(args.manifest.resolve()),
         "manifest_sha256": manifest_sha256,
+        "protocol": {
+            "is_frozen": is_frozen_protocol,
+            "split": case.get("split"),
+            "expected_split": args.expected_split,
+            "test_release": str(args.test_release.resolve()) if args.test_release else None,
+            "test_release_sha256": sha256_file(args.test_release) if args.test_release else None,
+        },
+        "code_identity": code_identity,
         "image_path": str(image_path.resolve()),
         "image_sha256": image_sha256,
         "prompt": prompt,

@@ -21,6 +21,7 @@ from geometry_selection.selection import (
     materialize_candidate_pool,
     validate_candidate_spec,
 )
+from geometry_selection.protocol import validate_candidate_spec_against_protocol
 from scripts.extract_vggt_omega_geometry import (
     decode_video_frames,
     select_keyframes,
@@ -31,6 +32,8 @@ from scripts.extract_vggt_omega_geometry import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path, required=True)
+    parser.add_argument("--protocol-manifest", type=Path, required=True)
+    parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument(
         "--source-root",
@@ -53,6 +56,11 @@ def main() -> None:
 
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
     validate_candidate_spec(spec)
+    validate_candidate_spec_against_protocol(
+        spec,
+        args.protocol_manifest,
+        args.dataset_root,
+    )
     adapter = VGGTOmegaAdapter(
         source_root=args.source_root,
         checkpoint=args.checkpoint,

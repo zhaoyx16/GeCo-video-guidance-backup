@@ -112,7 +112,10 @@ def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 def pairing_id(case: dict[str, Any]) -> str:
     fields = {
+        "protocol_manifest_sha256": case["protocol_manifest_sha256"],
+        "case_id": case["case_id"],
         "scene_uid": case["scene_uid"],
+        "split": case["split"],
         "conditioning_image_sha256": case["conditioning_image_sha256"],
         "prompt": case["prompt"],
         "backbone": case["backbone"],
@@ -132,7 +135,7 @@ def candidate_pool_id(case: dict[str, Any]) -> str:
                 "geometry_cache_key": candidate["geometry_cache_key"],
                 "is_incumbent": candidate["is_incumbent"],
             }
-            for candidate in case["candidates"]
+            for candidate in sorted(case["candidates"], key=lambda item: item["candidate_id"])
         ],
     }
     return canonical_hash(fields)
@@ -151,7 +154,10 @@ def materialize_candidate_pool(
     for source_case in cases:
         image = Path(source_case["conditioning_image"]).resolve()
         candidates = []
-        for source_candidate in source_case["candidates"]:
+        for source_candidate in sorted(
+            source_case["candidates"],
+            key=lambda item: item["candidate_id"],
+        ):
             video = Path(source_candidate["video"]).resolve()
             key = (source_case["case_id"], source_candidate["candidate_id"])
             if key not in geometry_cache_keys:
@@ -168,6 +174,7 @@ def materialize_candidate_pool(
             )
         case = {
             "case_id": source_case["case_id"],
+            "protocol_manifest_sha256": spec["protocol_manifest_sha256"],
             "scene_uid": source_case["scene_uid"],
             "split": spec["split"],
             "conditioning_image": str(image),
@@ -182,6 +189,7 @@ def materialize_candidate_pool(
         frozen_cases.append(case)
     return {
         "schema": CANDIDATE_POOL_SCHEMA,
+        "protocol_manifest_sha256": spec["protocol_manifest_sha256"],
         "candidate_count": spec["candidate_count"],
         "cases": frozen_cases,
     }
@@ -190,7 +198,14 @@ def materialize_candidate_pool(
 def validate_candidate_spec(spec: dict[str, Any]) -> None:
     if spec.get("schema") != CANDIDATE_SPEC_SCHEMA:
         raise ValueError(f"candidate spec schema must be {CANDIDATE_SPEC_SCHEMA}")
-    required = {"split", "candidate_count", "backbone", "generation", "cases"}
+    required = {
+        "split",
+        "candidate_count",
+        "backbone",
+        "generation",
+        "protocol_manifest_sha256",
+        "cases",
+    }
     missing = sorted(required - set(spec))
     if missing:
         raise ValueError(f"candidate spec is missing fields: {missing}")
@@ -200,6 +215,11 @@ def validate_candidate_spec(spec: dict[str, Any]) -> None:
         raise ValueError("candidate spec backbone must be a non-empty string")
     if not isinstance(spec["generation"], dict) or not spec["generation"]:
         raise ValueError("candidate spec generation must be a non-empty mapping")
+    protocol_hash = spec["protocol_manifest_sha256"]
+    if len(protocol_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in protocol_hash
+    ):
+        raise ValueError("protocol_manifest_sha256 must be a lowercase SHA-256 digest")
     candidate_count = spec["candidate_count"]
     if not isinstance(candidate_count, int) or candidate_count < 2:
         raise ValueError("candidate_count must be an integer >= 2")
@@ -281,6 +301,9 @@ def load_and_validate_candidate_pool(
     cases = payload.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("candidate pool must contain a non-empty cases list")
+    protocol_hash = payload.get("protocol_manifest_sha256")
+    if not isinstance(protocol_hash, str) or len(protocol_hash) != 64:
+        raise ValueError("candidate pool must bind a protocol_manifest_sha256")
 
     seen_cases: set[str] = set()
     seen_scenes: set[str] = set()
@@ -291,6 +314,7 @@ def load_and_validate_candidate_pool(
     for case in cases:
         required = {
             "case_id",
+            "protocol_manifest_sha256",
             "scene_uid",
             "split",
             "conditioning_image",
@@ -307,6 +331,8 @@ def load_and_validate_candidate_pool(
             raise ValueError(f"case is missing fields {missing}: {case.get('case_id')}")
         if case["split"] != expected_split:
             raise ValueError(f"case {case['case_id']} belongs to split {case['split']}, not {expected_split}")
+        if case["protocol_manifest_sha256"] != protocol_hash:
+            raise ValueError(f"protocol manifest mismatch for {case['case_id']}")
         if case["case_id"] in seen_cases or case["scene_uid"] in seen_scenes:
             raise ValueError(f"duplicate case or scene: {case['case_id']} / {case['scene_uid']}")
         seen_cases.add(case["case_id"])
