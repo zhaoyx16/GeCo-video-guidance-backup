@@ -116,6 +116,90 @@ def test_local_only_graph_score_is_independent_of_loop_prediction() -> None:
     assert first.graph_diagnostics["potential_loop_edge_ids"] == []
 
 
+def test_rejected_soft_loop_cannot_change_local_scale_graph_or_score() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    common = dict(
+        require_loop_edges=False,
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+        require_appearance_support=True,
+        require_reobservation_support=False,
+    )
+    local_only = score_window_pose_graph(
+        global_prediction,
+        _windows(0.0),
+        graph_config=GraphScoreConfig(
+            window=WindowGraphConfig(use_loop_edges=False, **common),
+            missing_loop_penalty_weight=0.0,
+        ),
+    )
+    soft_loop = score_window_pose_graph(
+        global_prediction,
+        _windows(0.8),
+        graph_config=GraphScoreConfig(
+            window=WindowGraphConfig(use_loop_edges=True, **common),
+            missing_loop_penalty_weight=0.0,
+        ),
+    )
+
+    assert local_only.status == soft_loop.status == "ok_pose_graph"
+    assert soft_loop.total_score == local_only.total_score
+    assert soft_loop.graph_diagnostics["window_scale_ids"] == [
+        "local-a",
+        "local-b",
+    ]
+    assert soft_loop.graph_diagnostics["accepted_loop_edge_ids"] == []
+    assert soft_loop.graph_diagnostics["rejected_loop_edges"][0]["reason"] == (
+        "missing_appearance_evidence"
+    )
+
+
+def test_geometry_rejected_soft_loop_cannot_change_local_score() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    common = dict(
+        require_loop_edges=False,
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+        require_appearance_support=False,
+        require_reobservation_support=True,
+    )
+    local_only = score_window_pose_graph(
+        global_prediction,
+        _windows(0.0),
+        graph_config=GraphScoreConfig(
+            window=WindowGraphConfig(use_loop_edges=False, **common)
+        ),
+    )
+    soft_loop = score_window_pose_graph(
+        global_prediction,
+        _windows(0.8),
+        graph_config=GraphScoreConfig(
+            window=WindowGraphConfig(use_loop_edges=True, **common)
+        ),
+    )
+
+    assert local_only.status == soft_loop.status == "ok_pose_graph"
+    assert soft_loop.total_score == local_only.total_score
+    assert soft_loop.local_score == local_only.local_score
+    assert soft_loop.graph_diagnostics["window_scale_ids"] == (
+        local_only.graph_diagnostics["window_scale_ids"]
+    )
+    np.testing.assert_allclose(
+        soft_loop.graph_diagnostics["window_scales"],
+        local_only.graph_diagnostics["window_scales"],
+    )
+    assert soft_loop.graph_diagnostics["candidate_depth_normalizer"] == (
+        local_only.graph_diagnostics["candidate_depth_normalizer"]
+    )
+    assert soft_loop.graph_diagnostics["accepted_scale_constraint_ids"] == (
+        local_only.graph_diagnostics["accepted_scale_constraint_ids"]
+    )
+    assert soft_loop.graph_diagnostics["accepted_loop_edge_ids"] == []
+    rejection_reason = soft_loop.graph_diagnostics["rejected_loop_edges"][0]["reason"]
+    assert rejection_reason.startswith("insufficient_")
+    assert "appearance" not in rejection_reason
+
+
 def test_candidate_selection_uses_normalized_graph_score() -> None:
     global_prediction = _prediction((0, 1, 2, 3, 4, 5))
     worse = score_window_pose_graph(global_prediction, _windows(0.20), graph_config=_config())

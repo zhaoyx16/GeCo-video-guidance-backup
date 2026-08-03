@@ -337,3 +337,16 @@ def test_loop_edge_requires_independent_appearance_evidence() -> None:
     assert missing.rejected_loop_edges[0].reason == "missing_appearance_evidence"
     accepted = build_window_graph_measurements(local_windows + (accepted_loop,), config)
     assert len(accepted.loop_measurements) == 1
+    assert accepted.window_scale_ids == ("local-a", "local-b", "loop-a")
+    assert accepted.accepted_loop_edge_ids == ("loop:loop-a:0->5",)
+    assert any(
+        "loop-a" in edge_id for edge_id in accepted.accepted_scale_constraint_ids
+    )
+    loop_edge = accepted.loop_measurements[0]
+    expected = (
+        accepted_loop.prediction.world_to_camera[3]
+        @ np.linalg.inv(accepted_loop.prediction.world_to_camera[0])
+    )
+    expected[:3, 3] *= accepted.window_scales[2]
+    np.testing.assert_allclose(loop_edge.target_from_source, expected)
+    assert loop_edge.provenance == "loop:loop-a:run-loop-a:0->5"

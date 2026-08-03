@@ -29,9 +29,11 @@ class GraphScoreConfig:
     window: WindowGraphConfig = field(default_factory=WindowGraphConfig)
     optimizer: PoseGraphConfig = field(default_factory=PoseGraphConfig)
     switch_penalty_weight: float = 0.25
-    missing_loop_penalty_weight: float = 0.25
-    missing_local_penalty_weight: float = 0.25
-    missing_scale_penalty_weight: float = 0.10
+    # Candidate comparison already requires identical accepted evidence.
+    # Non-zero missing-edge offsets can only distort relative improvements.
+    missing_loop_penalty_weight: float = 0.0
+    missing_local_penalty_weight: float = 0.0
+    missing_scale_penalty_weight: float = 0.0
     scale_residual_weight: float = 0.10
     require_convergence: bool = True
 

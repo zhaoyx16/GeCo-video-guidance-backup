@@ -474,6 +474,116 @@ def _initial_states(
     return np.stack(states)
 
 
+def _eligible_loop_pair(
+    window: IndependentWindow,
+    node_lookup: dict[int, int],
+    config: WindowGraphConfig,
+) -> tuple[int, int] | None:
+    frames = tuple(int(frame) for frame in window.prediction.keyframe_indices)
+    eligible = [
+        (source, target)
+        for source in range(len(frames))
+        for target in range(source + 1, len(frames))
+        if abs(node_lookup[frames[target]] - node_lookup[frames[source]])
+        >= config.min_loop_node_gap
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda pair: abs(frames[pair[1]] - frames[pair[0]]))
+
+
+def _gate_loop_window(
+    window: IndependentWindow,
+    source_position: int,
+    target_position: int,
+    config: WindowGraphConfig,
+) -> RejectedLoopMeasurement | None:
+    frames = tuple(int(frame) for frame in window.prediction.keyframe_indices)
+    source_frame = frames[source_position]
+    target_frame = frames[target_position]
+    appearance = window.appearance_evidence
+    reason: str | None = None
+    support = None
+    if config.require_appearance_support:
+        if appearance is None:
+            reason = "missing_appearance_evidence"
+        elif (
+            appearance.source_frame != source_frame
+            or appearance.target_frame != target_frame
+        ):
+            reason = "appearance_frame_pair_mismatch"
+        elif appearance.status != "ok":
+            reason = f"appearance_{appearance.status}"
+        elif appearance.ratio_matches < config.min_appearance_ratio_matches:
+            reason = "insufficient_appearance_ratio_matches"
+        elif appearance.inliers < config.min_appearance_inliers:
+            reason = "insufficient_appearance_inliers"
+        elif appearance.inlier_ratio < config.min_appearance_inlier_ratio:
+            reason = "insufficient_appearance_inlier_ratio"
+        elif appearance.spatial_coverage < config.min_appearance_spatial_coverage:
+            reason = "insufficient_appearance_spatial_coverage"
+
+    evidence_confidence = np.sqrt(
+        _frame_quality(window.prediction, source_position)
+        * _frame_quality(window.prediction, target_position)
+    )
+    if reason is None and config.require_appearance_support:
+        assert appearance is not None
+        evidence_confidence *= np.sqrt(
+            appearance.inlier_ratio * appearance.spatial_coverage
+        )
+
+    if reason is None and config.require_reobservation_support:
+        support = score_pair(
+            window.prediction,
+            source_position,
+            target_position,
+            ScorerConfig(
+                local_offsets=(1,),
+                min_long_range_gap=2,
+                confidence_quantile=config.confidence_quantile,
+                confidence_evidence_floor=config.confidence_evidence_floor,
+                min_pair_overlap=config.min_loop_overlap,
+                min_long_range_overlap=config.min_loop_overlap,
+                min_valid_pixels=config.min_loop_valid_pixels,
+                min_comparable_fraction=config.min_loop_comparable_fraction,
+                min_valid_local_fraction=0.0,
+                min_valid_long_range_fraction=0.0,
+                require_long_range=False,
+            ),
+        )
+        if support.status != "ok":
+            reason = support.status
+        else:
+            evidence_confidence *= np.sqrt(
+                max(support.overlap, 0.0)
+                * max(support.comparable_fraction, 0.0)
+            )
+    if reason is None and (
+        evidence_confidence <= 0 or not np.isfinite(evidence_confidence)
+    ):
+        reason = "insufficient_model_confidence"
+    if reason is None:
+        return None
+    return RejectedLoopMeasurement(
+        window_id=window.window_id,
+        source_frame=source_frame,
+        target_frame=target_frame,
+        reason=reason,
+        overlap=(support.overlap if support is not None else 0.0),
+        comparable_fraction=(
+            support.comparable_fraction if support is not None else 0.0
+        ),
+        valid_pixels=(support.valid_pixels if support is not None else 0),
+        appearance_ratio_matches=(appearance.ratio_matches if appearance else 0),
+        appearance_inliers=(appearance.inliers if appearance else 0),
+        appearance_inlier_ratio=(appearance.inlier_ratio if appearance else 0.0),
+        appearance_spatial_coverage=(
+            appearance.spatial_coverage if appearance else 0.0
+        ),
+    )
+
+
 def build_window_graph_measurements(
     windows: Sequence[IndependentWindow],
     config: WindowGraphConfig | None = None,
@@ -520,6 +630,42 @@ def build_window_graph_measurements(
     ):
         raise ValueError("loop windows may only reference nodes covered by local windows")
 
+    potential_loop_edge_ids: list[str] = []
+    accepted_loop_pairs: dict[str, tuple[int, int]] = {}
+    rejected_loops: list[RejectedLoopMeasurement] = []
+    for window in loop_windows:
+        pair = _eligible_loop_pair(window, node_lookup, resolved)
+        if pair is None:
+            continue
+        source_position, target_position = pair
+        frames = tuple(int(frame) for frame in window.prediction.keyframe_indices)
+        potential_loop_edge_ids.append(
+            _edge_id(
+                "loop",
+                window.window_id,
+                frames[source_position],
+                frames[target_position],
+            )
+        )
+        rejection = _gate_loop_window(
+            window,
+            source_position,
+            target_position,
+            resolved,
+        )
+        if rejection is None:
+            accepted_loop_pairs[window.window_id] = pair
+        else:
+            rejected_loops.append(rejection)
+
+    # A rejected loop is absent from both the pose graph and the window-scale
+    # graph. Otherwise it could still change local scales and candidate order
+    # despite failing the soft loop-closure gate.
+    windows = tuple(
+        local_windows
+        + [window for window in loop_windows if window.window_id in accepted_loop_pairs]
+    )
+
     constraints = build_scale_constraints(windows, resolved)
     relative_scales, scale_rms, scale_rank = solve_window_scales(
         len(windows), constraints, resolved
@@ -530,28 +676,15 @@ def build_window_graph_measurements(
     scales = relative_scales * depth_normalizer
     local_edges: list[RelativePoseMeasurement] = []
     loop_edges: list[RelativePoseMeasurement] = []
-    rejected_loops: list[RejectedLoopMeasurement] = []
     potential_local_edge_ids: list[str] = []
     accepted_local_edge_ids: list[str] = []
-    potential_loop_edge_ids: list[str] = []
     accepted_loop_edge_ids: list[str] = []
     for window_index, window in enumerate(windows):
         frames = tuple(int(frame) for frame in window.prediction.keyframe_indices)
         if window.kind == "local":
             pairs = [(position, position + 1) for position in range(len(frames) - 1)]
         else:
-            eligible = [
-                (source, target)
-                for source in range(len(frames))
-                for target in range(source + 1, len(frames))
-                if abs(node_lookup[frames[target]] - node_lookup[frames[source]])
-                >= resolved.min_loop_node_gap
-            ]
-            pairs = (
-                [max(eligible, key=lambda pair: abs(frames[pair[1]] - frames[pair[0]]))]
-                if eligible
-                else []
-            )
+            pairs = [accepted_loop_pairs[window.window_id]]
         if not pairs:
             continue
         per_edge_normalizer = float(len(pairs))
@@ -561,112 +694,14 @@ def build_window_graph_measurements(
             structural_edge_id = _edge_id(
                 window.kind, window.window_id, source_frame, target_frame
             )
-            (
-                potential_local_edge_ids
-                if window.kind == "local"
-                else potential_loop_edge_ids
-            ).append(structural_edge_id)
-            evidence_confidence = np.sqrt(
-                _frame_quality(window.prediction, source_position)
-                * _frame_quality(window.prediction, target_position)
-            ) / per_edge_normalizer
-            appearance = window.appearance_evidence
-            if window.kind == "loop" and resolved.require_appearance_support:
-                reason = None
-                if appearance is None:
-                    reason = "missing_appearance_evidence"
-                elif (
-                    appearance.source_frame != source_frame
-                    or appearance.target_frame != target_frame
-                ):
-                    reason = "appearance_frame_pair_mismatch"
-                elif appearance.status != "ok":
-                    reason = f"appearance_{appearance.status}"
-                elif appearance.ratio_matches < resolved.min_appearance_ratio_matches:
-                    reason = "insufficient_appearance_ratio_matches"
-                elif appearance.inliers < resolved.min_appearance_inliers:
-                    reason = "insufficient_appearance_inliers"
-                elif appearance.inlier_ratio < resolved.min_appearance_inlier_ratio:
-                    reason = "insufficient_appearance_inlier_ratio"
-                elif (
-                    appearance.spatial_coverage
-                    < resolved.min_appearance_spatial_coverage
-                ):
-                    reason = "insufficient_appearance_spatial_coverage"
-                if reason is not None:
-                    rejected_loops.append(
-                        RejectedLoopMeasurement(
-                            window_id=window.window_id,
-                            source_frame=source_frame,
-                            target_frame=target_frame,
-                            reason=reason,
-                            overlap=0.0,
-                            comparable_fraction=0.0,
-                            valid_pixels=0,
-                            appearance_ratio_matches=(
-                                appearance.ratio_matches if appearance else 0
-                            ),
-                            appearance_inliers=(appearance.inliers if appearance else 0),
-                            appearance_inlier_ratio=(
-                                appearance.inlier_ratio if appearance else 0.0
-                            ),
-                            appearance_spatial_coverage=(
-                                appearance.spatial_coverage if appearance else 0.0
-                            ),
-                        )
-                    )
+            if window.kind == "local":
+                potential_local_edge_ids.append(structural_edge_id)
+                evidence_confidence = np.sqrt(
+                    _frame_quality(window.prediction, source_position)
+                    * _frame_quality(window.prediction, target_position)
+                ) / per_edge_normalizer
+                if evidence_confidence <= 0 or not np.isfinite(evidence_confidence):
                     continue
-                evidence_confidence *= np.sqrt(
-                    appearance.inlier_ratio * appearance.spatial_coverage
-                )
-            if window.kind == "loop" and resolved.require_reobservation_support:
-                support = score_pair(
-                    window.prediction,
-                    source_position,
-                    target_position,
-                    ScorerConfig(
-                        local_offsets=(1,),
-                        min_long_range_gap=2,
-                        confidence_quantile=resolved.confidence_quantile,
-                        confidence_evidence_floor=resolved.confidence_evidence_floor,
-                        min_pair_overlap=resolved.min_loop_overlap,
-                        min_long_range_overlap=resolved.min_loop_overlap,
-                        min_valid_pixels=resolved.min_loop_valid_pixels,
-                        min_comparable_fraction=resolved.min_loop_comparable_fraction,
-                        min_valid_local_fraction=0.0,
-                        min_valid_long_range_fraction=0.0,
-                        require_long_range=False,
-                    ),
-                )
-                if support.status != "ok":
-                    rejected_loops.append(
-                        RejectedLoopMeasurement(
-                            window_id=window.window_id,
-                            source_frame=source_frame,
-                            target_frame=target_frame,
-                            reason=support.status,
-                            overlap=support.overlap,
-                            comparable_fraction=support.comparable_fraction,
-                            valid_pixels=support.valid_pixels,
-                            appearance_ratio_matches=(
-                                appearance.ratio_matches if appearance else 0
-                            ),
-                            appearance_inliers=(appearance.inliers if appearance else 0),
-                            appearance_inlier_ratio=(
-                                appearance.inlier_ratio if appearance else 0.0
-                            ),
-                            appearance_spatial_coverage=(
-                                appearance.spatial_coverage if appearance else 0.0
-                            ),
-                        )
-                    )
-                    continue
-                evidence_confidence *= np.sqrt(
-                    max(support.overlap, 0.0)
-                    * max(support.comparable_fraction, 0.0)
-                )
-            if evidence_confidence <= 0 or not np.isfinite(evidence_confidence):
-                continue
             edge = RelativePoseMeasurement(
                 source=node_lookup[source_frame],
                 target=node_lookup[target_frame],
