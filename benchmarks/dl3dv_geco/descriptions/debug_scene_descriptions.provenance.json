@@ -1,0 +1,9 @@
+{
+  "schema": "dl3dv-scene-descriptions-v1",
+  "description_file": "debug_scene_descriptions.json",
+  "source": "VideoGPA dl3dv_video_captions/captions_1K.json",
+  "source_url": "https://github.com/Hongyang-Du/VideoGPA/blob/main/dl3dv_video_captions/captions_1K.json",
+  "source_sha256": "e965cc30e05c89cfa6bc6a591c0547073b68ee3c62b3138519538f76a51c2d4e",
+  "editing_policy": "Scene content only; all caption-implied motion and temporal events were removed. Camera motion is generated exclusively from DL3DV ground-truth poses.",
+  "review_status": "manually reviewed"
+}

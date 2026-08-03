@@ -71,6 +71,11 @@ def main() -> None:
     parser.add_argument("--validation-count", type=int, default=100)
     parser.add_argument("--debug-count", type=int, default=3)
     parser.add_argument(
+        "--preserve-source-splits",
+        action="store_true",
+        help="Preserve split and split_order already frozen in the source manifest.",
+    )
+    parser.add_argument(
         "--allow-nonstandard-counts",
         action="store_true",
         help="Create a debug-only protocol instead of the formal 3/100/100 split.",
@@ -100,6 +105,16 @@ def main() -> None:
     source = json.loads(source_path.read_text(encoding="utf-8"))
     if not isinstance(source, dict):
         raise TypeError("source manifest must be a mapping")
+    source_cases = [case for key, case in source.items() if not key.startswith("_")]
+    carries_frozen_assignments = any(
+        isinstance(case, dict) and ("split" in case or "split_order" in case)
+        for case in source_cases
+    )
+    if carries_frozen_assignments and not args.preserve_source_splits:
+        raise ValueError(
+            "source manifest already carries frozen split assignments; "
+            "--preserve-source-splits is required to prevent silent reallocation"
+        )
 
     prepared = []
     scene_uids: set[str] = set()
@@ -155,21 +170,46 @@ def main() -> None:
         )
         prepared.append((case_id, case))
 
-    if len(prepared) < required_count:
-        raise ValueError(f"need {required_count} scene-disjoint cases, found {len(prepared)}")
-    selected = stratified_order(prepared, args.split_seed)[:required_count]
-    boundaries = (
-        ("test", 0, args.test_count),
-        ("validation", args.test_count, args.test_count + args.validation_count),
-        ("debug", args.test_count + args.validation_count, required_count),
-    )
     split_cases: dict[str, dict] = {}
-    for split, start, end in boundaries:
-        for order_in_split, (case_id, case) in enumerate(selected[start:end]):
-            case = dict(case)
-            case["split"] = split
-            case["split_order"] = order_in_split
-            split_cases[case_id] = case
+    if args.preserve_source_splits:
+        if len(prepared) != required_count:
+            raise ValueError(
+                f"preserved split requires exactly {required_count} cases, found {len(prepared)}"
+            )
+        for case_id, case in prepared:
+            split = case.get("split")
+            order_in_split = case.get("split_order")
+            if split not in requested_counts or not isinstance(order_in_split, int):
+                raise ValueError(f"source case {case_id} lacks a valid frozen split/order")
+            split_cases[case_id] = dict(case)
+        actual_counts = Counter(case["split"] for case in split_cases.values())
+        if dict(actual_counts) != {k: v for k, v in requested_counts.items() if v > 0}:
+            raise ValueError(
+                f"source split counts differ from requested counts: {dict(actual_counts)}"
+            )
+        for split, count in requested_counts.items():
+            orders = sorted(
+                case["split_order"]
+                for case in split_cases.values()
+                if case["split"] == split
+            )
+            if orders != list(range(count)):
+                raise ValueError(f"source split_order is incomplete or duplicated for {split}")
+    else:
+        if len(prepared) < required_count:
+            raise ValueError(f"need {required_count} scene-disjoint cases, found {len(prepared)}")
+        selected = stratified_order(prepared, args.split_seed)[:required_count]
+        boundaries = (
+            ("test", 0, args.test_count),
+            ("validation", args.test_count, args.test_count + args.validation_count),
+            ("debug", args.test_count + args.validation_count, required_count),
+        )
+        for split, start, end in boundaries:
+            for order_in_split, (case_id, case) in enumerate(selected[start:end]):
+                case = dict(case)
+                case["split"] = split
+                case["split_order"] = order_in_split
+                split_cases[case_id] = case
 
     split_counts = Counter(case["split"] for case in split_cases.values())
     motion_counts = {
@@ -193,7 +233,11 @@ def main() -> None:
             "source_manifest_sha256": sha256_file(source_path),
             "dataset_root_at_freeze": str(dataset_root),
             "split_seed": args.split_seed,
-            "split_algorithm": "motion-stratified round robin; sha256 within each family",
+            "split_algorithm": (
+                "preserved from frozen source assignments"
+                if args.preserve_source_splits
+                else "motion-stratified round robin; sha256 within each family"
+            ),
             "split_counts": dict(split_counts),
             "motion_counts": motion_counts,
             "scene_disjoint": True,

@@ -36,31 +36,57 @@ from DL3DV camera poses.
 
 ## Build a manifest
 
+Download and validate the frozen scenes on Hippasus first. The downloader pins
+the Hugging Face dataset commit and split checksum, validates every referenced
+PNG, and can be resumed safely:
+
 ```bash
-python benchmarks/dl3dv_geco/build_manifest.py \
-  --roots /path/to/DL3DV/1K \
-  --output benchmarks/dl3dv_geco/manifests/dl3dv_1k_dev.json \
-  --pose-window 121 \
-  --start-stride 24 \
-  --max-clips 240 \
-  --max-per-scene 1 \
-  --large-motion-quantile 0.65
+bash benchmarks/dl3dv_geco/download_on_hippasus.sh debug validation
 ```
 
-The formal protocol uses 3 debug scenes, 100 validation scenes, and 100
-held-out test scenes. Build an eligible pool with at least 203 scene-disjoint
-cases, then freeze a deterministic split before method development:
+Prompt/trajectory manifests are built on Hippasus from the downloaded
+`transforms.json` files. Only the frozen experiment package is then copied to
+Isambard for video generation.
+
+The scene split is already frozen in
+`splits/frozen_scene_split_3_100_100.csv`. Build one GT-grounded trajectory per
+requested scene without reallocating scenes between splits:
+
+```bash
+python benchmarks/dl3dv_geco/build_manifest.py \
+  --roots /vol/dissolve/yz10325/datasets/dl3dv-1k/480P/1K \
+  --frozen-split-csv benchmarks/dl3dv_geco/splits/frozen_scene_split_3_100_100.csv \
+  --splits validation \
+  --scene-descriptions-json /path/to/reviewed_validation_descriptions.json \
+  --output /path/to/dl3dv_validation_manifest_480p.json \
+  --pose-window 81 \
+  --start-stride 8
+```
+
+Download only debug and validation during development. Download and build the
+100 held-out test scenes only after the method code and configuration are
+frozen. The builder fails if any requested scene lacks an eligible large-motion
+trajectory; it never substitutes a scene from another split.
+
+The builder output is a reviewed trajectory source, not yet the immutable
+formal protocol. `extract_conditioning_frames.py` creates one transferable
+scene directory containing the selected 960P frame and its matching
+`transforms.json`. After the method, test inputs, model lock, and all 203 cases
+are frozen, create the formal protocol without reallocating any scene:
 
 ```bash
 python benchmarks/dl3dv_geco/freeze_protocol_split.py \
-  --source-manifest /path/to/eligible_cases.json \
-  --dataset-root /path/to/DL3DV/1K \
-  --output /path/to/dl3dv_geometry_protocol.json \
-  --split-seed 20260803 \
-  --test-count 100 \
-  --validation-count 100 \
-  --debug-count 3
+  --source-manifest /path/to/all_203_packaged_cases.json \
+  --dataset-root /path/to/transferable_dl3dv_package \
+  --model-lock /path/to/model_lock.json \
+  --preserve-source-splits \
+  --output /path/to/dl3dv_formal_protocol.json
 ```
+
+This final step converts absolute preparation paths to dataset-relative paths,
+binds image/transform hashes and the model lock, and emits the schema consumed
+by frozen generation jobs. Validation development must not be described as the
+formal test protocol before this step is complete.
 
 Debug cases are used only for correctness, runtime, memory, and qualitative
 sanity checks. The validation set is used for all method and hyperparameter

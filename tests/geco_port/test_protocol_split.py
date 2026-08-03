@@ -33,9 +33,8 @@ def build_source(tmp_path: Path, count: int = 8) -> tuple[Path, Path]:
     return source, dataset
 
 
-def run_split(source: Path, dataset: Path, output: Path) -> dict:
-    subprocess.run(
-        [
+def run_split(source: Path, dataset: Path, output: Path, preserve: bool = False) -> dict:
+    command = [
             sys.executable,
             str(SCRIPT),
             "--source-manifest",
@@ -53,7 +52,11 @@ def run_split(source: Path, dataset: Path, output: Path) -> dict:
             "--debug-count",
             "2",
             "--allow-nonstandard-counts",
-        ],
+        ]
+    if preserve:
+        command.append("--preserve-source-splits")
+    subprocess.run(
+        command,
         check=True,
         capture_output=True,
         text=True,
@@ -193,3 +196,108 @@ def test_scene_uid_is_stable_when_transforms_serialization_changes(tmp_path: Pat
         if not key.startswith("_")
     }
     assert first_uid == second_uid
+
+
+def test_preserve_source_splits_keeps_exact_assignments(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path, count=6)
+    payload = json.loads(source.read_text())
+    assignments = [
+        ("validation", 0),
+        ("validation", 1),
+        ("debug", 0),
+        ("debug", 1),
+        ("test", 0),
+        ("test", 1),
+    ]
+    for key, assignment in zip(
+        [key for key in payload if not key.startswith("_")], assignments, strict=True
+    ):
+        payload[key]["split"], payload[key]["split_order"] = assignment
+    source.write_text(json.dumps(payload))
+    result = run_split(source, dataset, tmp_path / "preserved.json", preserve=True)
+    actual = {
+        key: (case["split"], case["split_order"])
+        for key, case in result.items()
+        if not key.startswith("_")
+    }
+    assert actual == {
+        f"case_{index:02d}": assignment
+        for index, assignment in enumerate(assignments)
+    }
+    assert result["_meta"]["split_algorithm"] == "preserved from frozen source assignments"
+
+
+def test_preserve_source_splits_rejects_duplicate_order(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path, count=6)
+    payload = json.loads(source.read_text())
+    assignments = [
+        ("validation", 0),
+        ("validation", 0),
+        ("debug", 0),
+        ("debug", 1),
+        ("test", 0),
+        ("test", 1),
+    ]
+    for key, assignment in zip(
+        [key for key in payload if not key.startswith("_")], assignments, strict=True
+    ):
+        payload[key]["split"], payload[key]["split_order"] = assignment
+    source.write_text(json.dumps(payload))
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--source-manifest",
+            str(source),
+            "--dataset-root",
+            str(dataset),
+            "--output",
+            str(tmp_path / "invalid.json"),
+            "--test-count",
+            "2",
+            "--validation-count",
+            "2",
+            "--debug-count",
+            "2",
+            "--allow-nonstandard-counts",
+            "--preserve-source-splits",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "split_order" in completed.stderr
+
+
+def test_source_assignments_cannot_be_silently_reallocated(tmp_path: Path) -> None:
+    source, dataset = build_source(tmp_path, count=6)
+    payload = json.loads(source.read_text())
+    for index, case in enumerate(
+        [case for key, case in payload.items() if not key.startswith("_")]
+    ):
+        case["split"] = ("test", "validation", "debug")[index % 3]
+        case["split_order"] = index // 3
+    source.write_text(json.dumps(payload))
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--source-manifest",
+            str(source),
+            "--dataset-root",
+            str(dataset),
+            "--output",
+            str(tmp_path / "reallocated.json"),
+            "--test-count",
+            "2",
+            "--validation-count",
+            "2",
+            "--debug-count",
+            "2",
+            "--allow-nonstandard-counts",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "--preserve-source-splits is required" in completed.stderr
