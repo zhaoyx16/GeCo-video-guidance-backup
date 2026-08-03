@@ -591,6 +591,7 @@ def _common_comparable_scores(
 
     if score_kind == "pose_graph":
         evidence_fields = (
+            "window_scale_ids",
             "potential_local_edge_ids",
             "accepted_local_edge_ids",
             "potential_loop_edge_ids",

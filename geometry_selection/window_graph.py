@@ -57,6 +57,7 @@ class IndependentWindow:
 
 @dataclass(frozen=True)
 class WindowGraphConfig:
+    use_loop_edges: bool = True
     min_shared_frames_for_scale: int = 2
     confidence_quantile: float = 0.20
     confidence_evidence_floor: float = 1e-3
@@ -79,6 +80,10 @@ class WindowGraphConfig:
     require_loop_edges: bool = True
 
     def validate(self) -> None:
+        if not isinstance(self.use_loop_edges, bool):
+            raise TypeError("use_loop_edges must be boolean")
+        if self.require_loop_edges and not self.use_loop_edges:
+            raise ValueError("require_loop_edges cannot be true when use_loop_edges is false")
         if self.min_shared_frames_for_scale < 1:
             raise ValueError("min_shared_frames_for_scale must be positive")
         if not 0.0 <= self.confidence_quantile <= 1.0:
@@ -137,6 +142,7 @@ class WindowGraphMeasurements:
     initial_world_from_camera: np.ndarray
     local_measurements: tuple[RelativePoseMeasurement, ...]
     loop_measurements: tuple[RelativePoseMeasurement, ...]
+    window_scale_ids: tuple[str, ...]
     window_scales: tuple[float, ...]
     scale_constraints: tuple[WindowScaleConstraint, ...]
     scale_residual_rms: float
@@ -474,6 +480,8 @@ def build_window_graph_measurements(
 ) -> WindowGraphMeasurements:
     resolved = config or WindowGraphConfig()
     resolved.validate()
+    if not resolved.use_loop_edges:
+        windows = tuple(window for window in windows if window.kind == "local")
     if len(windows) < 2:
         raise ValueError("at least two independent windows are required")
     for window in windows:
@@ -486,6 +494,9 @@ def build_window_graph_measurements(
     # A canonical order makes the scale gauge and every reported diagnostic
     # invariant to caller-provided sequence order.
     windows = tuple(sorted(windows, key=lambda item: (item.kind != "local", item.window_id)))
+    # Filtering above validation makes local-only scoring independent of both
+    # loop predictions and loop-cache failures, while one complete cache can
+    # still serve both ablations.
     local_windows = [window for window in windows if window.kind == "local"]
     loop_windows = [window for window in windows if window.kind == "loop"]
     if not local_windows:
@@ -695,6 +706,7 @@ def build_window_graph_measurements(
         initial_world_from_camera=initial,
         local_measurements=tuple(local_edges),
         loop_measurements=tuple(loop_edges),
+        window_scale_ids=tuple(window.window_id for window in windows),
         window_scales=tuple(float(value) for value in scales),
         scale_constraints=constraints,
         scale_residual_rms=scale_rms,

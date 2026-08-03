@@ -119,6 +119,57 @@ def test_inconsistent_independent_loop_leaves_graph_residual() -> None:
     assert report.loop_residual_rms > 1e-3
 
 
+def test_local_only_ablation_ignores_loop_windows_completely() -> None:
+    local = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=1.0),
+        _window("local-b", "local", (2, 3, 4, 5), scale=2.0),
+    )
+    good_loop = _window("loop-a", "loop", (0, 1, 4, 5), scale=0.5)
+    bad_loop = _window("loop-a", "loop", (0, 1, 4, 5), scale=7.0, noise=0.8)
+    config = WindowGraphConfig(
+        use_loop_edges=False,
+        require_loop_edges=False,
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+    )
+
+    first = build_window_graph_measurements(local + (good_loop,), config)
+    second = build_window_graph_measurements(local + (bad_loop,), config)
+
+    assert not first.loop_measurements
+    assert first.potential_loop_edges == 0
+    assert first.rejected_loop_edges == ()
+    assert first.window_scale_ids == ("local-a", "local-b")
+    np.testing.assert_allclose(first.window_scales, second.window_scales)
+    assert first.candidate_depth_normalizer == second.candidate_depth_normalizer
+    assert first.potential_scale_constraint_ids == second.potential_scale_constraint_ids
+    assert first.accepted_scale_constraint_ids == second.accepted_scale_constraint_ids
+    for first_edge, second_edge in zip(
+        first.local_measurements, second.local_measurements, strict=True
+    ):
+        np.testing.assert_allclose(
+            first_edge.target_from_source,
+            second_edge.target_from_source,
+        )
+        assert first_edge.provenance == second_edge.provenance
+        assert first_edge.confidence == second_edge.confidence
+
+    malformed_loop = IndependentWindow(
+        window_id="loop-malformed",
+        kind="loop",
+        prediction=good_loop.prediction,
+        independent_run_id="run-local-a",
+    )
+    ignored = build_window_graph_measurements(local + (malformed_loop,), config)
+    assert ignored.window_scale_ids == first.window_scale_ids
+    np.testing.assert_allclose(ignored.window_scales, first.window_scales)
+
+
+def test_loop_requirement_cannot_be_enabled_for_local_only_ablation() -> None:
+    with pytest.raises(ValueError, match="require_loop_edges"):
+        WindowGraphConfig(use_loop_edges=False, require_loop_edges=True).validate()
+
+
 def test_window_scale_graph_must_be_connected() -> None:
     windows = (
         _window("local-a", "local", (0, 1, 2, 3), scale=1.0),

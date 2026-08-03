@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -25,6 +26,18 @@ from geometry_selection.selection import (
     select_candidate,
 )
 from geometry_selection.window_bundle import WINDOW_EXTRACTION_MODE, make_window_bundle
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    sorted(
+        (Path(__file__).resolve().parents[2] / "configs" / "geometry_selection").glob(
+            "*.yaml"
+        )
+    ),
+)
+def test_repository_ranking_config_templates_are_parseable(config_path: Path) -> None:
+    load_offline_ranking_config(config_path)
 
 
 def report(score: float, motion: float, status: str = "ok") -> GeometryScoreReport:

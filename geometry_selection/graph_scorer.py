@@ -190,6 +190,7 @@ def score_window_pose_graph(
             for key, value in asdict(optimized).items()
             if key != "optimized_world_from_camera"
         },
+        "window_scale_ids": list(measurements.window_scale_ids),
         "window_scales": list(measurements.window_scales),
         "candidate_depth_normalizer": measurements.candidate_depth_normalizer,
         "scale_residual_rms": measurements.scale_residual_rms,

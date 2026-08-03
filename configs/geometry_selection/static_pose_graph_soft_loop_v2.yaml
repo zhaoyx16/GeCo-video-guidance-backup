@@ -1,6 +1,6 @@
 schema_version: 2
-method_version: offline_reprojection_ranking_v1
-experiment_name: static_vggt_omega_ranking
+method_version: independent_window_pose_graph_soft_loop_v2
+experiment_name: static_vggt_omega_pose_graph_soft_loop
 candidate_manifest: /path/to/candidate_pool.json
 protocol_manifest: /path/to/frozen_protocol.json
 model_lock: /path/to/model_lock.json
@@ -11,9 +11,9 @@ geometry_cache_root: /path/to/geometry_cache
 geometry_checkpoint_sha256: c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934
 geometry_source_tree_sha256: 10e6b2ef6d80166b1de64fb676d8ce8d93228198dbf5baa3e68af9e351857f57
 geometry_source_commit: 39a0cb8af88554f15ddcb5354cd52bde588fa014
-output_root: /path/to/results
+output_root: /path/to/results/soft_loop
 expected_split: validation
-score_mode: direct_reprojection
+score_mode: pose_graph
 
 score:
   local_offsets: [1, 2]
@@ -38,6 +38,7 @@ score:
 
 graph_score:
   window:
+    use_loop_edges: true
     min_shared_frames_for_scale: 2
     confidence_quantile: 0.20
     confidence_evidence_floor: 0.001
@@ -52,10 +53,15 @@ graph_score:
     min_loop_overlap: 0.15
     min_loop_comparable_fraction: 0.05
     min_loop_valid_pixels: 64
-    require_loop_edges: true
+    require_appearance_support: true
+    min_appearance_ratio_matches: 16
+    min_appearance_inliers: 12
+    min_appearance_inlier_ratio: 0.30
+    min_appearance_spatial_coverage: 0.10
+    require_loop_edges: false
   optimizer:
     translation_scale: 1.0
-    rotation_scale: 1.0
+    rotation_scale: 0.1745329252
     huber_delta: 1.0
     loop_switch_prior: 1.0
     use_switchable_loops: true
@@ -69,6 +75,8 @@ graph_score:
     min_effective_edge_weight: 0.000001
   switch_penalty_weight: 0.25
   missing_loop_penalty_weight: 0.25
+  missing_local_penalty_weight: 0.25
+  missing_scale_penalty_weight: 0.10
   scale_residual_weight: 0.10
   require_convergence: true
 
@@ -81,11 +89,11 @@ selection:
   max_net_translation_ratio: 1.33
   min_rotation_ratio: 0.50
   max_rotation_ratio: 2.00
-  min_shared_comparable_fraction: 0.05
+  min_shared_comparable_fraction: 0.02
   min_support_ratio: 0.50
   edge_huber_delta: 0.10
   retain_unguided_incumbent: true
   min_common_local_edges: 4
-  min_common_long_range_edges: 2
-  require_common_long_range: true
+  min_common_long_range_edges: 0
+  require_common_long_range: false
   random_control_seed: 0

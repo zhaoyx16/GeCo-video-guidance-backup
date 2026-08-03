@@ -46,7 +46,7 @@ graph_score:
     min_camera_baseline: 0.0001
     scale_huber_delta: 0.10
     scale_max_iterations: 20
-    scale_tolerance: 1.0e-9
+    scale_tolerance: 0.000000001
     min_loop_node_gap: 3
     require_reobservation_support: true
     min_loop_overlap: 0.15
@@ -65,13 +65,13 @@ graph_score:
     loop_switch_prior: 1.0
     use_switchable_loops: true
     max_iterations: 40
-    finite_difference_epsilon: 1.0e-6
-    step_tolerance: 1.0e-8
-    cost_tolerance: 1.0e-10
-    initial_damping: 1.0e-5
-    condition_threshold: 1.0e12
-    rank_tolerance: 1.0e-9
-    min_effective_edge_weight: 1.0e-6
+    finite_difference_epsilon: 0.000001
+    step_tolerance: 0.00000001
+    cost_tolerance: 0.0000000001
+    initial_damping: 0.00001
+    condition_threshold: 1000000000000.0
+    rank_tolerance: 0.000000001
+    min_effective_edge_weight: 0.000001
   switch_penalty_weight: 0.25
   missing_loop_penalty_weight: 0.25
   missing_local_penalty_weight: 0.25

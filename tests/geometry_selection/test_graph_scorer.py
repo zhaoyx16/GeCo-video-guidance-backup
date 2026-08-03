@@ -87,6 +87,35 @@ def test_graph_scorer_prefers_consistent_independent_windows() -> None:
     assert consistent.score_kind == "pose_graph"
 
 
+def test_local_only_graph_score_is_independent_of_loop_prediction() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    config = GraphScoreConfig(
+        window=WindowGraphConfig(
+            use_loop_edges=False,
+            require_loop_edges=False,
+            min_depth_scale_pixels=2,
+            depth_sample_stride=2,
+        ),
+        missing_loop_penalty_weight=0.0,
+    )
+    first = score_window_pose_graph(
+        global_prediction,
+        _windows(0.0),
+        graph_config=config,
+    )
+    second = score_window_pose_graph(
+        global_prediction,
+        _windows(0.8),
+        graph_config=config,
+    )
+
+    assert first.status == second.status == "ok_pose_graph"
+    assert first.total_score == second.total_score
+    assert first.long_range_score is None
+    assert first.graph_diagnostics["window_scale_ids"] == ["local-a", "local-b"]
+    assert first.graph_diagnostics["potential_loop_edge_ids"] == []
+
+
 def test_candidate_selection_uses_normalized_graph_score() -> None:
     global_prediction = _prediction((0, 1, 2, 3, 4, 5))
     worse = score_window_pose_graph(global_prediction, _windows(0.20), graph_config=_config())
