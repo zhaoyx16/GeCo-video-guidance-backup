@@ -1,0 +1,30 @@
+schema_version: 1
+method_version: offline_reprojection_ranking_v1
+experiment_name: static_vggt_omega_ranking
+candidate_manifest: /path/to/candidate_pool.json
+geometry_cache_root: /path/to/geometry_cache
+output_root: /path/to/results
+expected_split: validation
+
+score:
+  local_offsets: [1, 2]
+  min_long_range_gap: 3
+  confidence_quantile: 0.20
+  depth_edge_relative_threshold: 0.10
+  occlusion_relative_tolerance: 0.05
+  min_pair_overlap: 0.05
+  min_long_range_overlap: 0.15
+  min_valid_pixels: 64
+  pixel_stride: 4
+  huber_delta: 0.05
+  cycle_weight: 0.25
+  local_weight: 1.0
+  long_range_weight: 0.5
+  require_long_range: false
+
+selection:
+  abstain: true
+  min_relative_improvement: 0.01
+  min_motion_ratio: 0.80
+  max_motion_ratio: 1.25
+  retain_unguided_incumbent: true

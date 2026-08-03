@@ -47,6 +47,7 @@ def test_perfect_geometry_scores_near_zero(plane_prediction: GeometryPrediction)
     assert report.valid_local_edges > 0
     assert report.valid_long_range_edges > 0
     assert report.total_score < 1e-6
+    assert report.normalized_camera_motion > 0
 
 
 def test_wrong_pose_and_wrong_depth_rank_after_correct_candidate(

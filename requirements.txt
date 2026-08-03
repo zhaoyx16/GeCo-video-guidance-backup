@@ -4,3 +4,4 @@ einops
 safetensors
 tqdm
 imageio[ffmpeg]
+PyYAML

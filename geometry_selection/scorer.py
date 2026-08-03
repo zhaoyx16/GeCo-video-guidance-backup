@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -82,6 +83,7 @@ class GeometryScoreReport:
     local_score: float | None
     long_range_score: float | None
     camera_path_length: float
+    normalized_camera_motion: float
     valid_local_edges: int
     valid_long_range_edges: int
     status: str
@@ -92,7 +94,20 @@ class GeometryScoreReport:
         payload = asdict(self)
         payload["pairs"] = [asdict(pair) for pair in self.pairs]
         payload["config"] = asdict(self.config)
-        return payload
+        return _json_safe(payload)
+
+
+def _json_safe(value: Any) -> Any:
+    """Map non-finite diagnostics to null so results remain strict JSON."""
+
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (float, np.floating)):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+    return value
 
 
 def _confidence_mask(confidence: np.ndarray, quantile: float) -> np.ndarray:
@@ -393,11 +408,14 @@ def score_geometry(
 
     centers = camera_centers(prediction.world_to_camera)
     camera_path_length = float(np.linalg.norm(np.diff(centers, axis=0), axis=1).sum())
+    median_depth = float(np.median(prediction.depth[np.isfinite(prediction.depth)]))
+    normalized_camera_motion = camera_path_length / max(median_depth, 1e-8)
     return GeometryScoreReport(
         total_score=float(total),
         local_score=local_score,
         long_range_score=long_score,
         camera_path_length=camera_path_length,
+        normalized_camera_motion=normalized_camera_motion,
         valid_local_edges=sum(pair.status == "ok" for pair in local_pairs),
         valid_long_range_edges=sum(pair.status == "ok" for pair in long_pairs),
         status=status,
