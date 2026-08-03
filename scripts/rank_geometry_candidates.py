@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from geometry_selection.cache import load_geometry_cache, load_geometry_cache_metadata
+from geometry_selection.appearance import AppearanceEvidence
 from geometry_selection.config import load_offline_ranking_config, write_resolved_config
 from geometry_selection.protocol import (
     FORMAL_SPLIT_COUNTS,
@@ -25,8 +26,10 @@ from geometry_selection.protocol import (
     validate_committed_file,
     validate_experiment_lock,
     validate_formal_protocol,
+    validate_implementation_commit,
 )
 from geometry_selection.model_lock import load_model_lock
+from geometry_selection.pool_lock import validate_candidate_pool_lock
 from geometry_selection.graph_scorer import score_window_pose_graph
 from geometry_selection.scorer import score_geometry
 from geometry_selection.selection import (
@@ -37,6 +40,7 @@ from geometry_selection.selection import (
     select_candidate,
 )
 from geometry_selection.window_bundle import (
+    validate_global_prediction_bundle,
     validate_window_bundle,
     validate_window_cache_record,
 )
@@ -69,6 +73,7 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--debug-skip-video-hash-verification", action="store_true")
+    parser.add_argument("--candidate-pool-lock", type=Path)
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -96,6 +101,10 @@ def main() -> None:
     formal = args.artifact_mode == "formal"
     if formal and args.debug_skip_video_hash_verification:
         parser.error("formal ranking cannot skip candidate video hash verification")
+    if formal and args.candidate_pool_lock is None:
+        parser.error("formal ranking requires --candidate-pool-lock")
+    if not formal and args.candidate_pool_lock is not None:
+        parser.error("candidate-pool lock is only valid in formal mode")
     if formal:
         validate_committed_file(config_path, REPO_ROOT, code["commit"])
         validate_committed_file(protocol_manifest, REPO_ROOT, code["commit"])
@@ -143,6 +152,35 @@ def main() -> None:
         verify_video_hashes=formal,
         expected_case_count=FORMAL_SPLIT_COUNTS[config.expected_split] if formal else None,
     )
+    if pool["artifact_mode"] != args.artifact_mode:
+        raise ValueError(
+            "candidate pool artifact_mode must exactly match the ranking CLI mode"
+        )
+    if formal:
+        candidate_pool_lock_path = args.candidate_pool_lock.resolve()
+        candidate_pool_lock = validate_candidate_pool_lock(
+            candidate_pool_lock_path,
+            REPO_ROOT,
+            code["commit"],
+            pool_path=candidate_manifest,
+            cache_root=geometry_cache_root,
+        )
+        if candidate_pool_lock["implementation_sha256"] != implementation_sha256:
+            raise ValueError("candidate pool lock implementation differs from experiment lock")
+        if candidate_pool_lock["experiment_lock_sha256"] != experiment_lock_sha256:
+            raise ValueError("candidate pool lock used a different experiment lock")
+        pool_preparation_commit = candidate_pool_lock["preparation_commit"]
+        validate_implementation_commit(
+            REPO_ROOT,
+            pool_preparation_commit,
+            code["commit"],
+            implementation_sha256,
+        )
+        candidate_pool_lock_sha256 = protocol_file_sha256(candidate_pool_lock_path)
+    else:
+        candidate_pool_lock = None
+        candidate_pool_lock_sha256 = None
+        pool_preparation_commit = code["commit"]
     validate_candidate_pool_against_protocol(
         pool,
         protocol_manifest,
@@ -150,7 +188,7 @@ def main() -> None:
         formal=formal,
         model_lock=model_lock,
         experiment_lock_sha256=experiment_lock_sha256,
-        expected_git_commit=code["commit"] if formal else None,
+        expected_git_commit=pool_preparation_commit if formal else None,
         expected_implementation_sha256=implementation_sha256,
     )
 
@@ -163,6 +201,7 @@ def main() -> None:
         "protocol_manifest_sha256": protocol_manifest_sha256,
         "experiment_lock_sha256": experiment_lock_sha256,
         "implementation_sha256": implementation_sha256,
+        "candidate_pool_lock_sha256": candidate_pool_lock_sha256,
     }
     run_id = file_sha256(candidate_manifest)[:12] + "-" + config.config_hash[:12]
     output_root.mkdir(parents=True, exist_ok=True)
@@ -210,7 +249,16 @@ def main() -> None:
             "preparer_sha256": file_sha256(
                 REPO_ROOT / "scripts/prepare_candidate_pool.py"
             ),
-            "commit": code["commit"],
+            "appearance_sha256": file_sha256(
+                REPO_ROOT / "geometry_selection/appearance.py"
+            ),
+            "window_graph_sha256": file_sha256(
+                REPO_ROOT / "geometry_selection/window_graph.py"
+            ),
+            "window_bundle_sha256": file_sha256(
+                REPO_ROOT / "geometry_selection/window_bundle.py"
+            ),
+            "commit": pool_preparation_commit,
             "implementation_sha256": implementation_sha256,
             "experiment_lock_sha256": experiment_lock_sha256,
         }
@@ -250,6 +298,7 @@ def main() -> None:
                     expected_video_sha256=candidate["video_sha256"],
                     expected_global_cache_key=candidate["geometry_cache_key"],
                 )
+                validate_global_prediction_bundle(prediction, bundle)
                 windows = []
                 for record in bundle["windows"]:
                     window_metadata = load_geometry_cache_metadata(
@@ -257,15 +306,16 @@ def main() -> None:
                         record["geometry_cache_key"],
                     )
                     verify_formal_cache(window_metadata)
-                    validate_window_cache_record(
-                        record,
-                        window_metadata,
-                        video_sha256=candidate["video_sha256"],
-                    )
                     window_prediction = load_geometry_cache(
                         geometry_cache_root,
                         record["geometry_cache_key"],
                         expected_video_sha256=candidate["video_sha256"],
+                    )
+                    validate_window_cache_record(
+                        record,
+                        window_metadata,
+                        window_prediction,
+                        video_sha256=candidate["video_sha256"],
                     )
                     windows.append(
                         IndependentWindow(
@@ -273,6 +323,13 @@ def main() -> None:
                             kind=record["kind"],
                             prediction=window_prediction,
                             independent_run_id=record["independent_run_id"],
+                            appearance_evidence=(
+                                AppearanceEvidence.from_dict(
+                                    record["appearance_evidence"]
+                                )
+                                if record["appearance_evidence"] is not None
+                                else None
+                            ),
                         )
                     )
                     verified_window_caches[record["window_id"]] = {
@@ -337,6 +394,7 @@ def main() -> None:
             "video_hashes": formal,
             "expected_git_commit": args.expected_git_commit,
             "protocol_manifest_sha256": protocol_manifest_sha256,
+            "candidate_pool_lock_sha256": candidate_pool_lock_sha256,
         },
         "code": code,
         "config_hash": config.config_hash,

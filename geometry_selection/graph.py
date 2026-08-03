@@ -581,7 +581,9 @@ def optimize_pose_graph(
         if not np.isfinite(step).all():
             break
         if np.linalg.norm(step) < resolved.step_tolerance:
-            converged = True
+            # A tiny damped step is not convergence when the gradient remains
+            # large; it may mean that LM rejected proposals until damping
+            # effectively froze the state.
             break
 
         proposal = _apply_step(states, step)
@@ -642,7 +644,10 @@ def optimize_pose_graph(
 
     evidence_weight = float(
         sum(edge.confidence for edge in local_edges)
-        + sum(edge.confidence for edge in loop_edges)
+        + sum(
+            edge.confidence * switch * switch
+            for edge, switch in zip(loop_edges, switches, strict=True)
+        )
     )
     return PoseGraphReport(
         optimized_world_from_camera=states,

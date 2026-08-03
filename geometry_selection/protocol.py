@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -18,6 +19,22 @@ IMPLEMENTATION_ROOTS = (
     "external/guidance_wan",
     "external/guidance_cosmos",
 )
+LOWERCASE_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _safe_normalized_relative_path(value: Any, field: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty normalized relative path")
+    if "\\" in value:
+        raise ValueError(f"{field} must use normalized POSIX path separators")
+    path = PurePosixPath(value)
+    if path.is_absolute():
+        raise ValueError(f"{field} must be relative")
+    if ".." in path.parts:
+        raise ValueError(f"{field} must not contain '..'")
+    if path.as_posix() != value or path == PurePosixPath("."):
+        raise ValueError(f"{field} must be a normalized relative path")
+    return path
 
 
 def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -51,6 +68,79 @@ def implementation_tree_sha256(repo_root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def implementation_tree_sha256_at_commit(repo_root: Path, commit: str) -> str:
+    """Hash the same implementation source set from a committed Git tree."""
+
+    root = repo_root.resolve()
+    completed = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", commit, "--", *IMPLEMENTATION_ROOTS],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    relatives = sorted(
+        path
+        for path in completed.stdout.splitlines()
+        if path.endswith(".py")
+        and any(
+            path == source_root or path.startswith(f"{source_root}/")
+            for source_root in IMPLEMENTATION_ROOTS
+        )
+    )
+    if not relatives:
+        raise ValueError("committed implementation source set is empty")
+    digest = hashlib.sha256()
+    for relative_value in relatives:
+        relative = relative_value.encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = subprocess.run(
+            ["git", "-C", str(root), "show", f"{commit}:{relative_value}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def validate_implementation_commit(
+    repo_root: Path,
+    preparation_commit: str,
+    ranking_commit: str,
+    expected_implementation_sha256: str,
+) -> None:
+    if (
+        not isinstance(preparation_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", preparation_commit) is None
+    ):
+        raise ValueError("preparation commit must be a full lowercase Git SHA")
+    root = repo_root.resolve()
+    exists = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "-e", f"{preparation_commit}^{{commit}}"],
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        raise ValueError("preparation commit does not exist in the repository")
+    ancestor = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "merge-base",
+            "--is-ancestor",
+            preparation_commit,
+            ranking_commit,
+        ],
+        capture_output=True,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError("preparation commit is not an ancestor of ranking commit")
+    actual = implementation_tree_sha256_at_commit(root, preparation_commit)
+    if actual != expected_implementation_sha256:
+        raise ValueError("preparation commit implementation differs from experiment lock")
 
 
 def load_protocol(path: Path) -> dict[str, Any]:
@@ -87,10 +177,29 @@ def validate_formal_protocol(path: Path) -> dict[str, Any]:
     }
     if actual_counts != FORMAL_SPLIT_COUNTS:
         raise ValueError(f"actual split counts do not match metadata: {actual_counts}")
+    normalized_paths: list[tuple[PurePosixPath, PurePosixPath]] = []
+    for case in cases:
+        image_relative = _safe_normalized_relative_path(
+            case.get("dataset_relative_image"), "dataset_relative_image"
+        )
+        transforms_relative = _safe_normalized_relative_path(
+            case.get("dataset_relative_transforms"), "dataset_relative_transforms"
+        )
+        scene_relative = transforms_relative.parent
+        try:
+            image_within_scene = image_relative.relative_to(scene_relative)
+        except ValueError as error:
+            raise ValueError(
+                "dataset_relative_image must be inside the scene directory "
+                "containing dataset_relative_transforms"
+            ) from error
+        if image_within_scene == PurePosixPath("."):
+            raise ValueError("dataset_relative_image must identify a file within its scene")
+        normalized_paths.append((image_relative, transforms_relative))
     scene_uids = [case["scene_uid"] for case in cases]
     canonical_scene_uids = [
-        f"dl3dv:{Path(case['dataset_relative_transforms']).parent.as_posix()}"
-        for case in cases
+        f"dl3dv:{transforms_relative.parent.as_posix()}"
+        for _, transforms_relative in normalized_paths
     ]
     mismatched_scene_uids = [
         (case["scene_uid"], canonical)
@@ -135,6 +244,15 @@ def resolve_protocol_image(case: dict[str, Any], dataset_root: Path) -> Path:
         image.relative_to(root)
     except ValueError as error:
         raise ValueError("dataset_relative_image escapes dataset_root") from error
+    lexical_scene = (
+        root / Path(case["dataset_relative_transforms"]).parent
+    ).resolve()
+    try:
+        image.relative_to(lexical_scene)
+    except ValueError as error:
+        raise ValueError(
+            "resolved conditioning image escapes its declared scene directory"
+        ) from error
     if not image.is_file():
         raise FileNotFoundError(image)
     if file_sha256(image) != case["image_sha256"]:
@@ -152,6 +270,9 @@ def resolve_protocol_transforms(case: dict[str, Any], dataset_root: Path) -> Pat
         transforms.relative_to(root)
     except ValueError as error:
         raise ValueError("dataset_relative_transforms escapes dataset_root") from error
+    lexical_scene = (root / relative.parent).resolve()
+    if transforms.parent != lexical_scene:
+        raise ValueError("resolved transforms file escapes its declared scene directory")
     if not transforms.is_file():
         raise FileNotFoundError(transforms)
     if file_sha256(transforms) != case["transforms_sha256"]:
@@ -194,6 +315,19 @@ def validate_experiment_lock(
     allowed = lock.get("authorized_ranking_config_hashes")
     if not isinstance(allowed, list) or not allowed:
         raise ValueError("experiment lock contains no authorized ranking configs")
+    invalid_hashes = [
+        value
+        for value in allowed
+        if not isinstance(value, str) or LOWERCASE_SHA256_PATTERN.fullmatch(value) is None
+    ]
+    if invalid_hashes:
+        raise ValueError(
+            "authorized_ranking_config_hashes must contain lowercase SHA-256 digests"
+        )
+    if len(set(allowed)) != len(allowed):
+        raise ValueError("authorized_ranking_config_hashes must be unique")
+    if split == "test" and len(allowed) != 1:
+        raise ValueError("test experiment lock must authorize exactly one ranking config")
     if ranking_config_hash is not None and ranking_config_hash not in allowed:
         raise ValueError(
             f"ranking config {ranking_config_hash} is not authorized for split {split}"

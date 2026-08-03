@@ -18,6 +18,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 
+from .appearance import AppearanceEvidence
 from .graph import RelativePoseMeasurement, invert_se3
 from .projection import camera_centers
 from .schema import GeometryPrediction
@@ -34,6 +35,7 @@ class IndependentWindow:
     kind: Literal["local", "loop"]
     prediction: GeometryPrediction
     independent_run_id: str
+    appearance_evidence: AppearanceEvidence | None = None
 
     def validate(self) -> None:
         if not self.window_id.strip() or not self.independent_run_id.strip():
@@ -41,6 +43,16 @@ class IndependentWindow:
         if self.kind not in {"local", "loop"}:
             raise ValueError("window kind must be 'local' or 'loop'")
         self.prediction.validate()
+        if self.appearance_evidence is not None:
+            if self.kind != "loop":
+                raise ValueError("appearance evidence is only valid for loop windows")
+            self.appearance_evidence.validate()
+            frames = set(int(value) for value in self.prediction.keyframe_indices)
+            if {
+                self.appearance_evidence.source_frame,
+                self.appearance_evidence.target_frame,
+            } - frames:
+                raise ValueError("appearance evidence references frames outside its window")
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,11 @@ class WindowGraphConfig:
     min_loop_overlap: float = 0.15
     min_loop_comparable_fraction: float = 0.05
     min_loop_valid_pixels: int = 64
+    require_appearance_support: bool = True
+    min_appearance_ratio_matches: int = 16
+    min_appearance_inliers: int = 12
+    min_appearance_inlier_ratio: float = 0.30
+    min_appearance_spatial_coverage: float = 0.10
     require_loop_edges: bool = True
 
     def validate(self) -> None:
@@ -82,8 +99,22 @@ class WindowGraphConfig:
                 raise ValueError(f"{name} must be in [0,1]")
         if self.min_loop_valid_pixels < 1:
             raise ValueError("min_loop_valid_pixels must be positive")
-        if not isinstance(self.require_loop_edges, bool) or not isinstance(
-            self.require_reobservation_support, bool
+        if self.min_appearance_ratio_matches < 8 or self.min_appearance_inliers < 8:
+            raise ValueError("appearance match thresholds must be at least eight")
+        for name in (
+            "min_appearance_inlier_ratio",
+            "min_appearance_spatial_coverage",
+        ):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0,1]")
+        if any(
+            not isinstance(value, bool)
+            for value in (
+                self.require_loop_edges,
+                self.require_reobservation_support,
+                self.require_appearance_support,
+            )
         ):
             raise TypeError("loop requirement flags must be boolean")
 
@@ -110,7 +141,16 @@ class WindowGraphMeasurements:
     scale_constraints: tuple[WindowScaleConstraint, ...]
     scale_residual_rms: float
     scale_rank: int
+    candidate_depth_normalizer: float
+    potential_local_edges: int
+    potential_local_edge_ids: tuple[str, ...]
+    accepted_local_edge_ids: tuple[str, ...]
     potential_loop_edges: int
+    potential_loop_edge_ids: tuple[str, ...]
+    accepted_loop_edge_ids: tuple[str, ...]
+    potential_scale_constraints: int
+    potential_scale_constraint_ids: tuple[str, ...]
+    accepted_scale_constraint_ids: tuple[str, ...]
     rejected_loop_edges: tuple["RejectedLoopMeasurement", ...]
 
 
@@ -123,6 +163,10 @@ class RejectedLoopMeasurement:
     overlap: float
     comparable_fraction: float
     valid_pixels: int
+    appearance_ratio_matches: int = 0
+    appearance_inliers: int = 0
+    appearance_inlier_ratio: float = 0.0
+    appearance_spatial_coverage: float = 0.0
 
 
 def _confidence_evidence(confidence: np.ndarray) -> np.ndarray:
@@ -246,18 +290,17 @@ def build_scale_constraints(
                         * _frame_quality(second.prediction, second_positions[frame])
                     )
                 )
-            confidence = float(np.mean(shared_quality)) / max(
-                1.0 + dispersion / config.scale_huber_delta,
-                1.0,
-            )
-            if confidence <= 0 or not np.isfinite(confidence):
+            if not shared_quality or not np.isfinite(dispersion):
                 continue
             constraints.append(
                 WindowScaleConstraint(
                     first_window=first_index,
                     second_window=second_index,
                     log_second_scale_from_first=estimate,
-                    confidence=confidence,
+                    # Acceptance is confidence-gated above.  A fixed weight
+                    # prevents candidates from lowering their graph score by
+                    # merely predicting lower confidence on difficult edges.
+                    confidence=1.0,
                     shared_frames=shared,
                     depth_samples=depth_count,
                     baseline_samples=baseline_count,
@@ -265,6 +308,33 @@ def build_scale_constraints(
                 )
             )
     return tuple(constraints)
+
+
+def _potential_scale_constraint_ids(
+    windows: Sequence[IndependentWindow],
+    config: WindowGraphConfig,
+) -> tuple[str, ...]:
+    positions = [_frame_positions(window) for window in windows]
+    return tuple(
+        f"scale:{windows[first].window_id}<->{windows[second].window_id}"
+        for first in range(len(windows))
+        for second in range(first + 1, len(windows))
+        if len(set(positions[first]) & set(positions[second]))
+        >= config.min_shared_frames_for_scale
+    )
+
+
+def _scale_constraint_id(
+    windows: Sequence[IndependentWindow], constraint: WindowScaleConstraint
+) -> str:
+    return (
+        f"scale:{windows[constraint.first_window].window_id}"
+        f"<->{windows[constraint.second_window].window_id}"
+    )
+
+
+def _edge_id(kind: str, window_id: str, source_frame: int, target_frame: int) -> str:
+    return f"{kind}:{window_id}:{source_frame}->{target_frame}"
 
 
 def solve_window_scales(
@@ -334,6 +404,37 @@ def _scaled_relative_transform(
     return target_from_source
 
 
+def _candidate_depth_normalizer(
+    windows: Sequence[IndependentWindow],
+    relative_scales: np.ndarray,
+    config: WindowGraphConfig,
+) -> float:
+    aligned_frame_depths = []
+    for window, scale in zip(windows, relative_scales, strict=True):
+        if window.kind != "local":
+            continue
+        for frame_index in range(window.prediction.num_frames):
+            depth = window.prediction.depth[frame_index].astype(np.float64, copy=False)
+            evidence = _confidence_evidence(window.prediction.confidence[frame_index])
+            threshold = _confidence_threshold(evidence, config)
+            valid = (
+                np.isfinite(depth)
+                & (depth > 0)
+                & np.isfinite(evidence)
+                & (evidence >= threshold)
+            )
+            if valid.any():
+                aligned_frame_depths.append(float(scale) * float(np.median(depth[valid])))
+    if not aligned_frame_depths:
+        raise InsufficientGraphEvidenceError(
+            "local windows provide no confident depth for candidate-scale normalization"
+        )
+    canonical_depth = float(np.median(aligned_frame_depths))
+    if not np.isfinite(canonical_depth) or canonical_depth <= 0:
+        raise InsufficientGraphEvidenceError("candidate canonical depth is invalid")
+    return 1.0 / canonical_depth
+
+
 def _initial_states(
     node_frames: tuple[int, ...],
     local_edges: Sequence[RelativePoseMeasurement],
@@ -382,6 +483,9 @@ def build_window_graph_measurements(
     if len({window.independent_run_id for window in windows}) != len(windows):
         raise ValueError("each window must come from a distinct model forward pass")
 
+    # A canonical order makes the scale gauge and every reported diagnostic
+    # invariant to caller-provided sequence order.
+    windows = tuple(sorted(windows, key=lambda item: (item.kind != "local", item.window_id)))
     local_windows = [window for window in windows if window.kind == "local"]
     loop_windows = [window for window in windows if window.kind == "loop"]
     if not local_windows:
@@ -406,13 +510,20 @@ def build_window_graph_measurements(
         raise ValueError("loop windows may only reference nodes covered by local windows")
 
     constraints = build_scale_constraints(windows, resolved)
-    scales, scale_rms, scale_rank = solve_window_scales(
+    relative_scales, scale_rms, scale_rank = solve_window_scales(
         len(windows), constraints, resolved
     )
+    depth_normalizer = _candidate_depth_normalizer(
+        windows, relative_scales, resolved
+    )
+    scales = relative_scales * depth_normalizer
     local_edges: list[RelativePoseMeasurement] = []
     loop_edges: list[RelativePoseMeasurement] = []
     rejected_loops: list[RejectedLoopMeasurement] = []
-    potential_loop_edges = 0
+    potential_local_edge_ids: list[str] = []
+    accepted_local_edge_ids: list[str] = []
+    potential_loop_edge_ids: list[str] = []
+    accepted_loop_edge_ids: list[str] = []
     for window_index, window in enumerate(windows):
         frames = tuple(int(frame) for frame in window.prediction.keyframe_indices)
         if window.kind == "local":
@@ -430,17 +541,73 @@ def build_window_graph_measurements(
                 if eligible
                 else []
             )
-            potential_loop_edges += int(bool(pairs))
         if not pairs:
             continue
         per_edge_normalizer = float(len(pairs))
         for source_position, target_position in pairs:
             source_frame = frames[source_position]
             target_frame = frames[target_position]
-            confidence = np.sqrt(
+            structural_edge_id = _edge_id(
+                window.kind, window.window_id, source_frame, target_frame
+            )
+            (
+                potential_local_edge_ids
+                if window.kind == "local"
+                else potential_loop_edge_ids
+            ).append(structural_edge_id)
+            evidence_confidence = np.sqrt(
                 _frame_quality(window.prediction, source_position)
                 * _frame_quality(window.prediction, target_position)
             ) / per_edge_normalizer
+            appearance = window.appearance_evidence
+            if window.kind == "loop" and resolved.require_appearance_support:
+                reason = None
+                if appearance is None:
+                    reason = "missing_appearance_evidence"
+                elif (
+                    appearance.source_frame != source_frame
+                    or appearance.target_frame != target_frame
+                ):
+                    reason = "appearance_frame_pair_mismatch"
+                elif appearance.status != "ok":
+                    reason = f"appearance_{appearance.status}"
+                elif appearance.ratio_matches < resolved.min_appearance_ratio_matches:
+                    reason = "insufficient_appearance_ratio_matches"
+                elif appearance.inliers < resolved.min_appearance_inliers:
+                    reason = "insufficient_appearance_inliers"
+                elif appearance.inlier_ratio < resolved.min_appearance_inlier_ratio:
+                    reason = "insufficient_appearance_inlier_ratio"
+                elif (
+                    appearance.spatial_coverage
+                    < resolved.min_appearance_spatial_coverage
+                ):
+                    reason = "insufficient_appearance_spatial_coverage"
+                if reason is not None:
+                    rejected_loops.append(
+                        RejectedLoopMeasurement(
+                            window_id=window.window_id,
+                            source_frame=source_frame,
+                            target_frame=target_frame,
+                            reason=reason,
+                            overlap=0.0,
+                            comparable_fraction=0.0,
+                            valid_pixels=0,
+                            appearance_ratio_matches=(
+                                appearance.ratio_matches if appearance else 0
+                            ),
+                            appearance_inliers=(appearance.inliers if appearance else 0),
+                            appearance_inlier_ratio=(
+                                appearance.inlier_ratio if appearance else 0.0
+                            ),
+                            appearance_spatial_coverage=(
+                                appearance.spatial_coverage if appearance else 0.0
+                            ),
+                        )
+                    )
+                    continue
+                evidence_confidence *= np.sqrt(
+                    appearance.inlier_ratio * appearance.spatial_coverage
+                )
             if window.kind == "loop" and resolved.require_reobservation_support:
                 support = score_pair(
                     window.prediction,
@@ -449,6 +616,8 @@ def build_window_graph_measurements(
                     ScorerConfig(
                         local_offsets=(1,),
                         min_long_range_gap=2,
+                        confidence_quantile=resolved.confidence_quantile,
+                        confidence_evidence_floor=resolved.confidence_evidence_floor,
                         min_pair_overlap=resolved.min_loop_overlap,
                         min_long_range_overlap=resolved.min_loop_overlap,
                         min_valid_pixels=resolved.min_loop_valid_pixels,
@@ -468,14 +637,24 @@ def build_window_graph_measurements(
                             overlap=support.overlap,
                             comparable_fraction=support.comparable_fraction,
                             valid_pixels=support.valid_pixels,
+                            appearance_ratio_matches=(
+                                appearance.ratio_matches if appearance else 0
+                            ),
+                            appearance_inliers=(appearance.inliers if appearance else 0),
+                            appearance_inlier_ratio=(
+                                appearance.inlier_ratio if appearance else 0.0
+                            ),
+                            appearance_spatial_coverage=(
+                                appearance.spatial_coverage if appearance else 0.0
+                            ),
                         )
                     )
                     continue
-                confidence *= np.sqrt(
+                evidence_confidence *= np.sqrt(
                     max(support.overlap, 0.0)
                     * max(support.comparable_fraction, 0.0)
                 )
-            if confidence <= 0:
+            if evidence_confidence <= 0 or not np.isfinite(evidence_confidence):
                 continue
             edge = RelativePoseMeasurement(
                 source=node_lookup[source_frame],
@@ -486,7 +665,10 @@ def build_window_graph_measurements(
                     target_position,
                     float(scales[window_index]),
                 ),
-                confidence=float(confidence),
+                # Geometry/appearance confidence gates acceptance, but all
+                # candidates use the same structural edge weight after an
+                # edge is accepted.  This keeps graph residuals comparable.
+                confidence=1.0 / per_edge_normalizer,
                 independently_estimated=True,
                 provenance=(
                     f"{window.kind}:{window.window_id}:{window.independent_run_id}:"
@@ -494,6 +676,11 @@ def build_window_graph_measurements(
                 ),
             )
             (local_edges if window.kind == "local" else loop_edges).append(edge)
+            (
+                accepted_local_edge_ids
+                if window.kind == "local"
+                else accepted_loop_edge_ids
+            ).append(structural_edge_id)
     if not local_edges:
         raise InsufficientGraphEvidenceError(
             "independent local windows produced no valid pose measurements"
@@ -512,7 +699,18 @@ def build_window_graph_measurements(
         scale_constraints=constraints,
         scale_residual_rms=scale_rms,
         scale_rank=scale_rank,
-        potential_loop_edges=potential_loop_edges,
+        candidate_depth_normalizer=depth_normalizer,
+        potential_local_edges=len(potential_local_edge_ids),
+        potential_local_edge_ids=tuple(potential_local_edge_ids),
+        accepted_local_edge_ids=tuple(accepted_local_edge_ids),
+        potential_loop_edges=len(potential_loop_edge_ids),
+        potential_loop_edge_ids=tuple(potential_loop_edge_ids),
+        accepted_loop_edge_ids=tuple(accepted_loop_edge_ids),
+        potential_scale_constraints=len(_potential_scale_constraint_ids(windows, resolved)),
+        potential_scale_constraint_ids=_potential_scale_constraint_ids(windows, resolved),
+        accepted_scale_constraint_ids=tuple(
+            _scale_constraint_id(windows, constraint) for constraint in constraints
+        ),
         rejected_loop_edges=tuple(rejected_loops),
     )
 

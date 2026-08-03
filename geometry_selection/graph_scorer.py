@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from .cache import canonical_hash
 from .graph import (
     PoseGraphConfig,
     RelativePoseMeasurement,
@@ -29,6 +30,8 @@ class GraphScoreConfig:
     optimizer: PoseGraphConfig = field(default_factory=PoseGraphConfig)
     switch_penalty_weight: float = 0.25
     missing_loop_penalty_weight: float = 0.25
+    missing_local_penalty_weight: float = 0.25
+    missing_scale_penalty_weight: float = 0.10
     scale_residual_weight: float = 0.10
     require_convergence: bool = True
 
@@ -38,6 +41,8 @@ class GraphScoreConfig:
         for name in (
             "switch_penalty_weight",
             "missing_loop_penalty_weight",
+            "missing_local_penalty_weight",
+            "missing_scale_penalty_weight",
             "scale_residual_weight",
         ):
             value = getattr(self, name)
@@ -129,6 +134,12 @@ def score_window_pose_graph(
         0,
     )
     missing_fraction = missing_loops / max(measurements.potential_loop_edges, 1)
+    missing_local_fraction = (
+        measurements.potential_local_edges - len(measurements.local_measurements)
+    ) / max(measurements.potential_local_edges, 1)
+    missing_scale_fraction = (
+        measurements.potential_scale_constraints - len(measurements.scale_constraints)
+    ) / max(measurements.potential_scale_constraints, 1)
     switch_penalty = (
         float(np.mean([(1.0 - value) ** 2 for value in optimized.loop_switches]))
         if optimized.loop_switches
@@ -138,6 +149,8 @@ def score_window_pose_graph(
         optimized.normalized_cost
         + resolved.switch_penalty_weight * switch_penalty
         + resolved.missing_loop_penalty_weight * missing_fraction
+        + resolved.missing_local_penalty_weight * missing_local_fraction
+        + resolved.missing_scale_penalty_weight * missing_scale_fraction
         + resolved.scale_residual_weight * measurements.scale_residual_rms
     )
     if optimized.degenerate:
@@ -171,17 +184,35 @@ def score_window_pose_graph(
         for edge in measurements.loop_measurements
     )
     diagnostics = {
+        "graph_score_config_sha256": canonical_hash(asdict(resolved)),
         "optimizer": {
             key: value
             for key, value in asdict(optimized).items()
             if key != "optimized_world_from_camera"
         },
         "window_scales": list(measurements.window_scales),
+        "candidate_depth_normalizer": measurements.candidate_depth_normalizer,
         "scale_residual_rms": measurements.scale_residual_rms,
         "scale_rank": measurements.scale_rank,
         "potential_loop_edges": measurements.potential_loop_edges,
+        "potential_loop_edge_ids": list(measurements.potential_loop_edge_ids),
         "accepted_loop_edges": len(measurements.loop_measurements),
+        "accepted_loop_edge_ids": list(measurements.accepted_loop_edge_ids),
         "missing_loop_fraction": missing_fraction,
+        "potential_local_edges": measurements.potential_local_edges,
+        "potential_local_edge_ids": list(measurements.potential_local_edge_ids),
+        "accepted_local_edges": len(measurements.local_measurements),
+        "accepted_local_edge_ids": list(measurements.accepted_local_edge_ids),
+        "missing_local_fraction": missing_local_fraction,
+        "potential_scale_constraints": measurements.potential_scale_constraints,
+        "potential_scale_constraint_ids": list(
+            measurements.potential_scale_constraint_ids
+        ),
+        "accepted_scale_constraints": len(measurements.scale_constraints),
+        "accepted_scale_constraint_ids": list(
+            measurements.accepted_scale_constraint_ids
+        ),
+        "missing_scale_fraction": missing_scale_fraction,
         "switch_penalty": switch_penalty,
         "rejected_loop_edges": [asdict(item) for item in measurements.rejected_loop_edges],
     }
@@ -192,7 +223,7 @@ def score_window_pose_graph(
         long_range_score=optimized.loop_residual_rms,
         local_edge_fraction=(
             len(measurements.local_measurements)
-            / max(len(measurements.local_measurements), 1)
+            / max(measurements.potential_local_edges, 1)
         ),
         long_range_edge_fraction=(
             len(measurements.loop_measurements)
@@ -204,7 +235,7 @@ def score_window_pose_graph(
         pairs=local_pairs + loop_pairs,
         keyframe_indices=measurements.node_frame_indices,
         score_kind="pose_graph",
-        potential_local_edges=len(measurements.local_measurements),
+        potential_local_edges=measurements.potential_local_edges,
         potential_long_range_edges=measurements.potential_loop_edges,
         graph_diagnostics=diagnostics,
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from geometry_selection.graph import se3_exp
@@ -62,6 +64,7 @@ def _config():
             min_depth_scale_pixels=2,
             depth_sample_stride=2,
             require_reobservation_support=False,
+            require_appearance_support=False,
         )
     )
 
@@ -106,6 +109,70 @@ def test_candidate_selection_uses_normalized_graph_score() -> None:
         ),
     )
     assert result.selected_candidate_id == "candidate1"
+
+
+def test_pose_graph_selection_abstains_on_different_accepted_evidence() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    incumbent = score_window_pose_graph(
+        global_prediction, _windows(0.20), graph_config=_config()
+    )
+    challenger = score_window_pose_graph(
+        global_prediction, _windows(0.0), graph_config=_config()
+    )
+    diagnostics = dict(challenger.graph_diagnostics)
+    diagnostics["accepted_loop_edge_ids"] = []
+    challenger = replace(challenger, graph_diagnostics=diagnostics)
+    result = select_candidate(
+        [
+            CandidateScore("candidate0", 0, "a" * 64, "0" * 64, True, incumbent),
+            CandidateScore("candidate1", 1, "b" * 64, "1" * 64, False, challenger),
+        ],
+        SelectionConfig(
+            min_relative_improvement=0.0,
+            min_motion_ratio=0.1,
+            max_motion_ratio=10.0,
+            min_net_translation_ratio=0.1,
+            max_net_translation_ratio=10.0,
+            min_rotation_ratio=0.1,
+            max_rotation_ratio=10.0,
+            min_common_local_edges=1,
+            min_common_long_range_edges=1,
+        ),
+    )
+    assert result.selected_candidate_id == "candidate0"
+    assert result.decision == "abstain_insufficient_common_evidence"
+
+
+def test_pose_graph_selection_abstains_on_different_graph_config_hash() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    incumbent = score_window_pose_graph(
+        global_prediction, _windows(0.20), graph_config=_config()
+    )
+    challenger = score_window_pose_graph(
+        global_prediction, _windows(0.0), graph_config=_config()
+    )
+    diagnostics = dict(challenger.graph_diagnostics)
+    diagnostics["graph_score_config_sha256"] = "f" * 64
+    challenger = replace(challenger, graph_diagnostics=diagnostics)
+    result = select_candidate(
+        [
+            CandidateScore("candidate0", 0, "a" * 64, "0" * 64, True, incumbent),
+            CandidateScore("candidate1", 1, "b" * 64, "1" * 64, False, challenger),
+        ],
+        SelectionConfig(
+            min_relative_improvement=0.0,
+            min_motion_ratio=0.1,
+            max_motion_ratio=10.0,
+            min_net_translation_ratio=0.1,
+            max_net_translation_ratio=10.0,
+            min_rotation_ratio=0.1,
+            max_rotation_ratio=10.0,
+            min_common_local_edges=1,
+            min_common_long_range_edges=1,
+        ),
+    )
+    assert result.selected_candidate_id == "candidate0"
+    assert result.decision == "abstain_insufficient_common_evidence"
 
 
 def test_insufficient_graph_evidence_returns_invalid_report() -> None:

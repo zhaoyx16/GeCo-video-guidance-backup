@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from geometry_selection.backbones.vggt_omega import VGGTOmegaAdapter, file_sha256
+from geometry_selection.appearance import score_appearance_pair
 from geometry_selection.cache import canonical_hash, load_geometry_cache, save_geometry_cache
 from geometry_selection.selection import (
     load_and_validate_candidate_pool,
@@ -177,6 +178,7 @@ def main() -> None:
         "adapter_sha256": file_sha256(REPO_ROOT / "geometry_selection/backbones/vggt_omega.py"),
         "extractor_sha256": file_sha256(REPO_ROOT / "scripts/extract_vggt_omega_geometry.py"),
         "preparer_sha256": file_sha256(Path(__file__).resolve()),
+        "appearance_sha256": file_sha256(REPO_ROOT / "geometry_selection/appearance.py"),
         "window_graph_sha256": file_sha256(REPO_ROOT / "geometry_selection/window_graph.py"),
         "window_bundle_sha256": file_sha256(REPO_ROOT / "geometry_selection/window_bundle.py"),
         "experiment_lock_sha256": experiment_lock_sha256,
@@ -236,6 +238,10 @@ def main() -> None:
                         int(record["index"]): record["pixels_sha256"]
                         for record in decode_identity["frames"]
                     }
+                    files_by_frame = {
+                        index: file_sha256(path)
+                        for index, path in paths_by_frame.items()
+                    }
                     schedule = make_window_schedule(
                         indices,
                         local_window_size=extraction_config["local_window_size"],
@@ -247,12 +253,22 @@ def main() -> None:
                     window_records = []
                     for window_id, window_kind, frame_indices in schedule:
                         frame_pixels = [pixels_by_frame[index] for index in frame_indices]
+                        frame_files = [files_by_frame[index] for index in frame_indices]
+                        appearance_evidence = None
+                        if window_kind == "loop":
+                            appearance_evidence = score_appearance_pair(
+                                paths_by_frame[frame_indices[0]],
+                                paths_by_frame[frame_indices[-1]],
+                                source_frame=frame_indices[0],
+                                target_frame=frame_indices[-1],
+                            ).to_dict()
                         run_id = independent_run_id(
                             video_sha256=video_hash,
                             window_id=window_id,
                             kind=window_kind,
                             frame_indices=frame_indices,
                             frame_pixels_sha256=frame_pixels,
+                            frame_file_sha256=frame_files,
                             geometry_backbone=backbone_identity,
                             producer=producer_identity,
                         )
@@ -262,6 +278,7 @@ def main() -> None:
                             "window_kind": window_kind,
                             "keyframe_indices": list(frame_indices),
                             "frame_pixels_sha256": frame_pixels,
+                            "frame_file_sha256": frame_files,
                             "independent_run_id": run_id,
                             "decoder": {
                                 "decoder": decode_identity["decoder"],
@@ -270,7 +287,7 @@ def main() -> None:
                             },
                             "geometry_backbone": backbone_identity,
                             "producer": producer_identity,
-                            "extractor_schema_version": 3,
+                            "extractor_schema_version": 4,
                         }
                         window_cache_key = canonical_hash(window_provenance)
                         try:
@@ -299,6 +316,8 @@ def main() -> None:
                                 "kind": window_kind,
                                 "frame_indices": list(frame_indices),
                                 "frame_pixels_sha256": frame_pixels,
+                                "frame_file_sha256": frame_files,
+                                "appearance_evidence": appearance_evidence,
                                 "geometry_cache_key": window_cache_key,
                                 "independent_run_id": run_id,
                             }

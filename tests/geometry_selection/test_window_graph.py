@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from geometry_selection.appearance import AppearanceEvidence
 from geometry_selection.graph import optimize_pose_graph, se3_exp
 from geometry_selection.schema import GeometryPrediction
 from geometry_selection.window_graph import (
@@ -68,10 +69,16 @@ def test_overlapping_window_scales_are_recovered_before_se3_graph() -> None:
             min_depth_scale_pixels=2,
             depth_sample_stride=2,
             require_reobservation_support=False,
+            require_appearance_support=False,
         ),
     )
 
-    np.testing.assert_allclose(measurements.window_scales, (1.0, 0.5, 2.0), atol=1e-8)
+    np.testing.assert_allclose(
+        measurements.window_scales,
+        (1.0 / 3.0, 1.0 / 6.0, 2.0 / 3.0),
+        atol=1e-8,
+    )
+    assert np.isclose(measurements.candidate_depth_normalizer, 1.0 / 3.0)
     assert measurements.scale_rank == 2
     assert measurements.scale_residual_rms < 1e-10
     assert measurements.node_frame_indices == (0, 1, 2, 3, 4, 5)
@@ -100,6 +107,7 @@ def test_inconsistent_independent_loop_leaves_graph_residual() -> None:
             min_depth_scale_pixels=2,
             depth_sample_stride=2,
             require_reobservation_support=False,
+            require_appearance_support=False,
         ),
     )
     report = optimize_pose_graph(
@@ -124,6 +132,7 @@ def test_window_scale_graph_must_be_connected() -> None:
             min_depth_scale_pixels=2,
             depth_sample_stride=2,
             require_reobservation_support=False,
+            require_appearance_support=False,
         ),
     )
     disconnected = (
@@ -138,6 +147,7 @@ def test_window_scale_graph_must_be_connected() -> None:
                 depth_sample_stride=2,
                 require_loop_edges=False,
                 require_reobservation_support=False,
+                require_appearance_support=False,
             ),
         )
 
@@ -162,3 +172,117 @@ def test_schedule_contains_overlapping_local_and_distant_loop_windows() -> None:
     assert loops
     assert all(len(frames) == 4 for frames in loops)
     assert all(frames[-1] - frames[0] >= 3 for frames in loops)
+
+
+def test_candidate_global_scale_and_window_order_do_not_change_measurements() -> None:
+    base = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=1.0),
+        _window("local-b", "local", (2, 3, 4, 5), scale=2.0),
+        _window("loop-a", "loop", (0, 1, 4, 5), scale=0.5),
+    )
+    scaled = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=0.1),
+        _window("local-b", "local", (2, 3, 4, 5), scale=0.2),
+        _window("loop-a", "loop", (0, 1, 4, 5), scale=0.05),
+    )
+    config = WindowGraphConfig(
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+        require_reobservation_support=False,
+        require_appearance_support=False,
+    )
+    first = build_window_graph_measurements(base, config)
+    second = build_window_graph_measurements(tuple(reversed(base)), config)
+    third = build_window_graph_measurements(scaled, config)
+
+    assert first.node_frame_indices == second.node_frame_indices == third.node_frame_indices
+    np.testing.assert_allclose(first.window_scales, second.window_scales, atol=1e-10)
+    for first_edge, second_edge, third_edge in zip(
+        first.local_measurements + first.loop_measurements,
+        second.local_measurements + second.loop_measurements,
+        third.local_measurements + third.loop_measurements,
+        strict=True,
+    ):
+        assert first_edge.provenance == second_edge.provenance
+        np.testing.assert_allclose(
+            first_edge.target_from_source,
+            second_edge.target_from_source,
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            first_edge.target_from_source,
+            third_edge.target_from_source,
+            atol=1e-9,
+        )
+
+
+def test_accepted_edge_weights_do_not_reward_low_model_confidence() -> None:
+    high = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=1.0),
+        _window("local-b", "local", (2, 3, 4, 5), scale=1.0),
+        _window("loop-a", "loop", (0, 1, 4, 5), scale=1.0),
+    )
+    low = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=1.0),
+        _window("local-b", "local", (2, 3, 4, 5), scale=1.0),
+        _window("loop-a", "loop", (0, 1, 4, 5), scale=1.0),
+    )
+    for window in low:
+        window.prediction.confidence.fill(1.1)
+    config = WindowGraphConfig(
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+        require_reobservation_support=False,
+        require_appearance_support=False,
+    )
+    first = build_window_graph_measurements(high, config)
+    second = build_window_graph_measurements(low, config)
+    assert [edge.confidence for edge in first.local_measurements] == [
+        edge.confidence for edge in second.local_measurements
+    ]
+    assert [edge.confidence for edge in first.loop_measurements] == [
+        edge.confidence for edge in second.loop_measurements
+    ]
+    assert [item.confidence for item in first.scale_constraints] == [
+        item.confidence for item in second.scale_constraints
+    ]
+
+
+def test_loop_edge_requires_independent_appearance_evidence() -> None:
+    local_windows = (
+        _window("local-a", "local", (0, 1, 2, 3), scale=1.0),
+        _window("local-b", "local", (2, 3, 4, 5), scale=1.0),
+    )
+    raw_loop = _window("loop-a", "loop", (0, 1, 4, 5), scale=1.0)
+    accepted_loop = IndependentWindow(
+        window_id=raw_loop.window_id,
+        kind=raw_loop.kind,
+        prediction=raw_loop.prediction,
+        independent_run_id=raw_loop.independent_run_id,
+        appearance_evidence=AppearanceEvidence(
+            source_frame=0,
+            target_frame=5,
+            source_file_sha256="a" * 64,
+            target_file_sha256="b" * 64,
+            source_keypoints=100,
+            target_keypoints=90,
+            ratio_matches=40,
+            inliers=30,
+            inlier_ratio=0.75,
+            spatial_coverage=0.25,
+            mean_descriptor_distance=0.20,
+            status="ok",
+        ),
+    )
+    config = WindowGraphConfig(
+        min_depth_scale_pixels=2,
+        depth_sample_stride=2,
+        require_reobservation_support=False,
+        require_appearance_support=True,
+        require_loop_edges=False,
+    )
+    missing = build_window_graph_measurements(local_windows + (raw_loop,), config)
+    assert not missing.loop_measurements
+    assert missing.rejected_loop_edges[0].reason == "missing_appearance_evidence"
+    accepted = build_window_graph_measurements(local_windows + (accepted_loop,), config)
+    assert len(accepted.loop_measurements) == 1

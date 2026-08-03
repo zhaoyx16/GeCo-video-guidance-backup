@@ -12,10 +12,12 @@ import geometry_selection.protocol as protocol_module
 from geometry_selection.protocol import (
     file_sha256,
     implementation_tree_sha256,
+    implementation_tree_sha256_at_commit,
     validate_candidate_spec_against_protocol,
     validate_candidate_pool_against_protocol,
     validate_experiment_lock,
     validate_formal_protocol,
+    validate_implementation_commit,
 )
 from geometry_selection.selection import CANDIDATE_SPEC_SCHEMA, materialize_candidate_pool
 
@@ -321,15 +323,69 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         )
 
 
-def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> None:
+def test_formal_protocol_rejects_conditioning_image_from_another_scene(
+    tmp_path, monkeypatch
+) -> None:
+    _, protocol_path, payload, _, _ = _small_formal_fixture(tmp_path, monkeypatch)
+    payload["case-validation"]["dataset_relative_image"] = "debug/frame.png"
+    protocol_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="inside the scene directory"):
+        validate_formal_protocol(protocol_path)
+
+
+def test_resolved_protocol_paths_reject_cross_scene_symlinks(
+    tmp_path, monkeypatch
+) -> None:
+    dataset, protocol_path, payload, _, paths = _small_formal_fixture(
+        tmp_path, monkeypatch
+    )
+    source = paths["validation"][0]
+    source.unlink()
+    source.symlink_to(paths["debug"][0])
+    protocol_path.write_text(json.dumps(payload))
+    protocol = validate_formal_protocol(protocol_path)
+    with pytest.raises(ValueError, match="resolved conditioning image escapes"):
+        protocol_module.resolve_protocol_image(
+            protocol["case-validation"], dataset
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_path", "message"),
+    [
+        ("dataset_relative_image", "../frame.png", "must not contain"),
+        ("dataset_relative_transforms", "/scene/transforms.json", "must be relative"),
+        ("dataset_relative_image", "validation/./frame.png", "normalized relative path"),
+    ],
+)
+def test_formal_protocol_rejects_unsafe_or_unnormalized_dataset_paths(
+    tmp_path, monkeypatch, field, unsafe_path, message
+) -> None:
+    _, protocol_path, payload, _, _ = _small_formal_fixture(tmp_path, monkeypatch)
+    payload["case-validation"][field] = unsafe_path
+    protocol_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=message):
+        validate_formal_protocol(protocol_path)
+
+
+def _commit_experiment_lock(
+    tmp_path: Path, *, split: str, authorized_hashes: list[str]
+) -> tuple[Path, Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
     implementation = repo / "geometry_selection"
     implementation.mkdir()
     (implementation / "scorer.py").write_text("VALUE = 1\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"], check=True
+    )
     lock_path = repo / "experiment_lock.json"
     lock_path.write_text(
         json.dumps(
@@ -338,11 +394,11 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
                 "protocol_manifest_sha256": "a" * 64,
                 "model_lock_sha256": "b" * 64,
                 "implementation_sha256": implementation_tree_sha256(repo),
-                "split": "validation",
+                "split": split,
                 "backbone": "Wan2.2-TI2V-5B",
                 "candidate_spec_sha256": "e" * 64,
                 "artifact_root": str((tmp_path / "artifacts").resolve()),
-                "authorized_ranking_config_hashes": ["c" * 64],
+                "authorized_ranking_config_hashes": authorized_hashes,
             }
         )
     )
@@ -354,6 +410,13 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
         capture_output=True,
         text=True,
     ).stdout.strip()
+    return repo, lock_path, commit
+
+
+def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> None:
+    repo, lock_path, commit = _commit_experiment_lock(
+        tmp_path, split="validation", authorized_hashes=["c" * 64]
+    )
     validate_experiment_lock(
         lock_path,
         repo,
@@ -378,6 +441,109 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
             candidate_spec_sha256="e" * 64,
             artifact_root=tmp_path / "artifacts",
             ranking_config_hash="d" * 64,
+        )
+
+
+def test_implementation_tree_hash_can_be_recomputed_from_commit(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    source = repo / "geometry_selection"
+    source.mkdir(parents=True)
+    (source / "module.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "geometry_selection/module.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "source"], check=True)
+    commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert implementation_tree_sha256_at_commit(repo, commit) == implementation_tree_sha256(repo)
+    (source / "module.py").write_text("VALUE = 2\n")
+    assert implementation_tree_sha256_at_commit(repo, commit) != implementation_tree_sha256(repo)
+
+
+def test_preparation_commit_must_exist_be_ancestor_and_match_implementation(
+    tmp_path,
+) -> None:
+    repo = tmp_path / "repo"
+    source = repo / "geometry_selection"
+    source.mkdir(parents=True)
+    (source / "module.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "geometry_selection/module.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "implementation"], check=True)
+    preparation = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    implementation_hash = implementation_tree_sha256(repo)
+    (repo / "artifact.json").write_text("{}\n")
+    subprocess.run(["git", "-C", str(repo), "add", "artifact.json"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "artifact lock"], check=True)
+    ranking = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    validate_implementation_commit(repo, preparation, ranking, implementation_hash)
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_implementation_commit(repo, "f" * 40, ranking, implementation_hash)
+    with pytest.raises(ValueError, match="differs from experiment lock"):
+        validate_implementation_commit(repo, preparation, ranking, "0" * 64)
+
+
+def test_test_experiment_lock_rejects_multiple_authorized_configs(tmp_path) -> None:
+    repo, lock_path, commit = _commit_experiment_lock(
+        tmp_path, split="test", authorized_hashes=["c" * 64, "d" * 64]
+    )
+
+    with pytest.raises(ValueError, match="exactly one ranking config"):
+        validate_experiment_lock(
+            lock_path,
+            repo,
+            commit,
+            protocol_manifest_sha256="a" * 64,
+            model_lock_sha256="b" * 64,
+            split="test",
+            backbone="Wan2.2-TI2V-5B",
+            candidate_spec_sha256="e" * 64,
+            artifact_root=tmp_path / "artifacts",
+        )
+
+
+@pytest.mark.parametrize(
+    ("authorized_hashes", "message"),
+    [
+        (["C" * 64], "lowercase SHA-256"),
+        (["c" * 64, "c" * 64], "must be unique"),
+    ],
+)
+def test_experiment_lock_rejects_invalid_or_duplicate_config_hashes(
+    tmp_path, authorized_hashes, message
+) -> None:
+    repo, lock_path, commit = _commit_experiment_lock(
+        tmp_path, split="validation", authorized_hashes=authorized_hashes
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_experiment_lock(
+            lock_path,
+            repo,
+            commit,
+            protocol_manifest_sha256="a" * 64,
+            model_lock_sha256="b" * 64,
+            split="validation",
+            backbone="Wan2.2-TI2V-5B",
+            candidate_spec_sha256="e" * 64,
+            artifact_root=tmp_path / "artifacts",
         )
 
 

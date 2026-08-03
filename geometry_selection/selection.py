@@ -590,15 +590,37 @@ def _common_comparable_scores(
         return {}, len(local_keys), len(long_keys)
 
     if score_kind == "pose_graph":
-        schedules = {
-            (
-                candidate.report.potential_local_edges,
-                candidate.report.potential_long_range_edges,
-            )
-            for candidate in valid_candidates
-        }
-        if len(schedules) != 1:
-            raise ValueError("pose-graph candidates must use one fixed edge schedule")
+        evidence_fields = (
+            "potential_local_edge_ids",
+            "accepted_local_edge_ids",
+            "potential_loop_edge_ids",
+            "accepted_loop_edge_ids",
+            "potential_scale_constraint_ids",
+            "accepted_scale_constraint_ids",
+        )
+        reference = valid_candidates[0].report.graph_diagnostics
+        if not isinstance(reference, dict):
+            raise ValueError("pose-graph report lacks auditable evidence diagnostics")
+        graph_config_hash = reference.get("graph_score_config_sha256")
+        if (
+            not isinstance(graph_config_hash, str)
+            or len(graph_config_hash) != 64
+            or any(character not in "0123456789abcdef" for character in graph_config_hash)
+        ):
+            raise ValueError("pose-graph report lacks a valid graph config hash")
+        for field in evidence_fields:
+            value = reference.get(field)
+            if not isinstance(value, list) or len(value) != len(set(value)):
+                raise ValueError(f"pose-graph report has invalid {field}")
+        for candidate in valid_candidates[1:]:
+            diagnostics = candidate.report.graph_diagnostics
+            if not isinstance(diagnostics, dict) or any(
+                diagnostics.get(field) != reference[field]
+                for field in evidence_fields
+            ) or diagnostics.get("graph_score_config_sha256") != graph_config_hash:
+                # Abstention is safer than comparing candidates whose graph
+                # residuals were computed from different accepted evidence.
+                return {}, len(local_keys), len(long_keys)
         return (
             {
                 candidate.candidate_id: float(candidate.report.total_score)
