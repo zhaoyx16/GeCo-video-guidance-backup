@@ -11,6 +11,13 @@ from typing import Any
 
 DL3DV_PROTOCOL_SCHEMA = "dl3dv-geometry-selection-v1"
 FORMAL_SPLIT_COUNTS = {"debug": 3, "validation": 100, "test": 100}
+IMPLEMENTATION_ROOTS = (
+    "geometry_selection",
+    "benchmarks/dl3dv_geco",
+    "scripts",
+    "external/guidance_wan",
+    "external/guidance_cosmos",
+)
 
 
 def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -18,6 +25,31 @@ def file_sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def implementation_tree_sha256(repo_root: Path) -> str:
+    """Hash executable project sources without including experiment artifacts."""
+    root = repo_root.resolve()
+    files: list[Path] = []
+    for relative_root in IMPLEMENTATION_ROOTS:
+        source_root = (root / relative_root).resolve()
+        try:
+            source_root.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"implementation root escapes repository: {source_root}") from error
+        if source_root.is_dir():
+            files.extend(path for path in source_root.rglob("*.py") if path.is_file())
+    if not files:
+        raise ValueError("implementation source set is empty")
+    digest = hashlib.sha256()
+    for path in sorted(set(files), key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
     return digest.hexdigest()
 
 
@@ -56,6 +88,20 @@ def validate_formal_protocol(path: Path) -> dict[str, Any]:
     if actual_counts != FORMAL_SPLIT_COUNTS:
         raise ValueError(f"actual split counts do not match metadata: {actual_counts}")
     scene_uids = [case["scene_uid"] for case in cases]
+    canonical_scene_uids = [
+        f"dl3dv:{Path(case['dataset_relative_transforms']).parent.as_posix()}"
+        for case in cases
+    ]
+    mismatched_scene_uids = [
+        (case["scene_uid"], canonical)
+        for case, canonical in zip(cases, canonical_scene_uids)
+        if case["scene_uid"] != canonical
+    ]
+    if mismatched_scene_uids:
+        raise ValueError(
+            "formal protocol scene_uid must be derived from transforms parent: "
+            f"{mismatched_scene_uids[:3]}"
+        )
     image_hashes = [case["image_sha256"] for case in cases]
     if len(set(scene_uids)) != len(scene_uids) or len(set(image_hashes)) != len(image_hashes):
         raise ValueError("formal protocol is not scene/image disjoint")
@@ -121,6 +167,9 @@ def validate_experiment_lock(
     protocol_manifest_sha256: str,
     model_lock_sha256: str,
     split: str,
+    backbone: str,
+    candidate_spec_sha256: str,
+    artifact_root: Path,
     ranking_config_hash: str | None = None,
 ) -> dict[str, Any]:
     committed = validate_committed_file(lock_path, repo_root, expected_commit)
@@ -129,6 +178,11 @@ def validate_experiment_lock(
         "schema": "geometry-experiment-lock-v1",
         "protocol_manifest_sha256": protocol_manifest_sha256,
         "model_lock_sha256": model_lock_sha256,
+        "implementation_sha256": implementation_tree_sha256(repo_root),
+        "split": split,
+        "backbone": backbone,
+        "candidate_spec_sha256": candidate_spec_sha256,
+        "artifact_root": str(artifact_root.resolve()),
     }
     mismatches = {
         key: (lock.get(key), value)
@@ -137,10 +191,9 @@ def validate_experiment_lock(
     }
     if mismatches:
         raise ValueError(f"experiment lock mismatch: {mismatches}")
-    policies = lock.get("authorized_ranking_config_hashes", {})
-    allowed = policies.get(split)
+    allowed = lock.get("authorized_ranking_config_hashes")
     if not isinstance(allowed, list) or not allowed:
-        raise ValueError(f"experiment lock does not authorize split: {split}")
+        raise ValueError("experiment lock contains no authorized ranking configs")
     if ranking_config_hash is not None and ranking_config_hash not in allowed:
         raise ValueError(
             f"ranking config {ranking_config_hash} is not authorized for split {split}"
@@ -187,6 +240,8 @@ def validate_generation_sidecar(
     model_lock_sha256: str,
     locked_model_identity: dict[str, Any],
     experiment_lock_sha256: str,
+    implementation_sha256: str,
+    candidate_spec_sha256: str,
 ) -> None:
     metadata_value = candidate.get("generation_metadata")
     if not metadata_value:
@@ -206,8 +261,11 @@ def validate_generation_sidecar(
         "video_sha256": file_sha256(video),
         "backbone": "wan" if backbone.startswith("Wan") else "cosmos",
         "model_lock_sha256": model_lock_sha256,
+        "model_content_verified": True,
         "locked_model_identity": locked_model_identity,
         "experiment_lock_sha256": experiment_lock_sha256,
+        "implementation_sha256": implementation_sha256,
+        "candidate_spec_sha256": candidate_spec_sha256,
     }
     if expected_git_commit is not None:
         expected_generation["code_identity"] = {
@@ -270,6 +328,7 @@ def validate_generation_sidecar(
         "model_lock_sha256": model_lock_sha256,
         "locked_model_identity": locked_model_identity,
         "experiment_lock_sha256": experiment_lock_sha256,
+        "implementation_sha256": implementation_sha256,
     }
     run_mismatches = {
         key: (run_config.get(key), expected)
@@ -307,6 +366,8 @@ def _validate_pool_cases_against_protocol(
     formal: bool,
     model_lock: dict[str, Any] | None,
     experiment_lock_sha256: str | None,
+    expected_git_commit: str | None,
+    expected_implementation_sha256: str | None,
 ) -> None:
     if formal and pool.get("artifact_mode") != "formal":
         raise ValueError("legacy-debug candidate pool cannot be promoted to formal")
@@ -319,6 +380,10 @@ def _validate_pool_cases_against_protocol(
         raise ValueError("formal candidate pool validation requires experiment lock digest")
     if formal and preparation.get("experiment_lock_sha256") != experiment_lock_sha256:
         raise ValueError("candidate pool preparation used a different experiment lock")
+    if formal and preparation.get("commit") != expected_git_commit:
+        raise ValueError("candidate pool preparation commit differs from frozen ranking commit")
+    if formal and preparation.get("implementation_sha256") != expected_implementation_sha256:
+        raise ValueError("candidate pool preparation implementation differs from experiment lock")
     split = pool["cases"][0]["split"]
     frozen_cases = {
         key: value
@@ -365,6 +430,8 @@ def _validate_pool_cases_against_protocol(
                     model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
                     locked_model_identity=model_lock["generation_models"][case["backbone"]],
                     experiment_lock_sha256=experiment_lock_sha256,
+                    implementation_sha256=expected_implementation_sha256,
+                    candidate_spec_sha256=pool["candidate_spec_sha256"],
                 )
 
 
@@ -376,6 +443,8 @@ def validate_candidate_pool_against_protocol(
     formal: bool = True,
     model_lock: dict[str, Any] | None = None,
     experiment_lock_sha256: str | None = None,
+    expected_git_commit: str | None = None,
+    expected_implementation_sha256: str | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != pool["protocol_manifest_sha256"]:
@@ -388,6 +457,8 @@ def validate_candidate_pool_against_protocol(
         formal=formal,
         model_lock=model_lock,
         experiment_lock_sha256=experiment_lock_sha256,
+        expected_git_commit=expected_git_commit,
+        expected_implementation_sha256=expected_implementation_sha256,
     )
 
 
@@ -400,6 +471,8 @@ def validate_candidate_spec_against_protocol(
     expected_git_commit: str | None = None,
     model_lock: dict[str, Any] | None = None,
     experiment_lock_sha256: str | None = None,
+    expected_implementation_sha256: str | None = None,
+    candidate_spec_sha256: str | None = None,
 ) -> None:
     protocol_path = protocol_path.resolve()
     if file_sha256(protocol_path) != spec["protocol_manifest_sha256"]:
@@ -424,6 +497,10 @@ def validate_candidate_spec_against_protocol(
         raise ValueError("formal candidate spec validation requires the frozen model lock")
     if formal and not experiment_lock_sha256:
         raise ValueError("formal candidate spec validation requires experiment lock digest")
+    if formal and not expected_implementation_sha256:
+        raise ValueError("formal candidate spec validation requires implementation digest")
+    if formal and not candidate_spec_sha256:
+        raise ValueError("formal candidate spec validation requires candidate spec digest")
     for source_case in spec["cases"]:
         case_id = source_case["case_id"]
         if case_id not in protocol or case_id.startswith("_"):
@@ -466,4 +543,6 @@ def validate_candidate_spec_against_protocol(
                     model_lock_sha256=protocol["_meta"]["model_lock_sha256"],
                     locked_model_identity=model_lock["generation_models"][spec["backbone"]],
                     experiment_lock_sha256=experiment_lock_sha256,
+                    implementation_sha256=expected_implementation_sha256,
+                    candidate_spec_sha256=candidate_spec_sha256,
                 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -23,6 +24,7 @@ from geometry_selection.selection import (
     pairing_id,
     select_candidate,
 )
+from geometry_selection.window_bundle import WINDOW_EXTRACTION_MODE, make_window_bundle
 
 
 def report(score: float, motion: float, status: str = "ok") -> GeometryScoreReport:
@@ -90,6 +92,30 @@ def test_selection_uses_eligible_runner_up_when_lowest_score_suppresses_motion()
     assert selected.decision == "select_geometry_best"
 
 
+def test_motion_guard_checks_net_translation_separately() -> None:
+    incumbent = candidate("candidate0", 0.20, 0.10, incumbent=True)
+    challenger = candidate("candidate1", 0.05, 0.10)
+    incumbent = replace(
+        incumbent,
+        report=replace(
+            incumbent.report,
+            normalized_net_translation_motion=0.10,
+            camera_angular_path_deg=10.0,
+        ),
+    )
+    challenger = replace(
+        challenger,
+        report=replace(
+            challenger.report,
+            normalized_net_translation_motion=0.01,
+            camera_angular_path_deg=10.0,
+        ),
+    )
+    result = select_candidate([incumbent, challenger], SelectionConfig())
+    assert result.selected_candidate_id == "candidate0"
+    assert result.decision == "abstain_margin_or_motion_guard"
+
+
 def test_all_invalid_candidates_retain_incumbent() -> None:
     candidates = [
         CandidateScore("candidate0", 0, "a" * 64, "0" * 64, True, report(float("inf"), 0.0, "no_valid_local_edges")),
@@ -148,7 +174,39 @@ def test_common_support_requires_the_same_projection_direction() -> None:
     )
     assert result.decision == "abstain_insufficient_common_evidence"
     assert result.common_local_edges == 0
-    assert result.common_long_range_edges == 0
+
+
+def test_common_support_rejects_large_coverage_imbalance() -> None:
+    incumbent = candidate("candidate0", 0.20, 0.10, incumbent=True)
+    challenger = candidate("candidate1", 0.10, 0.10)
+    challenger_report = replace(
+        challenger.report,
+        pairs=tuple(
+            replace(pair, comparable_fraction=0.10)
+            for pair in challenger.report.pairs
+        ),
+    )
+    challenger = replace(challenger, report=challenger_report)
+    result = select_candidate(
+        [incumbent, challenger],
+        SelectionConfig(min_support_ratio=0.5),
+    )
+    assert result.decision == "abstain_insufficient_common_evidence"
+
+
+def test_candidates_must_share_keyframe_timestamps() -> None:
+    incumbent = candidate("candidate0", 0.20, 0.10, incumbent=True)
+    challenger = candidate("candidate1", 0.10, 0.10)
+    incumbent = replace(
+        incumbent,
+        report=replace(incumbent.report, keyframe_indices=(0, 10, 20, 30)),
+    )
+    challenger = replace(
+        challenger,
+        report=replace(challenger.report, keyframe_indices=(0, 11, 22, 33)),
+    )
+    with pytest.raises(ValueError, match="identical keyframe timestamps"):
+        select_candidate([incumbent, challenger], SelectionConfig())
 
 
 def test_selection_requires_each_candidate_to_pass_long_range_coverage() -> None:
@@ -221,7 +279,7 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
         "schema": CANDIDATE_POOL_SCHEMA,
         "artifact_mode": "legacy-debug",
         "candidate_spec_sha256": "e" * 64,
-        "preparation": {"commit": "debug", "dirty": True},
+        "preparation": {"commit": "d" * 40, "dirty": True},
         "protocol_manifest_sha256": "d" * 64,
         "candidate_count": 2,
         "cases": [case],
@@ -252,6 +310,18 @@ def test_candidate_pool_enforces_pairing_hashes_and_incumbent(tmp_path) -> None:
     case["candidates"][0].pop("geometry_cache_key")
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="geometry_cache_key"):
+        load_and_validate_candidate_pool(path, expected_split="validation")
+
+    missing_provenance = json.loads(json.dumps(manifest))
+    missing_provenance.pop("candidate_spec_sha256")
+    path.write_text(json.dumps(missing_provenance))
+    with pytest.raises(ValueError, match="candidate_spec_sha256"):
+        load_and_validate_candidate_pool(path, expected_split="validation")
+
+    missing_provenance = json.loads(json.dumps(manifest))
+    missing_provenance["preparation"].pop("commit")
+    path.write_text(json.dumps(missing_provenance))
+    with pytest.raises(ValueError, match="preparation commit"):
         load_and_validate_candidate_pool(path, expected_split="validation")
 
 
@@ -293,7 +363,7 @@ def test_materialize_candidate_pool_hashes_inputs(tmp_path) -> None:
         spec,
         keys,
         artifact_mode="legacy-debug",
-        producer_identity={"commit": "debug", "dirty": True},
+        producer_identity={"commit": "d" * 40, "dirty": True},
         candidate_spec_sha256="e" * 64,
     )
     assert pool["candidate_count"] == 2
@@ -303,15 +373,106 @@ def test_materialize_candidate_pool_hashes_inputs(tmp_path) -> None:
     load_and_validate_candidate_pool(path, expected_split="debug")
 
 
+def test_candidate_pool_id_binds_window_bundle(tmp_path) -> None:
+    image = tmp_path / "input.png"
+    image.write_bytes(b"image")
+    videos = []
+    for index in range(2):
+        path = tmp_path / f"candidate-{index}.mp4"
+        path.write_bytes(f"video-{index}".encode())
+        videos.append(path)
+    extraction = {
+        "mode": WINDOW_EXTRACTION_MODE,
+        "num_keyframes": 4,
+        "local_window_size": 4,
+        "local_stride": 2,
+        "loop_context": 2,
+        "min_loop_node_gap": 2,
+        "max_loop_windows": 1,
+    }
+    spec = {
+        "schema": CANDIDATE_SPEC_SCHEMA,
+        "split": "debug",
+        "candidate_count": 2,
+        "backbone": "wan2.2-ti2v-5b",
+        "protocol_manifest_sha256": "d" * 64,
+        "generation": {"steps": 50, "frames": 121},
+        "geometry_extraction": extraction,
+        "cases": [
+            {
+                "case_id": "case-1",
+                "scene_uid": "dl3dv:scene-1",
+                "conditioning_image": str(image),
+                "prompt": "camera moves forward",
+                "candidates": [
+                    {
+                        "candidate_id": f"candidate-{index}",
+                        "seed": index,
+                        "video": str(video),
+                        "is_incumbent": index == 0,
+                    }
+                    for index, video in enumerate(videos)
+                ],
+            }
+        ],
+    }
+    keys = {("case-1", f"candidate-{index}"): str(index) * 64 for index in range(2)}
+    bundles = {}
+    for index, video in enumerate(videos):
+        records = [
+            {
+                "window_id": "local-00",
+                "kind": "local",
+                "frame_indices": [0, 1, 2, 3],
+                "frame_pixels_sha256": ["1" * 64] * 4,
+                "geometry_cache_key": f"{index + 2}" * 64,
+                "independent_run_id": f"{index + 4}" * 64,
+            },
+            {
+                "window_id": "loop-00",
+                "kind": "loop",
+                "frame_indices": [0, 1, 2, 3],
+                "frame_pixels_sha256": ["1" * 64] * 4,
+                "geometry_cache_key": f"{index + 6}" * 64,
+                "independent_run_id": f"{index + 8}" * 64,
+            },
+        ]
+        bundles[("case-1", f"candidate-{index}")] = make_window_bundle(
+            video_sha256=file_sha256(video),
+            global_geometry_cache_key=keys[("case-1", f"candidate-{index}")],
+            global_keyframe_indices=range(4),
+            extraction_config=extraction,
+            window_records=records,
+        )
+    pool = materialize_candidate_pool(
+        spec,
+        keys,
+        artifact_mode="legacy-debug",
+        producer_identity={"commit": "a" * 40, "dirty": True},
+        candidate_spec_sha256="e" * 64,
+        geometry_window_bundles=bundles,
+    )
+    original_id = pool["cases"][0]["candidate_pool_id"]
+    pool["cases"][0]["candidates"][0]["geometry_window_bundle"]["windows"][0][
+        "independent_run_id"
+    ] = "f" * 64
+    assert candidate_pool_id(pool["cases"][0]) != original_id
+    path = tmp_path / "pool.json"
+    path.write_text(json.dumps(pool))
+    with pytest.raises(ValueError, match="candidate_pool_id mismatch"):
+        load_and_validate_candidate_pool(path, expected_split="debug")
+
+
 def test_yaml_config_is_strict_and_hash_is_stable(tmp_path) -> None:
     text = """
-schema_version: 1
+schema_version: 2
 method_version: offline_v1
 experiment_name: test
 candidate_manifest: /tmp/candidates.json
 protocol_manifest: /tmp/protocol.json
 model_lock: /tmp/model_lock.json
 experiment_lock: /tmp/experiment_lock.json
+artifact_root: /tmp/formal_artifacts
 dataset_root: /tmp/dataset
 geometry_cache_root: /tmp/cache
 geometry_checkpoint_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -319,8 +480,12 @@ geometry_source_tree_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 geometry_source_commit: 39a0cb8af88554f15ddcb5354cd52bde588fa014
 output_root: /tmp/results
 expected_split: validation
+score_mode: direct_reprojection
 score:
   local_offsets: [1]
+graph_score:
+  window: {}
+  optimizer: {}
 selection:
   abstain: true
 """

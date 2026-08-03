@@ -11,6 +11,7 @@ import pytest
 import geometry_selection.protocol as protocol_module
 from geometry_selection.protocol import (
     file_sha256,
+    implementation_tree_sha256,
     validate_candidate_spec_against_protocol,
     validate_candidate_pool_against_protocol,
     validate_experiment_lock,
@@ -142,11 +143,15 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         "snapshot_commit": "revision",
         "json_files": [],
         "weight_files": [{"path": "model.safetensors", "size": 1, "sha256": "b" * 64}],
+        "support_files": [],
     }
     model_lock = {
         "generation_models": {"Wan2.2-TI2V-5B": locked_model_identity}
     }
     experiment_lock_sha256 = "c" * 64
+    implementation_sha256 = "d" * 64
+    candidate_spec_sha256 = "f" * 64
+    frozen_commit = "a" * 40
     candidates = []
     for seed in range(4):
         run_config = {
@@ -156,13 +161,15 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             "prompt": payload[case_id]["text_prompt"],
             "backbone": "wan",
             "method": "baseline",
-            "code_identity": {"commit": "abc", "dirty": False},
+            "code_identity": {"commit": frozen_commit, "dirty": False},
             "seed": seed,
             "model": {"requested": "model", "snapshot_commit": "revision"},
             "runner_sha256": "r" * 64,
             "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
+            "model_content_verified": True,
             "locked_model_identity": locked_model_identity,
             "experiment_lock_sha256": experiment_lock_sha256,
+            "implementation_sha256": implementation_sha256,
         }
         run_config_sha256 = hashlib.sha256(
             json.dumps(run_config, sort_keys=True, separators=(",", ":")).encode()
@@ -188,7 +195,7 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                     "seed": seed,
                     "video": str(video),
                     "video_sha256": file_sha256(video),
-                    "code_identity": {"commit": "abc", "dirty": False},
+                    "code_identity": {"commit": frozen_commit, "dirty": False},
                     "protocol": {
                         "mode": "frozen",
                         "split": "validation",
@@ -198,8 +205,11 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
                     "model": run_config["model"],
                     "runner_sha256": run_config["runner_sha256"],
                     "model_lock_sha256": payload["_meta"]["model_lock_sha256"],
+                    "model_content_verified": True,
                     "locked_model_identity": locked_model_identity,
                     "experiment_lock_sha256": experiment_lock_sha256,
+                    "implementation_sha256": implementation_sha256,
+                    "candidate_spec_sha256": candidate_spec_sha256,
                 }
             )
         )
@@ -235,20 +245,23 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         protocol_path,
         dataset,
         formal=True,
-        expected_git_commit="abc",
+        expected_git_commit=frozen_commit,
         model_lock=model_lock,
         experiment_lock_sha256=experiment_lock_sha256,
+        expected_implementation_sha256=implementation_sha256,
+        candidate_spec_sha256=candidate_spec_sha256,
     )
     pool = materialize_candidate_pool(
         spec,
         {(case_id, f"candidate-{seed}"): str(seed) * 64 for seed in range(4)},
         artifact_mode="formal",
         producer_identity={
-            "commit": "abc",
+            "commit": frozen_commit,
             "dirty": False,
             "experiment_lock_sha256": experiment_lock_sha256,
+            "implementation_sha256": implementation_sha256,
         },
-        candidate_spec_sha256="f" * 64,
+        candidate_spec_sha256=candidate_spec_sha256,
     )
     validate_candidate_pool_against_protocol(
         pool,
@@ -257,6 +270,8 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
         formal=True,
         model_lock=model_lock,
         experiment_lock_sha256=experiment_lock_sha256,
+        expected_git_commit=frozen_commit,
+        expected_implementation_sha256=implementation_sha256,
     )
     pool["artifact_mode"] = "legacy-debug"
     with pytest.raises(ValueError, match="cannot be promoted"):
@@ -267,6 +282,8 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             formal=True,
             model_lock=model_lock,
             experiment_lock_sha256=experiment_lock_sha256,
+            expected_git_commit=frozen_commit,
+            expected_implementation_sha256=implementation_sha256,
         )
     pool["artifact_mode"] = "formal"
 
@@ -280,9 +297,11 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             protocol_path,
             dataset,
             formal=True,
-            expected_git_commit="abc",
+            expected_git_commit=frozen_commit,
             model_lock=model_lock,
             experiment_lock_sha256=experiment_lock_sha256,
+            expected_implementation_sha256=implementation_sha256,
+            candidate_spec_sha256=candidate_spec_sha256,
         )
 
     metadata["seed"] = 1
@@ -294,15 +313,20 @@ def test_formal_protocol_binds_seeds_generation_sidecars_and_transforms(
             protocol_path,
             dataset,
             formal=True,
-            expected_git_commit="abc",
+            expected_git_commit=frozen_commit,
             model_lock=model_lock,
             experiment_lock_sha256=experiment_lock_sha256,
+            expected_implementation_sha256=implementation_sha256,
+            candidate_spec_sha256=candidate_spec_sha256,
         )
 
 
 def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    implementation = repo / "geometry_selection"
+    implementation.mkdir()
+    (implementation / "scorer.py").write_text("VALUE = 1\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
@@ -313,7 +337,12 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
                 "schema": "geometry-experiment-lock-v1",
                 "protocol_manifest_sha256": "a" * 64,
                 "model_lock_sha256": "b" * 64,
-                "authorized_ranking_config_hashes": {"validation": ["c" * 64]},
+                "implementation_sha256": implementation_tree_sha256(repo),
+                "split": "validation",
+                "backbone": "Wan2.2-TI2V-5B",
+                "candidate_spec_sha256": "e" * 64,
+                "artifact_root": str((tmp_path / "artifacts").resolve()),
+                "authorized_ranking_config_hashes": ["c" * 64],
             }
         )
     )
@@ -332,6 +361,9 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
         protocol_manifest_sha256="a" * 64,
         model_lock_sha256="b" * 64,
         split="validation",
+        backbone="Wan2.2-TI2V-5B",
+        candidate_spec_sha256="e" * 64,
+        artifact_root=tmp_path / "artifacts",
         ranking_config_hash="c" * 64,
     )
     with pytest.raises(ValueError, match="not authorized"):
@@ -342,6 +374,9 @@ def test_experiment_lock_authorizes_only_predeclared_config_hashes(tmp_path) -> 
             protocol_manifest_sha256="a" * 64,
             model_lock_sha256="b" * 64,
             split="validation",
+            backbone="Wan2.2-TI2V-5B",
+            candidate_spec_sha256="e" * 64,
+            artifact_root=tmp_path / "artifacts",
             ranking_config_hash="d" * 64,
         )
 

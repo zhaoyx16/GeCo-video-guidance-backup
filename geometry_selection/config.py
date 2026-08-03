@@ -9,11 +9,14 @@ from typing import Any
 import yaml
 
 from .cache import canonical_hash
+from .graph import PoseGraphConfig
+from .graph_scorer import GraphScoreConfig
 from .scorer import ScorerConfig
 from .selection import SelectionConfig
+from .window_graph import WindowGraphConfig
 
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 
 def _construct_strict(cls, payload: dict[str, Any]):
@@ -35,6 +38,7 @@ class OfflineRankingConfig:
     protocol_manifest: str
     model_lock: str
     experiment_lock: str
+    artifact_root: str
     dataset_root: str
     geometry_cache_root: str
     geometry_checkpoint_sha256: str
@@ -42,7 +46,9 @@ class OfflineRankingConfig:
     geometry_source_commit: str
     output_root: str
     expected_split: str
+    score_mode: str
     scorer: ScorerConfig
+    graph_score: GraphScoreConfig
     selection: SelectionConfig
 
     def validate(self) -> None:
@@ -54,6 +60,8 @@ class OfflineRankingConfig:
             raise ValueError("method_version and experiment_name must be non-empty")
         if self.expected_split not in {"debug", "validation", "test"}:
             raise ValueError("expected_split must be debug, validation, or test")
+        if self.score_mode not in {"direct_reprojection", "pose_graph"}:
+            raise ValueError("score_mode must be direct_reprojection or pose_graph")
         for name in (
             "geometry_checkpoint_sha256",
             "geometry_source_tree_sha256",
@@ -65,6 +73,7 @@ class OfflineRankingConfig:
             if name == "geometry_source_commit" and len(value) != 40:
                 raise ValueError("geometry_source_commit must be a full Git commit")
         self.scorer.validate()
+        self.graph_score.validate()
         self.selection.validate()
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,6 +87,7 @@ class OfflineRankingConfig:
             "protocol_manifest": self.protocol_manifest,
             "model_lock": self.model_lock,
             "experiment_lock": self.experiment_lock,
+            "artifact_root": self.artifact_root,
             "dataset_root": self.dataset_root,
             "geometry_cache_root": self.geometry_cache_root,
             "geometry_checkpoint_sha256": self.geometry_checkpoint_sha256,
@@ -85,7 +95,9 @@ class OfflineRankingConfig:
             "geometry_source_commit": self.geometry_source_commit,
             "output_root": self.output_root,
             "expected_split": self.expected_split,
+            "score_mode": self.score_mode,
             "score": score,
+            "graph_score": asdict(self.graph_score),
             "selection": asdict(self.selection),
         }
 
@@ -96,6 +108,7 @@ class OfflineRankingConfig:
             "protocol_manifest",
             "model_lock",
             "experiment_lock",
+            "artifact_root",
             "dataset_root",
             "geometry_cache_root",
             "output_root",
@@ -120,6 +133,7 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
         "protocol_manifest",
         "model_lock",
         "experiment_lock",
+        "artifact_root",
         "dataset_root",
         "geometry_cache_root",
         "geometry_checkpoint_sha256",
@@ -127,7 +141,9 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
         "geometry_source_commit",
         "output_root",
         "expected_split",
+        "score_mode",
         "score",
+        "graph_score",
         "selection",
     }
     unknown = sorted(set(payload) - expected)
@@ -139,8 +155,20 @@ def load_offline_ranking_config(path: Path) -> OfflineRankingConfig:
     if "local_offsets" in score_payload:
         score_payload["local_offsets"] = tuple(score_payload["local_offsets"])
     scorer = _construct_strict(ScorerConfig, score_payload)
+    graph_payload = dict(payload.pop("graph_score"))
+    window = _construct_strict(WindowGraphConfig, dict(graph_payload.pop("window")))
+    optimizer = _construct_strict(PoseGraphConfig, dict(graph_payload.pop("optimizer")))
+    graph_score = _construct_strict(
+        GraphScoreConfig,
+        {**graph_payload, "window": window, "optimizer": optimizer},
+    )
     selection = _construct_strict(SelectionConfig, dict(payload.pop("selection")))
-    config = OfflineRankingConfig(scorer=scorer, selection=selection, **payload)
+    config = OfflineRankingConfig(
+        scorer=scorer,
+        graph_score=graph_score,
+        selection=selection,
+        **payload,
+    )
     config.validate()
     return config
 

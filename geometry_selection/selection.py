@@ -13,6 +13,7 @@ import numpy as np
 
 from .cache import canonical_hash
 from .scorer import GeometryScoreReport, PairScore
+from .window_bundle import validate_geometry_extraction_config, validate_window_bundle
 
 
 CANDIDATE_POOL_SCHEMA = "geometry-candidate-pool-v2"
@@ -25,6 +26,13 @@ class SelectionConfig:
     min_relative_improvement: float = 0.01
     min_motion_ratio: float = 0.80
     max_motion_ratio: float = 1.25
+    min_net_translation_ratio: float = 0.75
+    max_net_translation_ratio: float = 1.33
+    min_rotation_ratio: float = 0.50
+    max_rotation_ratio: float = 2.00
+    min_shared_comparable_fraction: float = 0.05
+    min_support_ratio: float = 0.50
+    edge_huber_delta: float = 0.10
     retain_unguided_incumbent: bool = True
     min_common_local_edges: int = 2
     min_common_long_range_edges: int = 1
@@ -46,6 +54,13 @@ class SelectionConfig:
             self.min_relative_improvement,
             self.min_motion_ratio,
             self.max_motion_ratio,
+            self.min_net_translation_ratio,
+            self.max_net_translation_ratio,
+            self.min_rotation_ratio,
+            self.max_rotation_ratio,
+            self.min_shared_comparable_fraction,
+            self.min_support_ratio,
+            self.edge_huber_delta,
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError("selection thresholds must be finite")
@@ -55,6 +70,16 @@ class SelectionConfig:
             raise ValueError("min_motion_ratio must be positive")
         if self.max_motion_ratio < self.min_motion_ratio:
             raise ValueError("max_motion_ratio must be >= min_motion_ratio")
+        if self.min_net_translation_ratio <= 0 or self.max_net_translation_ratio < self.min_net_translation_ratio:
+            raise ValueError("net translation ratio bounds are invalid")
+        if self.min_rotation_ratio <= 0 or self.max_rotation_ratio < self.min_rotation_ratio:
+            raise ValueError("rotation ratio bounds are invalid")
+        if not 0.0 <= self.min_shared_comparable_fraction <= 1.0:
+            raise ValueError("min_shared_comparable_fraction must be in [0,1]")
+        if not 0.0 < self.min_support_ratio <= 1.0:
+            raise ValueError("min_support_ratio must be in (0,1]")
+        if self.edge_huber_delta <= 0:
+            raise ValueError("edge_huber_delta must be positive")
         if self.abstain and not self.retain_unguided_incumbent:
             raise ValueError("abstention requires retain_unguided_incumbent=true")
         if self.min_common_local_edges < 1 or self.min_common_long_range_edges < 0:
@@ -135,6 +160,15 @@ def candidate_pool_id(case: dict[str, Any]) -> str:
                 "geometry_cache_key": candidate["geometry_cache_key"],
                 "generation_metadata_sha256": candidate["generation_metadata_sha256"],
                 "is_incumbent": candidate["is_incumbent"],
+                **(
+                    {
+                        "geometry_window_bundle_sha256": canonical_hash(
+                            candidate["geometry_window_bundle"]
+                        )
+                    }
+                    if candidate.get("geometry_window_bundle") is not None
+                    else {}
+                ),
             }
             for candidate in sorted(case["candidates"], key=lambda item: item["candidate_id"])
         ],
@@ -149,6 +183,7 @@ def materialize_candidate_pool(
     artifact_mode: str,
     producer_identity: dict[str, Any],
     candidate_spec_sha256: str,
+    geometry_window_bundles: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Hash immutable inputs and turn a human-written spec into a frozen pool."""
 
@@ -169,8 +204,7 @@ def materialize_candidate_pool(
             key = (source_case["case_id"], source_candidate["candidate_id"])
             if key not in geometry_cache_keys:
                 raise ValueError(f"missing geometry cache key for {key}")
-            candidates.append(
-                {
+            candidate_record = {
                     "candidate_id": source_candidate["candidate_id"],
                     "seed": int(source_candidate["seed"]),
                     "video": str(video),
@@ -182,7 +216,17 @@ def materialize_candidate_pool(
                     ),
                     "is_incumbent": bool(source_candidate["is_incumbent"]),
                 }
-            )
+            if geometry_window_bundles is not None:
+                if key not in geometry_window_bundles:
+                    raise ValueError(f"missing geometry window bundle for {key}")
+                bundle = geometry_window_bundles[key]
+                validate_window_bundle(
+                    bundle,
+                    expected_video_sha256=candidate_record["video_sha256"],
+                    expected_global_cache_key=candidate_record["geometry_cache_key"],
+                )
+                candidate_record["geometry_window_bundle"] = bundle
+            candidates.append(candidate_record)
         case = {
             "case_id": source_case["case_id"],
             "protocol_manifest_sha256": spec["protocol_manifest_sha256"],
@@ -209,7 +253,11 @@ def materialize_candidate_pool(
     }
 
 
-def validate_candidate_spec(spec: dict[str, Any]) -> None:
+def validate_candidate_spec(
+    spec: dict[str, Any],
+    *,
+    require_candidate_videos: bool = True,
+) -> None:
     if spec.get("schema") != CANDIDATE_SPEC_SCHEMA:
         raise ValueError(f"candidate spec schema must be {CANDIDATE_SPEC_SCHEMA}")
     required = {
@@ -229,6 +277,8 @@ def validate_candidate_spec(spec: dict[str, Any]) -> None:
         raise ValueError("candidate spec backbone must be a non-empty string")
     if not isinstance(spec["generation"], dict) or not spec["generation"]:
         raise ValueError("candidate spec generation must be a non-empty mapping")
+    if "geometry_extraction" in spec:
+        validate_geometry_extraction_config(spec["geometry_extraction"])
     protocol_hash = spec["protocol_manifest_sha256"]
     if len(protocol_hash) != 64 or any(
         character not in "0123456789abcdef" for character in protocol_hash
@@ -282,7 +332,7 @@ def validate_candidate_spec(spec: dict[str, Any]) -> None:
                     f"{source_case['case_id']}"
                 )
             video = Path(source_candidate["video"]).resolve()
-            if not video.is_file():
+            if require_candidate_videos and not video.is_file():
                 raise FileNotFoundError(video)
             candidate_id = source_candidate["candidate_id"]
             if not isinstance(candidate_id, str) or not candidate_id:
@@ -323,6 +373,21 @@ def load_and_validate_candidate_pool(
     protocol_hash = payload.get("protocol_manifest_sha256")
     if not isinstance(protocol_hash, str) or len(protocol_hash) != 64:
         raise ValueError("candidate pool must bind a protocol_manifest_sha256")
+    if payload.get("artifact_mode") not in {"formal", "legacy-debug"}:
+        raise ValueError("candidate pool artifact_mode must be formal or legacy-debug")
+    spec_hash = payload.get("candidate_spec_sha256")
+    if not isinstance(spec_hash, str) or len(spec_hash) != 64:
+        raise ValueError("candidate pool must bind candidate_spec_sha256")
+    preparation = payload.get("preparation")
+    if not isinstance(preparation, dict):
+        raise ValueError("candidate pool must record preparation provenance")
+    commit = preparation.get("commit")
+    if (
+        not isinstance(commit, str)
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+    ):
+        raise ValueError("candidate pool preparation commit must be a full Git SHA")
 
     seen_cases: set[str] = set()
     seen_scenes: set[str] = set()
@@ -393,6 +458,13 @@ def load_and_validate_candidate_pool(
                 value = candidate[field]
                 if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                     raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+            bundle = candidate.get("geometry_window_bundle")
+            if bundle is not None:
+                validate_window_bundle(
+                    bundle,
+                    expected_video_sha256=candidate["video_sha256"],
+                    expected_global_cache_key=candidate["geometry_cache_key"],
+                )
             metadata_hash = candidate["generation_metadata_sha256"]
             if metadata_hash is not None and (
                 len(metadata_hash) != 64
@@ -473,6 +545,12 @@ def _common_comparable_scores(
     first_config = asdict(valid_candidates[0].report.config)
     if any(asdict(candidate.report.config) != first_config for candidate in valid_candidates[1:]):
         raise ValueError("all candidates must use the same scorer configuration")
+    keyframe_indices = valid_candidates[0].report.keyframe_indices
+    if any(candidate.report.keyframe_indices != keyframe_indices for candidate in valid_candidates[1:]):
+        raise ValueError("all candidates must use identical keyframe timestamps")
+    score_kind = valid_candidates[0].report.score_kind
+    if any(candidate.report.score_kind != score_kind for candidate in valid_candidates[1:]):
+        raise ValueError("all candidates must use the same geometry score kind")
     maps = [_directed_pair_map(candidate.report) for candidate in valid_candidates]
     common = set(maps[0])
     for pair_map in maps[1:]:
@@ -481,6 +559,15 @@ def _common_comparable_scores(
         key
         for key in common
         if all(math.isfinite(pair_map[key].score) for pair_map in maps)
+    }
+    common = {
+        key
+        for key in common
+        if min(pair_map[key].comparable_fraction for pair_map in maps)
+        >= config.min_shared_comparable_fraction
+        and min(pair_map[key].comparable_fraction for pair_map in maps)
+        / max(max(pair_map[key].comparable_fraction for pair_map in maps), 1e-8)
+        >= config.min_support_ratio
     }
     grouped_directions: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for source, target in common:
@@ -502,18 +589,60 @@ def _common_comparable_scores(
     ):
         return {}, len(local_keys), len(long_keys)
 
+    if score_kind == "pose_graph":
+        schedules = {
+            (
+                candidate.report.potential_local_edges,
+                candidate.report.potential_long_range_edges,
+            )
+            for candidate in valid_candidates
+        }
+        if len(schedules) != 1:
+            raise ValueError("pose-graph candidates must use one fixed edge schedule")
+        return (
+            {
+                candidate.candidate_id: float(candidate.report.total_score)
+                for candidate in valid_candidates
+            },
+            len(local_keys),
+            len(long_keys),
+        )
+
     scores: dict[str, float] = {}
+    common_direction_weight = {
+        direction: min(pair_map[direction].comparable_fraction for pair_map in maps)
+        for direction in common
+    }
+
+    def robust_edge_value(value: float) -> float:
+        absolute = abs(value)
+        delta = config.edge_huber_delta
+        return 0.5 * absolute**2 / delta if absolute <= delta else absolute - 0.5 * delta
+
     for candidate, pair_map in zip(valid_candidates, maps, strict=True):
         def undirected_score(key: tuple[int, int]) -> float:
             directions = grouped_directions[key]
             pair_scores = [pair_map[direction] for direction in directions]
-            weights = [max(pair.comparable_fraction, 1e-8) for pair in pair_scores]
-            return float(np.average([pair.score for pair in pair_scores], weights=weights))
+            weights = [common_direction_weight[direction] for direction in directions]
+            return float(
+                np.average(
+                    [robust_edge_value(pair.score) for pair in pair_scores],
+                    weights=weights,
+                )
+            )
 
-        local_score = float(np.mean([undirected_score(key) for key in local_keys]))
+        def aggregate_edges(keys: list[tuple[int, int]]) -> float:
+            values = [undirected_score(key) for key in keys]
+            weights = [
+                float(np.mean([common_direction_weight[item] for item in grouped_directions[key]]))
+                for key in keys
+            ]
+            return float(np.average(values, weights=weights))
+
+        local_score = aggregate_edges(local_keys)
         components = [(scorer_config.local_weight, local_score)]
         if long_keys and scorer_config.long_range_weight > 0:
-            long_score = float(np.mean([undirected_score(key) for key in long_keys]))
+            long_score = aggregate_edges(long_keys)
             components.append((scorer_config.long_range_weight, long_score))
         weight = sum(item[0] for item in components)
         scores[candidate.candidate_id] = sum(
@@ -528,6 +657,16 @@ def _motion_ratio(challenger_motion: float, incumbent_motion: float) -> float:
     if incumbent_motion < 1e-8:
         return float("inf")
     return challenger_motion / incumbent_motion
+
+
+def _motion_ratio_with_floor(
+    challenger_motion: float,
+    incumbent_motion: float,
+    floor: float,
+) -> float:
+    if incumbent_motion < floor and challenger_motion < floor:
+        return 1.0
+    return _motion_ratio(challenger_motion, incumbent_motion)
 
 
 def select_candidate(
@@ -585,9 +724,23 @@ def select_candidate(
         improvement = (incumbent_score - challenger_score) / max(abs(incumbent_score), 1e-8)
         challenger_motion = challenger.report.normalized_camera_motion
         motion_ratio = _motion_ratio(challenger_motion, incumbent_motion)
+        net_translation_ratio = _motion_ratio_with_floor(
+            challenger.report.normalized_net_translation_motion,
+            incumbent.report.normalized_net_translation_motion,
+            1e-4,
+        )
+        rotation_ratio = _motion_ratio_with_floor(
+            challenger.report.camera_angular_path_deg,
+            incumbent.report.camera_angular_path_deg,
+            1.0,
+        )
         if (
             improvement >= config.min_relative_improvement
             and config.min_motion_ratio <= motion_ratio <= config.max_motion_ratio
+            and config.min_net_translation_ratio
+            <= net_translation_ratio
+            <= config.max_net_translation_ratio
+            and config.min_rotation_ratio <= rotation_ratio <= config.max_rotation_ratio
         ):
             eligible.append((challenger, float(improvement), float(motion_ratio)))
     if config.abstain and not eligible:
@@ -626,11 +779,3 @@ def select_candidate(
         comparable_scores,
         tuple(candidates),
     )
-    if payload.get("artifact_mode") not in {"formal", "legacy-debug"}:
-        raise ValueError("candidate pool artifact_mode must be formal or legacy-debug")
-    spec_hash = payload.get("candidate_spec_sha256")
-    if not isinstance(spec_hash, str) or len(spec_hash) != 64:
-        raise ValueError("candidate pool must bind candidate_spec_sha256")
-    preparation = payload.get("preparation")
-    if not isinstance(preparation, dict) or not preparation.get("commit"):
-        raise ValueError("candidate pool must record preparation provenance")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import math
 from typing import Any
 
@@ -26,6 +26,7 @@ class ScorerConfig:
     min_long_range_gap: int = 3
     confidence_quantile: float = 0.20
     confidence_evidence_floor: float = 1e-3
+    min_pair_confidence_evidence: float = 1e-2
     depth_edge_relative_threshold: float = 0.10
     occlusion_relative_tolerance: float = 0.05
     min_pair_overlap: float = 0.05
@@ -70,6 +71,11 @@ class ScorerConfig:
             raise ValueError("occlusion_relative_tolerance must be non-negative")
         if not np.isfinite(self.confidence_evidence_floor) or self.confidence_evidence_floor < 0:
             raise ValueError("confidence_evidence_floor must be finite and non-negative")
+        if (
+            not np.isfinite(self.min_pair_confidence_evidence)
+            or self.min_pair_confidence_evidence < 0
+        ):
+            raise ValueError("min_pair_confidence_evidence must be finite and non-negative")
         if self.min_valid_pixels < 1 or self.pixel_stride < 1:
             raise ValueError("min_valid_pixels and pixel_stride must be positive")
         if self.huber_delta <= 0:
@@ -102,6 +108,7 @@ class PairScore:
     cycle_error: float
     score: float
     status: str
+    mean_confidence_evidence: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,12 @@ class GeometryScoreReport:
     status: str
     pairs: tuple[PairScore, ...]
     config: ScorerConfig
+    keyframe_indices: tuple[int, ...] = ()
+    normalized_net_translation_motion: float = 0.0
+    score_kind: str = "direct_reprojection"
+    potential_local_edges: int = 0
+    potential_long_range_edges: int = 0
+    graph_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -261,6 +274,9 @@ def score_pair(
     source_conf_weight = _normalized_confidence(source_conf)[
         :: config.pixel_stride, :: config.pixel_stride
     ]
+    source_conf_evidence = _confidence_evidence(source_conf)[
+        :: config.pixel_stride, :: config.pixel_stride
+    ]
     target_conf_weight_image = _normalized_confidence(target_conf)
 
     source_points_camera, source_x, source_y = unproject_z_depth(
@@ -283,9 +299,13 @@ def score_pair(
     source_reliable &= source_points_camera[..., 2] > 0
 
     reliable_count = int(source_reliable.sum())
+    temporal_gap = abs(
+        int(prediction.keyframe_indices[target])
+        - int(prediction.keyframe_indices[source])
+    )
     if reliable_count == 0:
         return PairScore(
-            source, target, abs(target - source), 0.0, 0.0, 0,
+            source, target, temporal_gap, 0.0, 0.0, 0,
             float("nan"), float("nan"), float("inf"), "no_reliable_source_pixels",
         )
 
@@ -340,6 +360,13 @@ def score_pair(
     comparable = projected_valid & target_reliable & ~behind_target_surface
     valid_pixels = int(comparable.sum())
     comparable_fraction = float(valid_pixels / max(reliable_count, 1))
+    pair_confidence = np.sqrt(
+        np.maximum(source_conf_evidence, 0.0)
+        * np.maximum(_confidence_evidence(sampled_conf.values), 0.0)
+    )
+    mean_confidence_evidence = (
+        float(np.mean(pair_confidence[comparable])) if valid_pixels else float("nan")
+    )
 
     minimum_overlap = (
         config.min_long_range_overlap
@@ -352,12 +379,14 @@ def score_pair(
         status = "insufficient_comparable_fraction"
     elif valid_pixels < config.min_valid_pixels:
         status = "insufficient_comparable_pixels"
+    elif mean_confidence_evidence < config.min_pair_confidence_evidence:
+        status = "insufficient_absolute_confidence"
     else:
         status = "ok"
 
     if status != "ok":
         return PairScore(
-            source, target, abs(target - source), overlap, comparable_fraction,
+            source, target, temporal_gap, overlap, comparable_fraction,
             valid_pixels, float("nan"), float("nan"), float("inf"), status,
         )
 
@@ -405,7 +434,7 @@ def score_pair(
     return PairScore(
         source=source,
         target=target,
-        temporal_gap=abs(target - source),
+        temporal_gap=temporal_gap,
         overlap=overlap,
         comparable_fraction=comparable_fraction,
         valid_pixels=int(cycle_valid.sum()),
@@ -413,6 +442,7 @@ def score_pair(
         cycle_error=cycle_error,
         score=score,
         status="ok",
+        mean_confidence_evidence=mean_confidence_evidence,
     )
 
 
@@ -503,6 +533,9 @@ def score_geometry(
     camera_path_length = float(np.linalg.norm(np.diff(centers, axis=0), axis=1).sum())
     median_depth = float(np.median(prediction.depth[np.isfinite(prediction.depth)]))
     normalized_translation_motion = camera_path_length / median_depth
+    normalized_net_translation_motion = float(
+        np.linalg.norm(centers[-1] - centers[0]) / median_depth
+    )
     rotations = prediction.world_to_camera[:, :3, :3].astype(np.float64)
     angular_steps = []
     for first, second in zip(rotations[:-1], rotations[1:], strict=True):
@@ -527,4 +560,8 @@ def score_geometry(
         status=status,
         pairs=tuple(local_pairs + long_pairs),
         config=config,
+        keyframe_indices=tuple(int(value) for value in prediction.keyframe_indices),
+        normalized_net_translation_motion=normalized_net_translation_motion,
+        potential_local_edges=len(local_indices),
+        potential_long_range_edges=len(long_indices),
     )

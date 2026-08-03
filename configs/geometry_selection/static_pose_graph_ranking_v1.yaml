@@ -1,6 +1,6 @@
 schema_version: 2
-method_version: offline_reprojection_ranking_v1
-experiment_name: static_vggt_omega_ranking
+method_version: independent_window_pose_graph_v1
+experiment_name: static_vggt_omega_pose_graph_ranking
 candidate_manifest: /path/to/candidate_pool.json
 protocol_manifest: /path/to/frozen_protocol.json
 model_lock: /path/to/model_lock.json
@@ -13,7 +13,7 @@ geometry_source_tree_sha256: 10e6b2ef6d80166b1de64fb676d8ce8d93228198dbf5baa3e68
 geometry_source_commit: 39a0cb8af88554f15ddcb5354cd52bde588fa014
 output_root: /path/to/results
 expected_split: validation
-score_mode: direct_reprojection
+score_mode: pose_graph
 
 score:
   local_offsets: [1, 2]
@@ -55,7 +55,7 @@ graph_score:
     require_loop_edges: true
   optimizer:
     translation_scale: 1.0
-    rotation_scale: 1.0
+    rotation_scale: 0.1745329252
     huber_delta: 1.0
     loop_switch_prior: 1.0
     use_switchable_loops: true
@@ -81,11 +81,11 @@ selection:
   max_net_translation_ratio: 1.33
   min_rotation_ratio: 0.50
   max_rotation_ratio: 2.00
-  min_shared_comparable_fraction: 0.05
+  min_shared_comparable_fraction: 0.02
   min_support_ratio: 0.50
   edge_huber_delta: 0.10
   retain_unguided_incumbent: true
   min_common_local_edges: 4
-  min_common_long_range_edges: 2
+  min_common_long_range_edges: 1
   require_common_long_range: true
   random_control_seed: 0

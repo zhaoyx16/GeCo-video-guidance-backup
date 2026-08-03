@@ -40,6 +40,7 @@ from geometry_selection.protocol import (
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock, verify_generation_model
+from geometry_selection.selection import validate_candidate_spec
 
 
 WAN_NEGATIVE = (
@@ -405,7 +406,9 @@ def main() -> None:
     parser.add_argument("--expected-split", choices=("debug", "validation", "test"))
     parser.add_argument("--expected-git-commit")
     parser.add_argument("--model-lock", type=Path)
+    parser.add_argument("--model-verification-cache", type=Path)
     parser.add_argument("--experiment-lock", type=Path)
+    parser.add_argument("--candidate-spec", type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -450,6 +453,11 @@ def main() -> None:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
 
     is_frozen_protocol = args.protocol_mode == "frozen"
+    if is_frozen_protocol and args.method == "adapted_geco":
+        parser.error(
+            "formal adapted-GeCo runs are disabled until guidance hyperparameters "
+            "and VGGT/UFM checkpoints are included in the frozen model/method lock"
+        )
     if is_frozen_protocol and args.overwrite:
         parser.error("frozen protocol forbids --overwrite of completed generations")
     if is_frozen_protocol and args.repo.resolve() != REPO_ROOT.resolve():
@@ -487,6 +495,9 @@ def main() -> None:
     locked_model_identity = None
     model_lock_sha256 = None
     experiment_lock_sha256 = None
+    implementation_sha256 = None
+    candidate_spec_sha256 = None
+    planned_candidate = None
     if is_frozen_protocol:
         if args.dataset_root is None:
             parser.error("frozen protocol requires --dataset-root")
@@ -511,6 +522,8 @@ def main() -> None:
             raise ValueError(f"generation profile differs from protocol: {profile_mismatches}")
         if args.model_lock is None:
             parser.error("frozen protocol requires --model-lock")
+        if args.model_verification_cache is None:
+            parser.error("frozen protocol requires --model-verification-cache")
         validate_committed_file(args.model_lock, REPO_ROOT, code_identity["commit"])
         model_lock_sha256 = protocol_file_sha256(args.model_lock)
         if model_lock_sha256 != protocol_meta["model_lock_sha256"]:
@@ -519,18 +532,45 @@ def main() -> None:
             load_model_lock(args.model_lock),
             profile_name,
             Path(args.model),
+            verification_cache=args.model_verification_cache,
         )
         if args.experiment_lock is None:
             parser.error("frozen protocol requires --experiment-lock")
-        validate_experiment_lock(
+        if args.candidate_spec is None:
+            parser.error("frozen protocol requires --candidate-spec")
+        validate_committed_file(args.candidate_spec, REPO_ROOT, code_identity["commit"])
+        candidate_spec = json.loads(args.candidate_spec.read_text(encoding="utf-8"))
+        validate_candidate_spec(candidate_spec, require_candidate_videos=False)
+        candidate_spec_sha256 = protocol_file_sha256(args.candidate_spec)
+        if candidate_spec["split"] != args.expected_split:
+            raise ValueError("candidate spec split differs from generation split")
+        if candidate_spec["backbone"] != profile_name:
+            raise ValueError("candidate spec backbone differs from generation profile")
+        if candidate_spec["protocol_manifest_sha256"] != protocol_file_sha256(args.manifest):
+            raise ValueError("candidate spec protocol digest differs from manifest")
+        matching_candidates = [
+            candidate
+            for planned_case in candidate_spec["cases"]
+            if planned_case["case_id"] == case_id
+            for candidate in planned_case["candidates"]
+            if candidate["seed"] == args.seed
+        ]
+        if len(matching_candidates) != 1:
+            raise ValueError("candidate spec does not contain exactly one matching case/seed")
+        planned_candidate = matching_candidates[0]
+        experiment_lock = validate_experiment_lock(
             args.experiment_lock,
             REPO_ROOT,
             code_identity["commit"],
             protocol_manifest_sha256=protocol_file_sha256(args.manifest),
             model_lock_sha256=model_lock_sha256,
             split=args.expected_split,
+            backbone=profile_name,
+            candidate_spec_sha256=candidate_spec_sha256,
+            artifact_root=args.output_root,
         )
         experiment_lock_sha256 = protocol_file_sha256(args.experiment_lock)
+        implementation_sha256 = experiment_lock["implementation_sha256"]
         allowed_seeds = protocol_meta["candidate_seed_policy"]["candidate_seeds"]
         if args.seed not in allowed_seeds:
             raise ValueError(f"seed {args.seed} is outside frozen policy {allowed_seeds}")
@@ -609,7 +649,9 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
+        "model_content_verified": bool(is_frozen_protocol),
         "experiment_lock_sha256": experiment_lock_sha256,
+        "implementation_sha256": implementation_sha256,
         "runner_sha256": runner_sha256,
         "pipeline_sha256": pipeline_sha256,
         "vggt_model": model_identity(args.vggt_model)
@@ -662,6 +704,11 @@ def main() -> None:
         / f"run_{run_id}"
     )
     video_path = output_dir / "video.mp4"
+    if is_frozen_protocol and Path(planned_candidate["video"]).resolve() != video_path.resolve():
+        raise ValueError(
+            "candidate spec video path differs from the deterministic generation output: "
+            f"planned={planned_candidate['video']} actual={video_path}"
+        )
     metadata_path = output_dir / "metadata.json"
     complete_path = output_dir / "COMPLETE"
     if complete_path.exists() and not args.overwrite:
@@ -798,7 +845,10 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
+        "model_content_verified": bool(is_frozen_protocol),
         "experiment_lock_sha256": experiment_lock_sha256,
+        "implementation_sha256": implementation_sha256,
+        "candidate_spec_sha256": candidate_spec_sha256,
         "vggt_model": model_identity(args.vggt_model)
         if args.method == "adapted_geco"
         else None,

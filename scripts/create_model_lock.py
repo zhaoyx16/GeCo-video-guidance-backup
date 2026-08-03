@@ -40,23 +40,70 @@ def main() -> None:
     )
     parser.add_argument("--geometry-source", type=Path, required=True)
     parser.add_argument("--geometry-checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--reuse-weight-hashes-from",
+        type=Path,
+        help="Reuse previously computed hashes only when every weight path and size matches.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     names = [name for name, _ in args.generation_model]
     if len(set(names)) != len(names):
         parser.error("generation model profile names must be unique")
 
-    geometry = VGGTOmegaAdapter(
+    previous = None
+    if args.reuse_weight_hashes_from is not None:
+        previous = json.loads(args.reuse_weight_hashes_from.read_text(encoding="utf-8"))
+
+    geometry_adapter = VGGTOmegaAdapter(
         source_root=args.geometry_source,
         checkpoint=args.geometry_checkpoint,
         device="cpu",
-    ).cache_identity()
+    )
+    if previous is None:
+        geometry = geometry_adapter.artifact_identity()
+    else:
+        geometry = geometry_adapter.identity(hash_checkpoint=False)
+        geometry.pop("source_root")
+        geometry.pop("checkpoint")
+        previous_geometry = previous.get("geometry_backbone")
+        if not isinstance(previous_geometry, dict):
+            raise ValueError("previous model lock has no geometry backbone identity")
+        comparable = dict(geometry)
+        comparable.pop("checkpoint_sha256")
+        previous_comparable = dict(previous_geometry)
+        previous_digest = previous_comparable.pop("checkpoint_sha256", None)
+        if comparable != previous_comparable or not previous_digest:
+            raise ValueError(
+                "cannot reuse geometry checkpoint hash after geometry identity change"
+            )
+        geometry["checkpoint_sha256"] = previous_digest
+
+    generation_models = {}
+    for name, path in args.generation_model:
+        if previous is None:
+            identity = model_directory_identity(path, hash_weights=True)
+        else:
+            identity = model_directory_identity(path, hash_weights=False)
+            previous_identity = previous.get("generation_models", {}).get(name)
+            if previous_identity is None:
+                raise ValueError(f"previous model lock has no profile: {name}")
+            previous_weights = {
+                (record["path"], record["size"]): record.get("sha256")
+                for record in previous_identity.get("weight_files", [])
+            }
+            for record in identity["weight_files"]:
+                digest = previous_weights.get((record["path"], record["size"]))
+                if not digest:
+                    raise ValueError(
+                        f"cannot reuse weight hash after path/size change: {name}/{record['path']}"
+                    )
+                record["sha256"] = digest
+        generation_models[name] = identity
+
     payload = {
         "schema": MODEL_LOCK_SCHEMA,
-        "generation_models": {
-            name: model_directory_identity(path, hash_weights=True)
-            for name, path in args.generation_model
-        },
+        "generation_models": generation_models,
         "geometry_backbone": geometry,
     }
     output = args.output.resolve()

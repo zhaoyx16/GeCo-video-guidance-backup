@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -161,12 +162,36 @@ class VGGTOmegaAdapter:
             "depth_definition": "camera_z_depth",
         }
 
-    def cache_identity(self) -> dict:
-        """Content-based identity that is stable when artifacts are relocated."""
+    def artifact_identity(self) -> dict:
+        """Content-based model identity that is stable when artifacts are relocated."""
 
         identity = self.identity(hash_checkpoint=True)
         identity.pop("source_root")
         identity.pop("checkpoint")
+        return identity
+
+    def cache_identity(self) -> dict:
+        """Artifact plus numerical-runtime identity used for geometry cache keys."""
+
+        import torch
+
+        identity = self.artifact_identity()
+        cuda_available = torch.cuda.is_available()
+        identity["execution_environment"] = {
+            "python": platform.python_version(),
+            "platform_machine": platform.machine(),
+            "numpy": np.__version__,
+            "torch": torch.__version__,
+            "cuda_runtime": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version() if cuda_available else None,
+            "device": str(self.device),
+            "device_name": torch.cuda.get_device_name(self.device) if cuda_available else None,
+            "inference_dtype": "float32",
+            "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+            "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
+            "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+            "float32_matmul_precision": torch.get_float32_matmul_precision(),
+        }
         return identity
 
     def _import_api(self):

@@ -1,0 +1,554 @@
+{
+  "generation_models": {
+    "Cosmos-Predict2.5-2B-post": {
+      "json_files": [
+        {
+          "path": "model_index.json",
+          "sha256": "42e1448a8219ed8b3585198d22728998f4c1b2875e6b55a3f3d56a87d608f60b",
+          "size": 488
+        },
+        {
+          "path": "scheduler/scheduler_config.json",
+          "sha256": "f939105f0bd6b07c51bff8f875db00bc3356de11d0d91b2ab645edd174b3fa9a",
+          "size": 862
+        },
+        {
+          "path": "text_encoder/config.json",
+          "sha256": "826d21d9a9edc346eacbba33a1ae0076bfe5d3c55fe690e7f33047de24bc7891",
+          "size": 3097
+        },
+        {
+          "path": "text_encoder/generation_config.json",
+          "sha256": "e188eaa07f2bbc9fc3d858ed7ce2fb7ba0a3dc584d2b31747d05d64a58cb44ef",
+          "size": 214
+        },
+        {
+          "path": "text_encoder/model.safetensors.index.json",
+          "sha256": "4be35310ddc165e46e88de4c3fec8c1210014b0b8717f4544d82cc740814ae0c",
+          "size": 57655
+        },
+        {
+          "path": "tokenizer/added_tokens.json",
+          "sha256": "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
+          "size": 605
+        },
+        {
+          "path": "tokenizer/special_tokens_map.json",
+          "sha256": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+          "size": 613
+        },
+        {
+          "path": "tokenizer/tokenizer.json",
+          "sha256": "9c5ae00e602b8860cbd784ba82a8aa14e8feecec692e7076590d014d7b7fdafa",
+          "size": 11421896
+        },
+        {
+          "path": "tokenizer/tokenizer_config.json",
+          "sha256": "0a04a9d7d4a62b28482bdfe726c122756de85714fb64166ace92ae75b8f57614",
+          "size": 4686
+        },
+        {
+          "path": "tokenizer/vocab.json",
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "size": 2776833
+        },
+        {
+          "path": "transformer/config.json",
+          "sha256": "f908c162ed47a14399d8c46e9f446937d545faf252d3ffc6e507e440faab7ba8",
+          "size": 599
+        },
+        {
+          "path": "vae/config.json",
+          "sha256": "182e466571e6bee157f99c6d8543169ddcf8f4f4b54667a968c402ac38ec56de",
+          "size": 953
+        }
+      ],
+      "snapshot_commit": null,
+      "support_files": [
+        {
+          "path": ".cache/huggingface/.gitignore",
+          "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+          "size": 1
+        },
+        {
+          "path": ".cache/huggingface/CACHEDIR.TAG",
+          "sha256": "f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d",
+          "size": 191
+        },
+        {
+          "path": ".cache/huggingface/download/.gitattributes.metadata",
+          "sha256": "fcd1e703e465a815ec844b5f901f502308a8970fa3871ac2295bd8f0ab60593e",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/model_index.json.metadata",
+          "sha256": "b97af2fe4d52389256efde0da67b01006549e38ce3eec8a200faa83c26df21df",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/scheduler/scheduler_config.json.metadata",
+          "sha256": "fe2f68e37137df7887d8c5355e8dc941fe972e82779e7f8279c90d346f358e9e",
+          "size": 99
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/config.json.metadata",
+          "sha256": "b72ef8ed275e561b5edc0147d96bdf7d758866183f833edd3746d712e8aa5188",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/generation_config.json.metadata",
+          "sha256": "6a8d72005c3d0471535b4dacdb3ab07159e2892e1bce6fa1e0ee464d06a4f4f6",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00001-of-00004.safetensors.metadata",
+          "sha256": "4e3daa56c3246b176927e912abe4a4189876795bedc266cd0c8d13719a9c17ed",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00002-of-00004.safetensors.metadata",
+          "sha256": "8481f638ed62e81cc925fe14b66972ca19ef9e03c4a44edbdc3eb09b8056b230",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00003-of-00004.safetensors.metadata",
+          "sha256": "f8bc7d942e85c1622116658082cc1252dbe55cc4542682e6f29f023625c48ee7",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00004-of-00004.safetensors.metadata",
+          "sha256": "93137cb7d1e7362fc6ffd182ea21ded6589a167bba59783eee0bc6f4778d0baf",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model.safetensors.index.json.metadata",
+          "sha256": "3d6d4b4cee69ddfff6ebe8c587ea737b3c7c07a195cd0b110727eab6e78ba2be",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/added_tokens.json.metadata",
+          "sha256": "a3c9ab2b493e8f54990b33bf7a30850086480db61eec7adcb95e41362d542235",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/chat_template.jinja.metadata",
+          "sha256": "c013db699d68fe60f1d5ff7d06c5fc89dd00c5ed98a95527e5216a2d3c5cdeae",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/merges.txt.metadata",
+          "sha256": "eac361a593cd892c6a36976ee20050c30e4d005f57844e12f7dc180cf168d1af",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/special_tokens_map.json.metadata",
+          "sha256": "dedb543232014ad2f53422278b4f8d3328f409093f8d779d9b2dff4fcffa5e4f",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/tokenizer.json.metadata",
+          "sha256": "db09c7709e4fed44ff4f2f7d950318f7dc6111caf5d07b8479d2bbfcd9c8764b",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/tokenizer_config.json.metadata",
+          "sha256": "e3a50fa5cb4ffd681b6dadc1081a2ed5a27ca85889ca9d1722b180370ffc9618",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/vocab.json.metadata",
+          "sha256": "64ee7fe2661dac2d1eac19b049c07d1c375335c9dfd8ecee646dd93e2db2c8a4",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/config.json.metadata",
+          "sha256": "207c3c7c27abafc63c9a1b3af55a8c7bd4363e3097acc0da3f824342b279e475",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model.safetensors.metadata",
+          "sha256": "f19e37915b2dec9cc9b6acbc48fa5c08c929f115cc32d6404cce4b697feefd7d",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/vae/config.json.metadata",
+          "sha256": "604af96cccbef16c7c64cb3ce7d259b9bbb5abb1457b0724eace761c72b62330",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/vae/diffusion_pytorch_model.safetensors.metadata",
+          "sha256": "a6e7695159ccc34767abed5cef820c04a649c452f4c3fc2a6ce9735d879e5825",
+          "size": 125
+        },
+        {
+          "path": ".gitattributes",
+          "sha256": "caf3ca02d5e883f643e939cbed54f94237f94c171797f0dfea5e25c7e33315b3",
+          "size": 1580
+        },
+        {
+          "path": "tokenizer/chat_template.jinja",
+          "sha256": "a0bc6f6fc7a29a80017a433e8f03a1cc1236e838a944a2d034295a60c4f2fddb",
+          "size": 1017
+        },
+        {
+          "path": "tokenizer/merges.txt",
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+          "size": 1671853
+        }
+      ],
+      "weight_files": [
+        {
+          "path": "text_encoder/model-00001-of-00004.safetensors",
+          "sha256": "c28404126221997ae8eb70a23b919c96174d42e35ae1d537e0c95093d50b359a",
+          "size": 4968243304
+        },
+        {
+          "path": "text_encoder/model-00002-of-00004.safetensors",
+          "sha256": "f281081864c10992d3e03874c79d526c84407e049d713747f19eb9c79cd16db3",
+          "size": 4991495816
+        },
+        {
+          "path": "text_encoder/model-00003-of-00004.safetensors",
+          "sha256": "3bb3a62a8d0e83c6283388ddea99395b221f908f9181b8edd0f7f91d02260ebe",
+          "size": 4932751040
+        },
+        {
+          "path": "text_encoder/model-00004-of-00004.safetensors",
+          "sha256": "91bacbe1ad798e16daa05023b4e4bec70b53c8cd7d757db86c5bc76c4e0bbf15",
+          "size": 1691924384
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model.safetensors",
+          "sha256": "469752430ae6615f119c6fbe061bb7851e85f8a4a22918524cc8abd94d53d493",
+          "size": 4118416720
+        },
+        {
+          "path": "vae/diffusion_pytorch_model.safetensors",
+          "sha256": "d6e524b3fffede1787a74e81b30976dce5400c4439ba64222168e607ed19e793",
+          "size": 507591892
+        }
+      ]
+    },
+    "Wan2.2-TI2V-5B": {
+      "json_files": [
+        {
+          "path": "model_index.json",
+          "sha256": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7",
+          "size": 499
+        },
+        {
+          "path": "scheduler/scheduler_config.json",
+          "sha256": "571a3eed68bcd943a61b9fea8efa9e141472216ada59f928c8b5128ce24b32e0",
+          "size": 820
+        },
+        {
+          "path": "text_encoder/config.json",
+          "sha256": "a2bcb24699f6c009a2427432bdd483ef8b2b42a712abc9503759cdc77d171f07",
+          "size": 855
+        },
+        {
+          "path": "text_encoder/model.safetensors.index.json",
+          "sha256": "31c4c7bcce679eaa0dd4667462394ddb013dc2f748e0bffc893dc9146a320dab",
+          "size": 22476
+        },
+        {
+          "path": "tokenizer/special_tokens_map.json",
+          "sha256": "456b58fd240a06c743a7c2cf8008bec501240d68ebd1fc4018ea569505fea270",
+          "size": 7079
+        },
+        {
+          "path": "tokenizer/tokenizer.json",
+          "sha256": "20a46ac256746594ed7e1e3ef733b83fbc5a6f0922aa7480eda961743de080ef",
+          "size": 16837459
+        },
+        {
+          "path": "tokenizer/tokenizer_config.json",
+          "sha256": "1d8d2a216bf8e70ac15b7ddcea566c4dd0433c024b39a58ca5e4c66bd78defbd",
+          "size": 61758
+        },
+        {
+          "path": "transformer/config.json",
+          "sha256": "dc00d9866e72cf77db6b531aaa33be4dc7148fef9338442bd0ae9181f7075e9b",
+          "size": 495
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model.safetensors.index.json",
+          "sha256": "d6c1f72d86fbddef8fb5ef1c03f5b56b2bfdb6ae58032db98c6019fd1dae9021",
+          "size": 73297
+        },
+        {
+          "path": "vae/config.json",
+          "sha256": "d996c340fe9a7df5d7371f76a7d8d6956f6c98256080074d8434fa5eeac11360",
+          "size": 1701
+        }
+      ],
+      "snapshot_commit": null,
+      "support_files": [
+        {
+          "path": ".cache/huggingface/.gitignore",
+          "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+          "size": 1
+        },
+        {
+          "path": ".cache/huggingface/CACHEDIR.TAG",
+          "sha256": "f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d",
+          "size": 191
+        },
+        {
+          "path": ".cache/huggingface/download/.gitattributes.metadata",
+          "sha256": "2c09a67f382758b42185022728c498ba02d5be44db00ac6ab3deaadc556c03ea",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/README.md.metadata",
+          "sha256": "34d923662a9c7765b405a90b82edb5d5dd1e733e769ea3760fe1c1582ded721e",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/assets/comp_effic.png.metadata",
+          "sha256": "9644236878cae6c360568d61e720f6000cffea995715fafdc7fc5f59901a4f06",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/assets/logo.png.metadata",
+          "sha256": "94156f15887503a6c771af57a68437e0d05cba1da59f93a15adc1070a759c359",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/assets/moe_2.png.metadata",
+          "sha256": "87686e2273eb32f97181c0c3e42a9385ab2aa9530fdf8956984e0b0b710cbaf8",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/assets/moe_arch.png.metadata",
+          "sha256": "fa9de2fab2fbe974aa757e0857355681a69abdaa77e91521c59fc744950dc788",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/assets/performance.png.metadata",
+          "sha256": "bc259456f8002cd283f64e7b7dc7fc4015fb93a1051041a887920242243847e4",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/assets/vae.png.metadata",
+          "sha256": "1b9197c17e05bf900acdea980a3349cf9cc87433a86bebad1482e91cd9ac9f4f",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/examples/i2v_input.JPG.metadata",
+          "sha256": "2b27ef1d46dd1446173e77af81dfb7803cbb98c6dc472fdf655059e386102e88",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/model_index.json.metadata",
+          "sha256": "f04cfb54b5bdd3d316e708315b6cec73dd17401a9fa25779c14069f4ecc50c65",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/scheduler/scheduler_config.json.metadata",
+          "sha256": "2cc5725b09090aa5f2c43451735fa3ad107af85a151d25f7ea86806f1fd6b57c",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/config.json.metadata",
+          "sha256": "5c5393c5bbc019fdd3c40afcdb3eca771621781c74208fb853e64a1203e20537",
+          "size": 100
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00001-of-00003.safetensors.metadata",
+          "sha256": "91996c2afb6efc7f56df4b8a5d412e1153c1d1d0b2316eefd207f4a4c1071ab1",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00002-of-00003.safetensors.metadata",
+          "sha256": "231868428071bf72b9b880c4d652efd0d2a7b49f9e00f270b2ca9309d5a86101",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model-00003-of-00003.safetensors.metadata",
+          "sha256": "0fcef4e64c40e13dda3e5a798fefcea63ea8c1ee27b8c6f4e50afd21d44d7c0a",
+          "size": 124
+        },
+        {
+          "path": ".cache/huggingface/download/text_encoder/model.safetensors.index.json.metadata",
+          "sha256": "fcc06bb07ec55c2da496fff3ee63ce3e31531cdf8bc68e0b6030b67874600d11",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/special_tokens_map.json.metadata",
+          "sha256": "07b1505283481bdc8ca83b091d14185c941bdacc608876272135a0bc34e89069",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/spiece.model.metadata",
+          "sha256": "2a68dc2782d75e1ddbbfc90f21cfd7b574f692cb6872bbd844b35bf1af0db52c",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/tokenizer.json.metadata",
+          "sha256": "f2628967d5ccfaca8b417654628f0dabfcccc65bd7b80475da5d25b13631f5ab",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/tokenizer/tokenizer_config.json.metadata",
+          "sha256": "994b736ebb38f9b81a5421d320f8f93120286ed9a41f21fa0cdd38a81aee9923",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/config.json.metadata",
+          "sha256": "cdab0fb1e7da539436fc555a544ad8b96149d8a1c0a01fc08103a681c233aa66",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model-00001-of-00005.safetensors.metadata",
+          "sha256": "602efe9e1dd7b4e2a63a0e9436db76733d24cc077c247cb13fac218c54db78cb",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model-00002-of-00005.safetensors.metadata",
+          "sha256": "82bca39b7d33ba5cc42a05aa9ad4d2ffc66915d7d652819a8d8fd4eff71a7dca",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model-00003-of-00005.safetensors.metadata",
+          "sha256": "3b64298709cb0c8e765bf4d258a335373deb682c2003ffab6f5b4bcbecda118d",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model-00004-of-00005.safetensors.metadata",
+          "sha256": "7e705906f35776b75c838c692b13dcac2a6048a0443fd43d295d12ebced7c5dd",
+          "size": 123
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model-00005-of-00005.safetensors.metadata",
+          "sha256": "1a3f0ace7ace440dbeecd0c2845ccc210c205839ecae3d5b7efb648f28237f85",
+          "size": 125
+        },
+        {
+          "path": ".cache/huggingface/download/transformer/diffusion_pytorch_model.safetensors.index.json.metadata",
+          "sha256": "3a43d87ec5fdf10383912b6f8a1e721bb8d826c6eee3ccb4c3e8c54bd0e3badd",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/vae/config.json.metadata",
+          "sha256": "33f0c3335d121c26c43a8fea178d167de9995b9c655b6cf166bb531da80b7222",
+          "size": 101
+        },
+        {
+          "path": ".cache/huggingface/download/vae/diffusion_pytorch_model.safetensors.metadata",
+          "sha256": "3eab6fa63469ad8ee7a6ff057e22d4a74cd213d73733d32eddbc538f4971a7cc",
+          "size": 125
+        },
+        {
+          "path": ".gitattributes",
+          "sha256": "1041d64f9895fcac65fb31d145d3e49740d8681880bc6dd5f23cccc1a833d11c",
+          "size": 1860
+        },
+        {
+          "path": "README.md",
+          "sha256": "b7120bb210ab14defe6cabd7ac4bf568d0f5fde42f88ea4ac3cfec9516dc2c0c",
+          "size": 17633
+        },
+        {
+          "path": "assets/comp_effic.png",
+          "sha256": "75ee012dcfb08365bec67a3ec7afc126fc2817f79b9f80e38711792d4770e32b",
+          "size": 202156
+        },
+        {
+          "path": "assets/logo.png",
+          "sha256": "96cddc0f667293436d0b9f92a299b6346b65b231d38ee49719a33d46c91fe1e3",
+          "size": 56322
+        },
+        {
+          "path": "assets/moe_2.png",
+          "sha256": "4ea471ccb64349bd08bc9a78f336ae000e9ca3b40da9a652b8028b214a8c6093",
+          "size": 527914
+        },
+        {
+          "path": "assets/moe_arch.png",
+          "sha256": "709510625af90bad3f9509c8c9bb6dc779576cd7f80b9bc95d75fe33f2755079",
+          "size": 74900
+        },
+        {
+          "path": "assets/performance.png",
+          "sha256": "97ef99c13c8ae717a8a11c8d8ec927b69077c647cc6689755d08fc38e7fbb830",
+          "size": 306535
+        },
+        {
+          "path": "assets/vae.png",
+          "sha256": "4aaea5e187f1c5908e15ade5bef24c9fb59882986bc3d2ad75f7fe820f3d772f",
+          "size": 165486
+        },
+        {
+          "path": "examples/i2v_input.JPG",
+          "sha256": "077e3d965090c9028c69c00931675f42e1acc815c6eb450ab291b3b72d211a8e",
+          "size": 250628
+        },
+        {
+          "path": "tokenizer/spiece.model",
+          "sha256": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458",
+          "size": 4548313
+        }
+      ],
+      "weight_files": [
+        {
+          "path": "text_encoder/model-00001-of-00003.safetensors",
+          "sha256": "a8e861969c7433e707cc5a74065d795d36cca07ec96eb6763eb4083df7248f58",
+          "size": 4935812536
+        },
+        {
+          "path": "text_encoder/model-00002-of-00003.safetensors",
+          "sha256": "d57d948ece4837d850b7a859a4415121d57cacf8b9ee1d4db200c67f592902d7",
+          "size": 4983103192
+        },
+        {
+          "path": "text_encoder/model-00003-of-00003.safetensors",
+          "sha256": "0da9ee284e21d1406df708788db1d502d95d75f69faa25cd26151bf8829b7c5f",
+          "size": 1442935480
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00001-of-00005.safetensors",
+          "sha256": "511bec832a201caa410d09c5ce7dbbf8ad2708c345d82038f684fc74cce982be",
+          "size": 4978254344
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00002-of-00005.safetensors",
+          "sha256": "7c42724912b1911429125dc50c0e9a49ccbada5a601b657d4ed2e15e7597c193",
+          "size": 4846784976
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00003-of-00005.safetensors",
+          "sha256": "e9c3d0c76de786566382f8258101fea973ae37681c6e9fe0e5fe1fb93b806424",
+          "size": 4972658392
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00004-of-00005.safetensors",
+          "sha256": "a331121771790939678db6f585553fd5184609f7d02593c699a4d241b0d834c5",
+          "size": 4846785080
+        },
+        {
+          "path": "transformer/diffusion_pytorch_model-00005-of-00005.safetensors",
+          "sha256": "78b655685c47efdb2349f36826bb101264e9f212a16325d584aeb5f53c88e719",
+          "size": 354751840
+        },
+        {
+          "path": "vae/diffusion_pytorch_model.safetensors",
+          "sha256": "62cd18f19438e35b32ac63020e2852f566e9b02f46b6cdbd87972a356e3c6f4b",
+          "size": 2818777808
+        }
+      ]
+    }
+  },
+  "geometry_backbone": {
+    "camera_convention": "opencv_world_to_camera",
+    "checkpoint_sha256": "c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934",
+    "checkpoint_size": 4576706117,
+    "depth_definition": "camera_z_depth",
+    "image_resolution": 512,
+    "name": "VGGT-Omega-1B-512",
+    "preprocessing_mode": "balanced",
+    "source_commit": "39a0cb8af88554f15ddcb5354cd52bde588fa014",
+    "source_tree_sha256": "10e6b2ef6d80166b1de64fb676d8ce8d93228198dbf5baa3e68af9e351857f57"
+  },
+  "schema": "geometry-model-lock-v2"
+}

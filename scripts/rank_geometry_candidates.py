@@ -27,6 +27,7 @@ from geometry_selection.protocol import (
     validate_formal_protocol,
 )
 from geometry_selection.model_lock import load_model_lock
+from geometry_selection.graph_scorer import score_window_pose_graph
 from geometry_selection.scorer import score_geometry
 from geometry_selection.selection import (
     CandidateScore,
@@ -35,6 +36,11 @@ from geometry_selection.selection import (
     load_and_validate_candidate_pool,
     select_candidate,
 )
+from geometry_selection.window_bundle import (
+    validate_window_bundle,
+    validate_window_cache_record,
+)
+from geometry_selection.window_graph import IndependentWindow
 
 
 def git_identity(repo: Path) -> dict:
@@ -76,6 +82,7 @@ def main() -> None:
     protocol_manifest = resolve_config_path(config.protocol_manifest)
     model_lock_path = resolve_config_path(config.model_lock)
     experiment_lock_path = resolve_config_path(config.experiment_lock)
+    artifact_root = resolve_config_path(config.artifact_root)
     dataset_root = resolve_config_path(config.dataset_root)
     geometry_cache_root = resolve_config_path(config.geometry_cache_root)
     output_root = resolve_config_path(config.output_root)
@@ -97,16 +104,27 @@ def main() -> None:
         if protocol_file_sha256(model_lock_path) != protocol["_meta"]["model_lock_sha256"]:
             raise ValueError("model lock digest differs from frozen protocol")
         model_lock = load_model_lock(model_lock_path)
-        validate_experiment_lock(
+        experiment_lock = validate_experiment_lock(
             experiment_lock_path,
             REPO_ROOT,
             code["commit"],
             protocol_manifest_sha256=protocol_file_sha256(protocol_manifest),
             model_lock_sha256=protocol_file_sha256(model_lock_path),
             split=config.expected_split,
+            backbone=json.loads(candidate_manifest.read_text(encoding="utf-8"))["cases"][0]["backbone"],
+            candidate_spec_sha256=json.loads(candidate_manifest.read_text(encoding="utf-8"))[
+                "candidate_spec_sha256"
+            ],
+            artifact_root=artifact_root,
             ranking_config_hash=config.config_hash,
         )
         experiment_lock_sha256 = protocol_file_sha256(experiment_lock_path)
+        implementation_sha256 = experiment_lock["implementation_sha256"]
+        for path in (candidate_manifest, geometry_cache_root, output_root):
+            try:
+                path.relative_to(artifact_root)
+            except ValueError as error:
+                raise ValueError(f"formal candidate/cache/output path escapes artifact root: {path}") from error
         locked_geometry = model_lock["geometry_backbone"]
         config_geometry = {
             "checkpoint_sha256": config.geometry_checkpoint_sha256,
@@ -118,6 +136,7 @@ def main() -> None:
     else:
         model_lock = None
         experiment_lock_sha256 = None
+        implementation_sha256 = None
     pool = load_and_validate_candidate_pool(
         candidate_manifest,
         expected_split=config.expected_split,
@@ -131,6 +150,8 @@ def main() -> None:
         formal=formal,
         model_lock=model_lock,
         experiment_lock_sha256=experiment_lock_sha256,
+        expected_git_commit=code["commit"] if formal else None,
+        expected_implementation_sha256=implementation_sha256,
     )
 
     candidate_manifest_sha256 = file_sha256(candidate_manifest)
@@ -141,6 +162,7 @@ def main() -> None:
         "candidate_manifest_sha256": candidate_manifest_sha256,
         "protocol_manifest_sha256": protocol_manifest_sha256,
         "experiment_lock_sha256": experiment_lock_sha256,
+        "implementation_sha256": implementation_sha256,
     }
     run_id = file_sha256(candidate_manifest)[:12] + "-" + config.config_hash[:12]
     output_root.mkdir(parents=True, exist_ok=True)
@@ -155,6 +177,54 @@ def main() -> None:
     )
     write_resolved_config(config, temporary_run_dir / "config.resolved.yaml")
     case_results = []
+
+    def verify_formal_cache(cache_metadata: dict) -> None:
+        if not formal:
+            return
+        geometry_identity = cache_metadata["provenance"].get(
+            "geometry_backbone", {}
+        )
+        expected_geometry = {
+            "checkpoint_sha256": config.geometry_checkpoint_sha256,
+            "source_tree_sha256": config.geometry_source_tree_sha256,
+            "source_commit": config.geometry_source_commit,
+        }
+        geometry_mismatches = {
+            key: (geometry_identity.get(key), expected)
+            for key, expected in expected_geometry.items()
+            if geometry_identity.get(key) != expected
+        }
+        if geometry_mismatches:
+            raise ValueError(
+                f"geometry backbone identity mismatch: {geometry_mismatches}"
+            )
+        producer = cache_metadata["provenance"].get("producer", {})
+        expected_sources = {
+            "dirty": False,
+            "adapter_sha256": file_sha256(
+                REPO_ROOT / "geometry_selection/backbones/vggt_omega.py"
+            ),
+            "extractor_sha256": file_sha256(
+                REPO_ROOT / "scripts/extract_vggt_omega_geometry.py"
+            ),
+            "preparer_sha256": file_sha256(
+                REPO_ROOT / "scripts/prepare_candidate_pool.py"
+            ),
+            "commit": code["commit"],
+            "implementation_sha256": implementation_sha256,
+            "experiment_lock_sha256": experiment_lock_sha256,
+        }
+        producer_mismatches = {
+            key: (producer.get(key), expected)
+            for key, expected in expected_sources.items()
+            if producer.get(key) != expected
+        }
+        if producer_mismatches or not producer.get("commit"):
+            raise ValueError(
+                "geometry cache producer mismatch: "
+                f"{producer_mismatches or {'commit': 'missing'}}"
+            )
+
     for case in pool["cases"]:
         scores = []
         for candidate in case["candidates"]:
@@ -162,53 +232,63 @@ def main() -> None:
                 geometry_cache_root,
                 candidate["geometry_cache_key"],
             )
-            if formal:
-                geometry_identity = cache_metadata["provenance"].get(
-                    "geometry_backbone", {}
-                )
-                expected_geometry = {
-                    "checkpoint_sha256": config.geometry_checkpoint_sha256,
-                    "source_tree_sha256": config.geometry_source_tree_sha256,
-                    "source_commit": config.geometry_source_commit,
-                }
-                geometry_mismatches = {
-                    key: (geometry_identity.get(key), expected)
-                    for key, expected in expected_geometry.items()
-                    if geometry_identity.get(key) != expected
-                }
-                if geometry_mismatches:
-                    raise ValueError(
-                        f"geometry backbone identity mismatch: {geometry_mismatches}"
-                    )
-                producer = cache_metadata["provenance"].get("producer", {})
-                expected_sources = {
-                    "dirty": False,
-                    "adapter_sha256": file_sha256(
-                        REPO_ROOT / "geometry_selection/backbones/vggt_omega.py"
-                    ),
-                    "extractor_sha256": file_sha256(
-                        REPO_ROOT / "scripts/extract_vggt_omega_geometry.py"
-                    ),
-                    "preparer_sha256": file_sha256(
-                        REPO_ROOT / "scripts/prepare_candidate_pool.py"
-                    ),
-                }
-                producer_mismatches = {
-                    key: (producer.get(key), expected)
-                    for key, expected in expected_sources.items()
-                    if producer.get(key) != expected
-                }
-                if producer_mismatches or not producer.get("commit"):
-                    raise ValueError(
-                        "geometry cache producer mismatch: "
-                        f"{producer_mismatches or {'commit': 'missing'}}"
-                    )
+            verify_formal_cache(cache_metadata)
             prediction = load_geometry_cache(
                 geometry_cache_root,
                 candidate["geometry_cache_key"],
                 expected_video_sha256=candidate["video_sha256"],
             )
-            report = score_geometry(prediction, config.scorer)
+            verified_window_caches = {}
+            if config.score_mode == "pose_graph":
+                bundle = candidate.get("geometry_window_bundle")
+                if bundle is None:
+                    raise ValueError(
+                        "pose_graph ranking requires a geometry_window_bundle"
+                    )
+                validate_window_bundle(
+                    bundle,
+                    expected_video_sha256=candidate["video_sha256"],
+                    expected_global_cache_key=candidate["geometry_cache_key"],
+                )
+                windows = []
+                for record in bundle["windows"]:
+                    window_metadata = load_geometry_cache_metadata(
+                        geometry_cache_root,
+                        record["geometry_cache_key"],
+                    )
+                    verify_formal_cache(window_metadata)
+                    validate_window_cache_record(
+                        record,
+                        window_metadata,
+                        video_sha256=candidate["video_sha256"],
+                    )
+                    window_prediction = load_geometry_cache(
+                        geometry_cache_root,
+                        record["geometry_cache_key"],
+                        expected_video_sha256=candidate["video_sha256"],
+                    )
+                    windows.append(
+                        IndependentWindow(
+                            window_id=record["window_id"],
+                            kind=record["kind"],
+                            prediction=window_prediction,
+                            independent_run_id=record["independent_run_id"],
+                        )
+                    )
+                    verified_window_caches[record["window_id"]] = {
+                        "cache_key": record["geometry_cache_key"],
+                        "arrays_sha256": window_metadata["arrays_sha256"],
+                        "provenance_sha256": window_metadata["provenance_sha256"],
+                        "independent_run_id": record["independent_run_id"],
+                    }
+                report = score_window_pose_graph(
+                    prediction,
+                    windows,
+                    direct_config=config.scorer,
+                    graph_config=config.graph_score,
+                )
+            else:
+                report = score_geometry(prediction, config.scorer)
             scores.append(
                 CandidateScore(
                     candidate_id=candidate["candidate_id"],
@@ -223,6 +303,7 @@ def main() -> None:
                 "cache_key": candidate["geometry_cache_key"],
                 "arrays_sha256": cache_metadata["arrays_sha256"],
                 "provenance_sha256": cache_metadata["provenance_sha256"],
+                "window_caches": verified_window_caches,
             }
         selected = select_candidate(scores, config.selection)
         case_results.append(
