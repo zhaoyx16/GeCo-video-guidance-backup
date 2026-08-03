@@ -5,7 +5,13 @@ from dataclasses import replace
 import numpy as np
 
 from geometry_selection.schema import GeometryPrediction
-from geometry_selection.scorer import ScorerConfig, _depth_edge_mask, score_geometry
+from geometry_selection.scorer import (
+    PairScore,
+    ScorerConfig,
+    _depth_edge_mask,
+    _valid_undirected_scores,
+    score_geometry,
+)
 
 
 def config(**overrides) -> ScorerConfig:
@@ -130,6 +136,25 @@ def test_depth_edge_mask_marks_both_sides() -> None:
     depth = np.array([[1.0, 1.0, 10.0, 10.0]])
     mask = _depth_edge_mask(depth, relative_threshold=0.5)
     assert mask.tolist() == [[False, True, True, False]]
+
+
+def test_undirected_edge_accepts_one_supported_direction() -> None:
+    pairs = [
+        PairScore(0, 1, 1, 0.8, 0.6, 100, 0.1, 0.0, 0.1, "ok"),
+        PairScore(
+            1,
+            0,
+            1,
+            0.01,
+            0.0,
+            0,
+            float("nan"),
+            float("nan"),
+            float("inf"),
+            "insufficient_overlap",
+        ),
+    ]
+    assert np.isclose(_valid_undirected_scores(pairs)[(0, 1)], 0.1)
 
 
 def test_pure_rotation_contributes_to_motion_guard() -> None:

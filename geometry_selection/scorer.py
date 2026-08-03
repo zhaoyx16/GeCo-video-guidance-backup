@@ -411,11 +411,12 @@ def _valid_undirected_scores(pairs: list[PairScore]) -> dict[tuple[int, int], fl
         grouped.setdefault(key, []).append(pair)
     result = {}
     for key, directions in grouped.items():
-        orientations = {(pair.source, pair.target) for pair in directions}
-        if len(orientations) != 2:
-            continue
-        if all(pair.status == "ok" and np.isfinite(pair.score) for pair in directions):
-            result[key] = float(np.mean([pair.score for pair in directions]))
+        valid = [
+            pair for pair in directions if pair.status == "ok" and np.isfinite(pair.score)
+        ]
+        if valid:
+            weights = [max(pair.comparable_fraction, 1e-8) for pair in valid]
+            result[key] = float(np.average([pair.score for pair in valid], weights=weights))
     return result
 
 

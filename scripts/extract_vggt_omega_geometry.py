@@ -6,11 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from geometry_selection.backbones.vggt_omega import VGGTOmegaAdapter, file_sha256
 from geometry_selection.cache import canonical_hash, load_geometry_cache, save_geometry_cache

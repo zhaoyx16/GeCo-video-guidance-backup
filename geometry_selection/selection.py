@@ -419,10 +419,12 @@ def _pair_map(report: GeometryScoreReport) -> dict[tuple[int, int], float]:
         grouped.setdefault(key, []).append(pair)
     result = {}
     for key, directions in grouped.items():
-        if len({(pair.source, pair.target) for pair in directions}) != 2:
-            continue
-        if all(pair.status == "ok" and math.isfinite(pair.score) for pair in directions):
-            result[key] = float(np.mean([pair.score for pair in directions]))
+        valid = [
+            pair for pair in directions if pair.status == "ok" and math.isfinite(pair.score)
+        ]
+        if valid:
+            weights = [max(pair.comparable_fraction, 1e-8) for pair in valid]
+            result[key] = float(np.average([pair.score for pair in valid], weights=weights))
     return result
 
 
