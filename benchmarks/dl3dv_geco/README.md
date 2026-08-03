@@ -42,18 +42,31 @@ python benchmarks/dl3dv_geco/build_manifest.py \
   --output benchmarks/dl3dv_geco/manifests/dl3dv_1k_dev.json \
   --pose-window 121 \
   --start-stride 24 \
-  --max-clips 32 \
+  --max-clips 240 \
   --max-per-scene 1 \
   --large-motion-quantile 0.65
 ```
 
-Recommended splits:
+The formal protocol uses 3 debug scenes, 100 validation scenes, and 100
+held-out test scenes. Build an eligible pool with at least 203 scene-disjoint
+cases, then freeze a deterministic split before method development:
 
-- correctness gate: 2 scenes x 1 seed;
-- development: 32 scenes x 2 seeds;
-- main: 100 scenes x 3 seeds.
+```bash
+python benchmarks/dl3dv_geco/freeze_protocol_split.py \
+  --source-manifest /path/to/eligible_cases.json \
+  --dataset-root /path/to/DL3DV/1K \
+  --output /path/to/dl3dv_geometry_protocol.json \
+  --split-seed 20260803 \
+  --test-count 100 \
+  --validation-count 100 \
+  --debug-count 3
+```
 
-The split and all prompts are frozen before comparing methods.
+Debug cases are used only for correctness, runtime, memory, and qualitative
+sanity checks. The validation set is used for all method and hyperparameter
+decisions. The test set is run only after the code and configuration are
+frozen. All prompts, conditioning frames, and paired seed policies are frozen
+with the split.
 
 ## GeCo migration gate
 
