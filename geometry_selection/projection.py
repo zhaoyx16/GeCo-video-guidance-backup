@@ -70,9 +70,12 @@ def world_to_camera(points_world: np.ndarray, world_to_camera_matrix: np.ndarray
 
 def project_camera(points_camera: np.ndarray, intrinsics: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     z = points_camera[..., 2]
-    safe_z = np.where(np.abs(z) > 1e-12, z, 1.0)
-    x = intrinsics[0, 0] * points_camera[..., 0] / safe_z + intrinsics[0, 2]
-    y = intrinsics[1, 1] * points_camera[..., 1] / safe_z + intrinsics[1, 2]
+    x_normalized = np.full_like(z, np.nan, dtype=np.float64)
+    y_normalized = np.full_like(z, np.nan, dtype=np.float64)
+    np.divide(points_camera[..., 0], z, out=x_normalized, where=z != 0)
+    np.divide(points_camera[..., 1], z, out=y_normalized, where=z != 0)
+    x = intrinsics[0, 0] * x_normalized + intrinsics[0, 2]
+    y = intrinsics[1, 1] * y_normalized + intrinsics[1, 2]
     return x, y, z
 
 
@@ -106,10 +109,13 @@ def bilinear_sample(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> SampledI
     return SampledImage(values=values, in_bounds=in_bounds)
 
 
-def relative_depth_error(a: np.ndarray, b: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
+def relative_depth_error(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Symmetric scale-normalized depth disagreement in [0, 2]."""
 
-    return 2.0 * np.abs(a - b) / (np.abs(a) + np.abs(b) + epsilon)
+    denominator = np.abs(a) + np.abs(b)
+    result = np.full_like(denominator, np.nan, dtype=np.float64)
+    np.divide(2.0 * np.abs(a - b), denominator, out=result, where=denominator > 0)
+    return result
 
 
 def camera_centers(world_to_camera_matrices: np.ndarray) -> np.ndarray:

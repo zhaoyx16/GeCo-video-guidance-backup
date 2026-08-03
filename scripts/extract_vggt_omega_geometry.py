@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -15,26 +16,50 @@ from geometry_selection.backbones.vggt_omega import VGGTOmegaAdapter, file_sha25
 from geometry_selection.cache import canonical_hash, load_geometry_cache, save_geometry_cache
 
 
-def decode_video_frames(video: Path, indices: list[int], output_dir: Path) -> list[Path]:
+def decode_video_frames(
+    video: Path,
+    indices: list[int],
+    output_dir: Path,
+) -> tuple[list[Path], dict]:
     import cv2
 
+    if indices != sorted(set(indices)) or not indices or indices[0] < 0:
+        raise ValueError("frame indices must be non-negative, sorted, and unique")
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         raise RuntimeError(f"could not open video: {video}")
-    paths: list[Path] = []
+    backend = capture.getBackendName() if hasattr(capture, "getBackendName") else "unknown"
+    selected = set(indices)
+    paths_by_index: dict[int, Path] = {}
+    frame_records = []
     try:
-        for index in indices:
-            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        for index in range(indices[-1] + 1):
             ok, frame_bgr = capture.read()
             if not ok:
                 raise RuntimeError(f"could not decode frame {index} from {video}")
+            if index not in selected:
+                continue
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             path = output_dir / f"frame_{index:06d}.png"
             Image.fromarray(frame_rgb).save(path)
-            paths.append(path)
+            paths_by_index[index] = path
+            frame_records.append(
+                {
+                    "index": index,
+                    "shape": list(frame_rgb.shape),
+                    "dtype": str(frame_rgb.dtype),
+                    "pixels_sha256": hashlib.sha256(frame_rgb.tobytes()).hexdigest(),
+                }
+            )
     finally:
         capture.release()
-    return paths
+    paths = [paths_by_index[index] for index in indices]
+    return paths, {
+        "decoder": "opencv-sequential-v1",
+        "opencv_version": cv2.__version__,
+        "backend": backend,
+        "frames": frame_records,
+    }
 
 
 def video_frame_count(video: Path) -> int:
@@ -83,23 +108,31 @@ def main() -> None:
         image_resolution=args.image_resolution,
         preprocessing_mode=args.preprocessing_mode,
     )
-    provenance = {
-        "video": {"path": str(video), "sha256": file_sha256(video)},
-        "keyframe_indices": indices,
-        "geometry_backbone": adapter.identity(hash_checkpoint=not args.skip_checkpoint_hash),
-        "extractor_schema_version": 1,
-    }
-    cache_key = canonical_hash(provenance)
-    try:
-        cached = load_geometry_cache(args.cache_root, cache_key, expected_provenance=provenance)
-    except FileNotFoundError:
-        cached = None
-    if cached is not None:
-        print(json.dumps({"status": "cache_hit", "cache_key": cache_key}, indent=2))
-        return
-
     with tempfile.TemporaryDirectory(prefix="vggt_omega_frames_") as directory:
-        image_paths = decode_video_frames(video, indices, Path(directory))
+        image_paths, decode_identity = decode_video_frames(video, indices, Path(directory))
+        provenance = {
+            "video_sha256": file_sha256(video),
+            "keyframe_indices": indices,
+            "decoded_frames": decode_identity,
+            "geometry_backbone": (
+                adapter.cache_identity()
+                if not args.skip_checkpoint_hash
+                else adapter.identity(hash_checkpoint=False)
+            ),
+            "extractor_schema_version": 2,
+        }
+        cache_key = canonical_hash(provenance)
+        try:
+            cached = load_geometry_cache(
+                args.cache_root,
+                cache_key,
+                expected_provenance=provenance,
+            )
+        except FileNotFoundError:
+            cached = None
+        if cached is not None:
+            print(json.dumps({"status": "cache_hit", "cache_key": cache_key}, indent=2))
+            return
         prediction = adapter.predict_image_paths(
             image_paths,
             keyframe_indices=indices,

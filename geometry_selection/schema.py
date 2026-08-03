@@ -68,7 +68,11 @@ class GeometryPrediction:
             raise ValueError(
                 f"keyframe_indices must have shape [{frames}], got {self.keyframe_indices.shape}"
             )
-        if np.any(np.diff(self.keyframe_indices.astype(np.int64)) <= 0):
+        if not np.issubdtype(self.keyframe_indices.dtype, np.integer):
+            raise TypeError("keyframe_indices must have an integer dtype")
+        if np.any(self.keyframe_indices < 0):
+            raise ValueError("keyframe_indices must be non-negative")
+        if np.any(np.diff(self.keyframe_indices) <= 0):
             raise ValueError("keyframe_indices must be strictly increasing")
 
         for name in ("world_to_camera", "intrinsics", "depth", "confidence"):
@@ -102,6 +106,10 @@ class GeometryPrediction:
             raise ValueError("intrinsics[:,2,2] must equal 1")
         if not np.allclose(self.intrinsics[:, 2, :2], 0.0, atol=1e-6):
             raise ValueError("intrinsics bottom-left entries must equal 0")
+        if not np.allclose(self.intrinsics[:, 0, 1], 0.0, atol=1e-6) or not np.allclose(
+            self.intrinsics[:, 1, 0], 0.0, atol=1e-6
+        ):
+            raise ValueError("canonical intrinsics must have zero skew/off-diagonal terms")
 
     def as_float32(self) -> "GeometryPrediction":
         return GeometryPrediction(

@@ -30,6 +30,8 @@ class ScorerConfig:
     min_pair_overlap: float = 0.05
     min_long_range_overlap: float = 0.15
     min_valid_pixels: int = 64
+    min_valid_local_fraction: float = 0.75
+    min_valid_long_range_fraction: float = 0.20
     pixel_stride: int = 4
     huber_delta: float = 0.05
     cycle_weight: float = 0.25
@@ -38,15 +40,23 @@ class ScorerConfig:
     require_long_range: bool = False
 
     def validate(self) -> None:
+        if not isinstance(self.require_long_range, bool):
+            raise TypeError("require_long_range must be boolean")
         if not self.local_offsets or any(offset < 1 for offset in self.local_offsets):
             raise ValueError("local_offsets must contain positive integers")
+        if any(not isinstance(offset, int) or isinstance(offset, bool) for offset in self.local_offsets):
+            raise TypeError("local_offsets must contain integers")
         if self.min_long_range_gap < 2:
             raise ValueError("min_long_range_gap must be at least 2")
         for name, value in (
             ("confidence_quantile", self.confidence_quantile),
             ("min_pair_overlap", self.min_pair_overlap),
             ("min_long_range_overlap", self.min_long_range_overlap),
+            ("min_valid_local_fraction", self.min_valid_local_fraction),
+            ("min_valid_long_range_fraction", self.min_valid_long_range_fraction),
         ):
+            if not np.isfinite(value):
+                raise ValueError(f"{name} must be finite")
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0,1], got {value}")
         if self.depth_edge_relative_threshold <= 0:
@@ -57,6 +67,16 @@ class ScorerConfig:
             raise ValueError("min_valid_pixels and pixel_stride must be positive")
         if self.huber_delta <= 0:
             raise ValueError("huber_delta must be positive")
+        numeric = (
+            self.depth_edge_relative_threshold,
+            self.occlusion_relative_tolerance,
+            self.huber_delta,
+            self.cycle_weight,
+            self.local_weight,
+            self.long_range_weight,
+        )
+        if not all(np.isfinite(value) for value in numeric):
+            raise ValueError("all scorer numeric parameters must be finite")
         if min(self.cycle_weight, self.local_weight, self.long_range_weight) < 0:
             raise ValueError("score weights must be non-negative")
         if self.local_weight + self.long_range_weight <= 0:
@@ -83,7 +103,11 @@ class GeometryScoreReport:
     local_score: float | None
     long_range_score: float | None
     camera_path_length: float
+    normalized_translation_motion: float
+    camera_angular_path_deg: float
     normalized_camera_motion: float
+    local_edge_fraction: float
+    long_range_edge_fraction: float
     valid_local_edges: int
     valid_long_range_edges: int
     status: str
@@ -107,6 +131,8 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (float, np.floating)):
         numeric = float(value)
         return numeric if math.isfinite(numeric) else None
+    if isinstance(value, (np.integer, np.bool_)):
+        return value.item()
     return value
 
 
@@ -135,12 +161,24 @@ def _normalized_confidence(confidence: np.ndarray) -> np.ndarray:
 def _depth_edge_mask(depth: np.ndarray, relative_threshold: float) -> np.ndarray:
     horizontal = np.zeros_like(depth, dtype=np.float64)
     vertical = np.zeros_like(depth, dtype=np.float64)
-    horizontal[:, 1:] = np.abs(np.diff(depth, axis=1)) / np.maximum(
-        np.minimum(depth[:, 1:], depth[:, :-1]), 1e-8
+    horizontal_denominator = np.minimum(depth[:, 1:], depth[:, :-1])
+    vertical_denominator = np.minimum(depth[1:, :], depth[:-1, :])
+    horizontal_difference = np.divide(
+        np.abs(np.diff(depth, axis=1)),
+        horizontal_denominator,
+        out=np.full_like(horizontal_denominator, np.inf, dtype=np.float64),
+        where=horizontal_denominator > 0,
     )
-    vertical[1:, :] = np.abs(np.diff(depth, axis=0)) / np.maximum(
-        np.minimum(depth[1:, :], depth[:-1, :]), 1e-8
+    vertical_difference = np.divide(
+        np.abs(np.diff(depth, axis=0)),
+        vertical_denominator,
+        out=np.full_like(vertical_denominator, np.inf, dtype=np.float64),
+        where=vertical_denominator > 0,
     )
+    horizontal[:, 1:] = horizontal_difference
+    horizontal[:, :-1] = np.maximum(horizontal[:, :-1], horizontal_difference)
+    vertical[1:, :] = vertical_difference
+    vertical[:-1, :] = np.maximum(vertical[:-1, :], vertical_difference)
     return (horizontal > relative_threshold) | (vertical > relative_threshold)
 
 
@@ -366,9 +404,19 @@ def _candidate_pairs(num_frames: int, config: ScorerConfig) -> tuple[list[tuple[
     return local, long_range
 
 
-def _mean_valid_score(pairs: list[PairScore]) -> float | None:
-    scores = [pair.score for pair in pairs if pair.status == "ok" and np.isfinite(pair.score)]
-    return float(np.mean(scores)) if scores else None
+def _valid_undirected_scores(pairs: list[PairScore]) -> dict[tuple[int, int], float]:
+    grouped: dict[tuple[int, int], list[PairScore]] = {}
+    for pair in pairs:
+        key = (min(pair.source, pair.target), max(pair.source, pair.target))
+        grouped.setdefault(key, []).append(pair)
+    result = {}
+    for key, directions in grouped.items():
+        orientations = {(pair.source, pair.target) for pair in directions}
+        if len(orientations) != 2:
+            continue
+        if all(pair.status == "ok" and np.isfinite(pair.score) for pair in directions):
+            result[key] = float(np.mean([pair.score for pair in directions]))
+    return result
 
 
 def score_geometry(
@@ -389,8 +437,16 @@ def score_geometry(
         for first, second in long_indices
         for source, target in ((first, second), (second, first))
     ]
-    local_score = _mean_valid_score(local_pairs)
-    long_score = _mean_valid_score(long_pairs)
+    valid_local = _valid_undirected_scores(local_pairs)
+    valid_long = _valid_undirected_scores(long_pairs)
+    local_fraction = len(valid_local) / max(len(local_indices), 1)
+    long_fraction = len(valid_long) / max(len(long_indices), 1) if long_indices else 0.0
+    local_score = float(np.mean(list(valid_local.values()))) if valid_local else None
+    long_score = float(np.mean(list(valid_long.values()))) if valid_long else None
+    if local_fraction < config.min_valid_local_fraction:
+        local_score = None
+    if long_fraction < config.min_valid_long_range_fraction:
+        long_score = None
 
     if local_score is None:
         total = float("inf")
@@ -399,25 +455,44 @@ def score_geometry(
         total = float("inf")
         status = "no_valid_long_range_edges"
     else:
-        components = [(config.local_weight, local_score)]
+        components = []
+        if config.local_weight > 0:
+            components.append((config.local_weight, local_score))
         if long_score is not None and config.long_range_weight > 0:
             components.append((config.long_range_weight, long_score))
         weight_sum = sum(weight for weight, _ in components)
-        total = sum(weight * score for weight, score in components) / weight_sum
-        status = "ok" if long_score is not None else "ok_local_only"
+        if weight_sum <= 0:
+            total = float("inf")
+            status = "no_positive_weight_component"
+        else:
+            total = sum(weight * score for weight, score in components) / weight_sum
+            status = "ok" if long_score is not None else "ok_local_only"
 
     centers = camera_centers(prediction.world_to_camera)
     camera_path_length = float(np.linalg.norm(np.diff(centers, axis=0), axis=1).sum())
     median_depth = float(np.median(prediction.depth[np.isfinite(prediction.depth)]))
-    normalized_camera_motion = camera_path_length / max(median_depth, 1e-8)
+    normalized_translation_motion = camera_path_length / median_depth
+    rotations = prediction.world_to_camera[:, :3, :3].astype(np.float64)
+    angular_steps = []
+    for first, second in zip(rotations[:-1], rotations[1:], strict=True):
+        relative = second @ first.T
+        cosine = np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
+        angular_steps.append(float(np.arccos(cosine)))
+    angular_path_rad = float(np.sum(angular_steps))
+    camera_angular_path_deg = float(np.degrees(angular_path_rad))
+    normalized_camera_motion = normalized_translation_motion + angular_path_rad
     return GeometryScoreReport(
         total_score=float(total),
         local_score=local_score,
         long_range_score=long_score,
         camera_path_length=camera_path_length,
+        normalized_translation_motion=normalized_translation_motion,
+        camera_angular_path_deg=camera_angular_path_deg,
         normalized_camera_motion=normalized_camera_motion,
-        valid_local_edges=sum(pair.status == "ok" for pair in local_pairs),
-        valid_long_range_edges=sum(pair.status == "ok" for pair in long_pairs),
+        local_edge_fraction=float(local_fraction),
+        long_range_edge_fraction=float(long_fraction),
+        valid_local_edges=len(valid_local),
+        valid_long_range_edges=len(valid_long),
         status=status,
         pairs=tuple(local_pairs + long_pairs),
         config=config,

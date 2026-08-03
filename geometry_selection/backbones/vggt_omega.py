@@ -72,12 +72,17 @@ def geometry_from_vggt_omega_outputs(
         depth = depth[..., 0]
     if confidence.ndim == 4 and confidence.shape[-1] == 1:
         confidence = confidence[..., 0]
+    indices = np.asarray(keyframe_indices)
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise TypeError("keyframe_indices must be integral before normalization")
+    if np.any(indices < 0):
+        raise ValueError("keyframe_indices must be non-negative")
     prediction = GeometryPrediction(
         world_to_camera=_homogeneous_world_to_camera(np.asarray(extrinsics)),
         intrinsics=np.asarray(intrinsics),
         depth=depth,
         confidence=confidence,
-        keyframe_indices=np.asarray(keyframe_indices, dtype=np.int64),
+        keyframe_indices=indices.astype(np.int64, copy=False),
         metadata=metadata,
     ).as_float32()
     prediction.validate()
@@ -105,6 +110,7 @@ class VGGTOmegaAdapter:
         self.require_official_commit = require_official_commit
         self._model = None
         self._api = None
+        self._checkpoint_sha256: str | None = None
 
         if not (self.source_root / "vggt_omega").is_dir():
             raise FileNotFoundError(f"VGGT-Omega package not found under {self.source_root}")
@@ -124,18 +130,28 @@ class VGGTOmegaAdapter:
 
     def identity(self, *, hash_checkpoint: bool = True) -> dict:
         checkpoint_stat = self.checkpoint.stat()
+        if hash_checkpoint and self._checkpoint_sha256 is None:
+            self._checkpoint_sha256 = file_sha256(self.checkpoint)
         return {
             "name": "VGGT-Omega-1B-512",
             "source_root": str(self.source_root),
             "source_commit": _source_commit(self.source_root),
             "checkpoint": str(self.checkpoint),
             "checkpoint_size": checkpoint_stat.st_size,
-            "checkpoint_sha256": file_sha256(self.checkpoint) if hash_checkpoint else None,
+            "checkpoint_sha256": self._checkpoint_sha256 if hash_checkpoint else None,
             "image_resolution": self.image_resolution,
             "preprocessing_mode": self.preprocessing_mode,
             "camera_convention": "opencv_world_to_camera",
             "depth_definition": "camera_z_depth",
         }
+
+    def cache_identity(self) -> dict:
+        """Content-based identity that is stable when artifacts are relocated."""
+
+        identity = self.identity(hash_checkpoint=True)
+        identity.pop("source_root")
+        identity.pop("checkpoint")
+        return identity
 
     def _import_api(self):
         if self._api is not None:
@@ -184,6 +200,17 @@ class VGGTOmegaAdapter:
             keyframe_indices = list(range(len(resolved_paths)))
         if len(keyframe_indices) != len(resolved_paths):
             raise ValueError("keyframe_indices must match image_paths")
+
+        from PIL import Image
+
+        input_sizes = []
+        for path in resolved_paths:
+            with Image.open(path) as image:
+                input_sizes.append(image.size)
+        if len(set(input_sizes)) != 1:
+            raise ValueError(
+                "candidate video frames must share one image size; mixed-size padding is unsupported"
+            )
 
         import torch
 

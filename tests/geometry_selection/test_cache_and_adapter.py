@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 
 from geometry_selection.backbones.vggt_omega import geometry_from_vggt_omega_outputs
-from geometry_selection.cache import canonical_hash, load_geometry_cache, save_geometry_cache
+from geometry_selection.cache import (
+    canonical_hash,
+    load_geometry_cache,
+    load_geometry_cache_metadata,
+    save_geometry_cache,
+)
 
 
 def test_vggt_omega_output_normalization(plane_prediction) -> None:
@@ -39,6 +44,9 @@ def test_cache_round_trip_and_provenance_rejection(tmp_path, plane_prediction) -
     with pytest.raises(ValueError, match="provenance"):
         load_geometry_cache(tmp_path, key, expected_provenance={"video_sha256": "c" * 64})
 
+    metadata = load_geometry_cache_metadata(tmp_path, key)
+    assert metadata["arrays_sha256"]
+
 
 def test_cache_rejects_partial_or_stale_array(tmp_path, plane_prediction) -> None:
     provenance = {"case": "partial"}
@@ -52,3 +60,22 @@ def test_cache_rejects_partial_or_stale_array(tmp_path, plane_prediction) -> Non
     with pytest.raises(ValueError, match="partial or stale"):
         load_geometry_cache(tmp_path, key, expected_provenance=provenance)
     assert arrays_path.is_file()
+
+
+def test_cache_rejects_video_swap_and_same_size_corruption(tmp_path, plane_prediction) -> None:
+    provenance = {"video_sha256": "a" * 64, "extractor": "test"}
+    key = canonical_hash(provenance)
+    arrays_path, _ = save_geometry_cache(tmp_path, key, plane_prediction, provenance)
+    with pytest.raises(ValueError, match="candidate video"):
+        load_geometry_cache(tmp_path, key, expected_video_sha256="b" * 64)
+
+    payload = bytearray(arrays_path.read_bytes())
+    payload[len(payload) // 2] ^= 1
+    arrays_path.write_bytes(payload)
+    with pytest.raises(ValueError, match="digest"):
+        load_geometry_cache(tmp_path, key)
+
+
+def test_cache_rejects_key_not_derived_from_provenance(tmp_path, plane_prediction) -> None:
+    with pytest.raises(ValueError, match="canonical_hash"):
+        save_geometry_cache(tmp_path, "a" * 64, plane_prediction, {"source": "other"})

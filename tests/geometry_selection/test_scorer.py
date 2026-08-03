@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from geometry_selection.schema import GeometryPrediction
-from geometry_selection.scorer import ScorerConfig, score_geometry
+from geometry_selection.scorer import ScorerConfig, _depth_edge_mask, score_geometry
 
 
 def config(**overrides) -> ScorerConfig:
@@ -77,7 +77,7 @@ def test_shared_scale_is_invariant_but_depth_only_scale_is_not(
     plane_prediction: GeometryPrediction,
 ) -> None:
     base = score_geometry(plane_prediction, config()).total_score
-    for scale in (0.1, 10.0):
+    for scale in (1e-14, 0.1, 10.0):
         poses = plane_prediction.world_to_camera.copy()
         poses[:, :3, 3] *= scale
         scaled = clone_prediction(
@@ -124,3 +124,47 @@ def test_raw_confidence_above_one_is_handled_as_relative_weight(
     )
     assert report.status == "ok"
     assert np.isfinite(report.total_score)
+
+
+def test_depth_edge_mask_marks_both_sides() -> None:
+    depth = np.array([[1.0, 1.0, 10.0, 10.0]])
+    mask = _depth_edge_mask(depth, relative_threshold=0.5)
+    assert mask.tolist() == [[False, True, True, False]]
+
+
+def test_pure_rotation_contributes_to_motion_guard() -> None:
+    frames, height, width = 5, 48, 64
+    fx = fy = 80.0
+    cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+    intrinsics = np.broadcast_to(
+        np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]),
+        (frames, 3, 3),
+    ).copy()
+    world_to_camera = np.broadcast_to(np.eye(4), (frames, 4, 4)).copy()
+    angles = np.deg2rad(np.linspace(0.0, 12.0, frames))
+    for index, angle in enumerate(angles):
+        world_to_camera[index, :3, :3] = np.array(
+            [
+                [np.cos(angle), 0.0, np.sin(angle)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(angle), 0.0, np.cos(angle)],
+            ]
+        )
+    y, x = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    rays_camera = np.stack([(x - cx) / fx, (y - cy) / fy, np.ones_like(x)], axis=-1)
+    depth = []
+    for rotation in world_to_camera[:, :3, :3]:
+        rays_world = rays_camera @ rotation
+        depth.append(5.0 / rays_world[..., 2])
+    prediction = GeometryPrediction(
+        world_to_camera=world_to_camera,
+        intrinsics=intrinsics,
+        depth=np.asarray(depth),
+        confidence=np.full((frames, height, width), 2.0),
+        keyframe_indices=np.arange(frames, dtype=np.int64),
+    )
+    report = score_geometry(prediction, config())
+    assert report.status == "ok"
+    assert np.isclose(report.camera_path_length, 0.0)
+    assert report.camera_angular_path_deg > 11.9
+    assert report.normalized_camera_motion > 0.0

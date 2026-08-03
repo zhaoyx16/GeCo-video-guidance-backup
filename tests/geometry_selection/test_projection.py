@@ -54,3 +54,14 @@ def test_bilinear_sample_does_not_clip_invalid_points() -> None:
     assert np.isnan(result.values[1])
     assert np.isnan(result.values[2])
     assert result.in_bounds.tolist() == [True, False, False]
+
+
+def test_projection_preserves_small_positive_gauge() -> None:
+    intrinsics = np.array(
+        [[50.0, 0.0, 15.5], [0.0, 50.0, 11.5], [0.0, 0.0, 1.0]]
+    )
+    point = np.array([[2e-15, -1e-15, 1e-14]])
+    x, y, z = project_camera(point, intrinsics)
+    assert np.allclose(x, [25.5])
+    assert np.allclose(y, [6.5])
+    assert np.allclose(z, [1e-14])
