@@ -1,0 +1,26 @@
+{
+  "schema": "wan_geco_runtime_certificate_spec_v1",
+  "backbone": "wan",
+  "method": "adapted_geco",
+  "scheduler": {
+    "class_name": "UniPCMultistepScheduler",
+    "module": "diffusers.schedulers.scheduling_unipc_multistep",
+    "diffusers_version": "0.38.0",
+    "config_sha256": "8de7c63193c2e74bcac015e0d4f6f74b3a9dc820a121c2dcf99728f53f31c1e9",
+    "prediction_type": "flow_prediction",
+    "predict_x0": true,
+    "thresholding": false,
+    "clean_prediction_rule": "x_t - sigma_t * model_output"
+  },
+  "scheduler_preflight": {
+    "schema": "wan_scheduler_runtime_preflight_v1",
+    "steps": 50,
+    "max_abs_error": 1e-6
+  },
+  "flow_match_helper_source_sha256": "ebd5573f7f925534632694c37d647f6d2a96f41b20e50e3c7928a5f90d411cea",
+  "thresholds": {
+    "prediction_max_abs": 0.001,
+    "x0_max_abs": 0.001,
+    "vae_max_abs": 0.001
+  }
+}

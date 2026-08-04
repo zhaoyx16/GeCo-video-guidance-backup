@@ -14,6 +14,7 @@ import atexit
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import platform
 import socket
@@ -161,7 +162,7 @@ def adapted_geco_schedule(
     repeats_per_step: int,
     learning_rate: float,
 ) -> tuple[list[int], list[float]]:
-    """Create a one-update default schedule for the stop-gradient VGGT surrogate."""
+    """Create the default full-transformer-Jacobian GeCo update schedule."""
 
     if not 0.0 <= start_fraction < end_fraction <= 1.0:
         raise ValueError("Guidance fractions must satisfy 0 <= start < end <= 1")
@@ -487,6 +488,442 @@ def runtime_meta() -> dict:
     }
 
 
+def cuda_runtime_identity(device: str) -> dict:
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        raise ValueError(f"Runtime certification requires CUDA, got {device!r}")
+    index = 0 if resolved.index is None else resolved.index
+    return {
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "device_name": torch.cuda.get_device_name(index),
+        "device_capability": list(torch.cuda.get_device_capability(index)),
+    }
+
+
+def runtime_certification_report(
+    events: list[dict],
+    *,
+    guidance_step: list[int],
+    fixed_frames: list[int],
+    prediction_max_abs: float,
+    x0_max_abs: float,
+    vae_max_abs: float,
+    scheduler_config: dict,
+    scheduler_identity: dict,
+    scheduler_preflight: dict,
+    specification_sha256: str,
+) -> dict:
+    """Validate non-mutating traces from the actual full guidance path."""
+
+    expected_updates = sum(guidance_step)
+    expected_prediction_checks = sum(repeats > 0 for repeats in guidance_step)
+    expected_vae_checks = expected_updates * len(fixed_frames)
+    expected_update_pairs = {
+        (step_index, repeat_index)
+        for step_index, repeats in enumerate(guidance_step)
+        for repeat_index in range(repeats)
+    }
+    expected_prediction_pairs = {
+        (step_index, 0)
+        for step_index, repeats in enumerate(guidance_step)
+        if repeats > 0
+    }
+    expected_vae_triples = {
+        (step_index, repeat_index, frame_index)
+        for step_index, repeat_index in expected_update_pairs
+        for frame_index in fixed_frames
+    }
+    expected_final_update_pairs = {
+        (step_index, repeats - 1)
+        for step_index, repeats in enumerate(guidance_step)
+        if repeats > 0
+    }
+    grouped = {
+        kind: [event for event in events if event.get("kind") == kind]
+        for kind in (
+            "prediction",
+            "vae",
+            "update",
+            "scheduler_recompute",
+            "scheduler_step_input",
+        )
+    }
+    failures: list[str] = []
+    if len(grouped["prediction"]) != expected_prediction_checks:
+        failures.append("prediction-check count mismatch")
+    if len(grouped["vae"]) != expected_vae_checks:
+        failures.append("VAE-check count mismatch")
+    if len(grouped["update"]) != expected_updates:
+        failures.append("guidance-update count mismatch")
+    if len(grouped["scheduler_recompute"]) != len(expected_final_update_pairs):
+        failures.append("scheduler-recompute count mismatch")
+    if len(grouped["scheduler_step_input"]) != len(expected_final_update_pairs):
+        failures.append("scheduler-step-input count mismatch")
+
+    observed_update_pairs = {
+        (event.get("step_index"), event.get("repeat_index"))
+        for event in grouped["update"]
+    }
+    observed_prediction_pairs = {
+        (event.get("step_index"), event.get("repeat_index"))
+        for event in grouped["prediction"]
+    }
+    observed_vae_triples = {
+        (event.get("step_index"), event.get("repeat_index"), event.get("frame_index"))
+        for event in grouped["vae"]
+    }
+    observed_recompute_pairs = {
+        (event.get("step_index"), event.get("repeat_index"))
+        for event in grouped["scheduler_recompute"]
+    }
+    observed_scheduler_input_pairs = {
+        (event.get("step_index"), event.get("repeat_index"))
+        for event in grouped["scheduler_step_input"]
+    }
+    if observed_update_pairs != expected_update_pairs:
+        failures.append("guidance-update coverage mismatch")
+    if observed_prediction_pairs != expected_prediction_pairs:
+        failures.append("prediction-check coverage mismatch")
+    if observed_vae_triples != expected_vae_triples:
+        failures.append("VAE-check coverage mismatch")
+    if observed_recompute_pairs != expected_final_update_pairs:
+        failures.append("scheduler-recompute coverage mismatch")
+    if observed_scheduler_input_pairs != expected_final_update_pairs:
+        failures.append("scheduler-step-input coverage mismatch")
+
+    def finite(event: dict, *keys: str) -> bool:
+        try:
+            return all(math.isfinite(float(event[key])) for key in keys)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    prediction_finite = all(
+        finite(
+            event,
+            "sampling_finite",
+            "guidance_finite",
+            "pred_mean_abs_diff",
+            "pred_max_abs_diff",
+            "x0_mean_abs_diff",
+            "x0_max_abs_diff",
+        )
+        and event["sampling_finite"] == 1.0
+        and event["guidance_finite"] == 1.0
+        for event in grouped["prediction"]
+    )
+    vae_finite = all(finite(event, "mean_abs_diff", "max_abs_diff") for event in grouped["vae"])
+    update_finite = all(
+        finite(
+            event,
+            "loss",
+            "grad_norm",
+            "latent_delta",
+            "relative_delta",
+            "loss_wrt_noise_norm",
+            "transformer_loss_vjp_norm",
+            "latent_before_finite",
+            "latent_after_finite",
+        )
+        and event.get("frames_requires_grad") is True
+        and event.get("score_requires_grad") is True
+        and event.get("noise_pred_requires_grad") is True
+        and event["loss_wrt_noise_norm"] > 0.0
+        and event["transformer_loss_vjp_norm"] > 0.0
+        and event["grad_norm"] > 0.0
+        and event["latent_delta"] > 0.0
+        and event["latent_before_finite"] == 1.0
+        and event["latent_after_finite"] == 1.0
+        for event in grouped["update"]
+    )
+    scheduler_recompute_finite = all(
+        finite(event, "prediction_finite", "prediction_mean_abs", "latents_finite")
+        and event["prediction_finite"] == 1.0
+        and event["latents_finite"] == 1.0
+        and isinstance(event.get("latents_sha256"), str)
+        and isinstance(event.get("model_output_sha256"), str)
+        for event in grouped["scheduler_recompute"]
+    )
+    scheduler_input_hashed = all(
+        isinstance(event.get("latents_sha256"), str)
+        and isinstance(event.get("model_output_sha256"), str)
+        and finite(event, "latents_finite")
+        and event["latents_finite"] == 1.0
+        for event in grouped["scheduler_step_input"]
+    )
+    if not prediction_finite:
+        failures.append("prediction trace contains non-finite values")
+    if not vae_finite:
+        failures.append("VAE trace contains non-finite values")
+    if not update_finite:
+        failures.append("guidance trace lacks a finite nonzero loss-to-transformer-to-latent path")
+    if not scheduler_recompute_finite:
+        failures.append("post-update scheduler recomputation is invalid")
+    if not scheduler_input_hashed:
+        failures.append("scheduler step input is not bound to trace hashes")
+
+    updates = {
+        (event["step_index"], event["repeat_index"]): event
+        for event in grouped["update"]
+    }
+    recomputes = {
+        (event["step_index"], event["repeat_index"]): event
+        for event in grouped["scheduler_recompute"]
+    }
+    scheduler_inputs = {
+        (event["step_index"], event["repeat_index"]): event
+        for event in grouped["scheduler_step_input"]
+    }
+    for pair in expected_final_update_pairs:
+        update = updates[pair]
+        recompute = recomputes[pair]
+        scheduler_input = scheduler_inputs[pair]
+        if update.get("latent_before_sha256") == update.get("latent_after_sha256"):
+            failures.append(f"guidance update did not change latent at {pair}")
+        if update.get("latent_after_sha256") != recompute.get("latents_sha256"):
+            failures.append(f"recompute did not use updated latent at {pair}")
+        if (
+            recompute.get("latents_sha256") != scheduler_input.get("latents_sha256")
+            or recompute.get("model_output_sha256")
+            != scheduler_input.get("model_output_sha256")
+        ):
+            failures.append(f"scheduler step did not receive recomputed prediction at {pair}")
+
+    def maximum(kind: str, key: str) -> float | None:
+        values = [float(event[key]) for event in grouped[kind] if key in event]
+        return max(values) if values else None
+
+    observed = {
+        "prediction_max_abs_diff": maximum("prediction", "pred_max_abs_diff"),
+        "x0_max_abs_diff": maximum("prediction", "x0_max_abs_diff"),
+        "vae_max_abs_diff": maximum("vae", "max_abs_diff"),
+    }
+    if observed["prediction_max_abs_diff"] is None or observed["prediction_max_abs_diff"] > prediction_max_abs:
+        failures.append("prediction agreement exceeds threshold")
+    if observed["x0_max_abs_diff"] is None or observed["x0_max_abs_diff"] > x0_max_abs:
+        failures.append("x0 agreement exceeds threshold")
+    if observed["vae_max_abs_diff"] is None or observed["vae_max_abs_diff"] > vae_max_abs:
+        failures.append("VAE agreement exceeds threshold")
+    scheduler_json = json.dumps(scheduler_config, sort_keys=True, default=str, separators=(",", ":"))
+    return {
+        "schema": "wan_geco_runtime_certificate_v1",
+        "status": "passed" if not failures else "failed",
+        "expected": {
+            "guidance_updates": expected_updates,
+            "prediction_checks": expected_prediction_checks,
+            "vae_checks": expected_vae_checks,
+            "scheduler_recomputes": len(expected_final_update_pairs),
+            "scheduler_step_inputs": len(expected_final_update_pairs),
+        },
+        "observed": {
+            "guidance_updates": len(grouped["update"]),
+            "prediction_checks": len(grouped["prediction"]),
+            "vae_checks": len(grouped["vae"]),
+            "scheduler_recomputes": len(grouped["scheduler_recompute"]),
+            "scheduler_step_inputs": len(grouped["scheduler_step_input"]),
+            **observed,
+        },
+        "thresholds": {
+            "prediction_max_abs": prediction_max_abs,
+            "x0_max_abs": x0_max_abs,
+            "vae_max_abs": vae_max_abs,
+        },
+        "scheduler_config_sha256": hashlib.sha256(scheduler_json.encode()).hexdigest(),
+        "scheduler": scheduler_identity,
+        "scheduler_preflight": scheduler_preflight,
+        "specification_sha256": specification_sha256,
+        "events": events,
+        "failures": failures,
+    }
+
+
+def load_runtime_certification_spec(repo: Path) -> tuple[Path, dict, str]:
+    """Load the committed, non-overridable Wan runtime-certificate contract."""
+
+    path = repo / "benchmarks/dl3dv_geco/specs/wan_geco_runtime_certificate_v1.json"
+    if not path.is_file():
+        raise RuntimeError(f"Missing committed runtime-certification spec: {path}")
+    spec = json.loads(path.read_text())
+    required = {
+        "schema": "wan_geco_runtime_certificate_spec_v1",
+        "backbone": "wan",
+        "method": "adapted_geco",
+    }
+    if any(spec.get(key) != value for key, value in required.items()):
+        raise RuntimeError(f"Invalid runtime-certification spec identity: {path}")
+    scheduler = spec.get("scheduler")
+    scheduler_preflight = spec.get("scheduler_preflight")
+    thresholds = spec.get("thresholds")
+    if (
+        not isinstance(scheduler, dict)
+        or not isinstance(scheduler_preflight, dict)
+        or not isinstance(thresholds, dict)
+    ):
+        raise RuntimeError(f"Invalid runtime-certification spec structure: {path}")
+    if (
+        scheduler_preflight.get("schema") != "wan_scheduler_runtime_preflight_v1"
+        or scheduler_preflight.get("steps") != 50
+        or not isinstance(scheduler_preflight.get("max_abs_error"), (int, float))
+        or not math.isfinite(float(scheduler_preflight["max_abs_error"]))
+        or float(scheduler_preflight["max_abs_error"]) < 0.0
+    ):
+        raise RuntimeError(f"Invalid runtime-certification preflight contract: {path}")
+    if not all(
+        isinstance(thresholds.get(key), (int, float))
+        and math.isfinite(float(thresholds[key]))
+        and float(thresholds[key]) >= 0.0
+        for key in ("prediction_max_abs", "x0_max_abs", "vae_max_abs")
+    ):
+        raise RuntimeError(f"Invalid runtime-certification thresholds: {path}")
+    return path, spec, sha256_file(path)
+
+
+def validate_runtime_certification_scheduler(scheduler, spec: dict, *, repo: Path) -> dict:
+    """Bind a certificate to the scheduler actually loaded by the adapted pipeline."""
+
+    import diffusers
+
+    expected = spec["scheduler"]
+    config = dict(scheduler.config)
+    config_json = json.dumps(config, sort_keys=True, default=str, separators=(",", ":"))
+    actual = {
+        "class_name": type(scheduler).__name__,
+        "module": type(scheduler).__module__,
+        "diffusers_version": diffusers.__version__,
+        "config_sha256": hashlib.sha256(config_json.encode()).hexdigest(),
+        "prediction_type": config.get("prediction_type"),
+        "predict_x0": config.get("predict_x0"),
+        "thresholding": config.get("thresholding"),
+        "flow_match_helper_source_sha256": sha256_file(repo / "geometry_selection/online.py"),
+    }
+    expected_fields = (
+        "class_name",
+        "module",
+        "diffusers_version",
+        "config_sha256",
+        "prediction_type",
+        "predict_x0",
+        "thresholding",
+    )
+    mismatch = {
+        key: {"expected": expected.get(key), "actual": actual[key]}
+        for key in expected_fields
+        if expected.get(key) != actual[key]
+    }
+    if expected.get("clean_prediction_rule") != "x_t - sigma_t * model_output":
+        mismatch["clean_prediction_rule"] = {
+            "expected": "x_t - sigma_t * model_output",
+            "actual": expected.get("clean_prediction_rule"),
+        }
+    if spec.get("flow_match_helper_source_sha256") != actual["flow_match_helper_source_sha256"]:
+        mismatch["flow_match_helper_source_sha256"] = {
+            "expected": spec.get("flow_match_helper_source_sha256"),
+            "actual": actual["flow_match_helper_source_sha256"],
+        }
+    if mismatch:
+        raise RuntimeError(f"Runtime-certification scheduler contract mismatch: {mismatch}")
+    return actual
+
+
+def validate_scheduler_preflight_receipt(
+    receipt_path: Path,
+    expected_sha256: str,
+    *,
+    code_commit: str,
+    model: Path,
+    steps: int,
+    scheduler_identity: dict,
+    runtime_identity: dict,
+    spec: dict,
+) -> dict:
+    """Bind the certificate to a clean-endpoint preflight run in this exact code state."""
+
+    receipt_path = receipt_path.resolve()
+    if not receipt_path.is_file():
+        raise RuntimeError(f"Missing scheduler preflight receipt: {receipt_path}")
+    actual_sha256 = sha256_file(receipt_path)
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError("Scheduler preflight receipt SHA mismatch")
+    receipt = json.loads(receipt_path.read_text())
+    preflight = spec["scheduler_preflight"]
+    expected_fields = {
+        "schema": preflight["schema"],
+        "code_commit": code_commit,
+        "model": str(model.resolve()),
+        "scheduler_class": scheduler_identity["class_name"],
+        "scheduler_module": scheduler_identity["module"],
+        "diffusers_version": scheduler_identity["diffusers_version"],
+        "scheduler_config_sha256": scheduler_identity["config_sha256"],
+        "flow_match_helper_source_sha256": scheduler_identity[
+            "flow_match_helper_source_sha256"
+        ],
+        "runtime": runtime_identity,
+    }
+    mismatch = {
+        key: {"expected": value, "actual": receipt.get(key)}
+        for key, value in expected_fields.items()
+        if receipt.get(key) != value
+    }
+    if receipt.get("validated_step_indices") != list(range(steps)):
+        mismatch["validated_step_indices"] = {
+            "expected": list(range(steps)),
+            "actual": receipt.get("validated_step_indices"),
+        }
+    for key in ("flow_x0_max_abs_error", "scheduler_x0_max_abs_error"):
+        value = receipt.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) > float(
+            preflight["max_abs_error"]
+        ):
+            mismatch[key] = {
+                "expected_max": preflight["max_abs_error"],
+                "actual": value,
+            }
+    if mismatch:
+        raise RuntimeError(f"Scheduler preflight receipt contract mismatch: {mismatch}")
+    return {
+        "path": str(receipt_path),
+        "sha256": actual_sha256,
+        "code_commit": receipt["code_commit"],
+        "model": receipt["model"],
+        "flow_x0_max_abs_error": receipt["flow_x0_max_abs_error"],
+        "scheduler_x0_max_abs_error": receipt["scheduler_x0_max_abs_error"],
+    }
+
+
+def verify_completed_runtime_certificate(
+    stored_metadata: dict,
+    *,
+    output_dir: Path,
+    specification_sha256: str,
+) -> None:
+    """Verify that a completed certified run still has its bound receipt."""
+
+    recorded = stored_metadata.get("runtime_certification")
+    if not isinstance(recorded, dict):
+        raise RuntimeError(f"COMPLETE runtime-certification receipt missing: {output_dir}")
+    certificate_path = output_dir / "runtime_certification.json"
+    if recorded.get("path") != str(certificate_path.resolve()):
+        raise RuntimeError(f"COMPLETE runtime-certification path mismatch: {output_dir}")
+    if recorded.get("status") != "passed":
+        raise RuntimeError(f"COMPLETE runtime-certification status is not passed: {output_dir}")
+    if recorded.get("schema") != "wan_geco_runtime_certificate_v1":
+        raise RuntimeError(f"COMPLETE runtime-certification schema mismatch: {output_dir}")
+    if recorded.get("specification_sha256") != specification_sha256:
+        raise RuntimeError(f"COMPLETE runtime-certification specification mismatch: {output_dir}")
+    if not certificate_path.is_file():
+        raise RuntimeError(f"COMPLETE runtime-certification receipt missing: {output_dir}")
+    if recorded.get("sha256") != sha256_file(certificate_path):
+        raise RuntimeError(f"COMPLETE runtime-certification receipt SHA mismatch: {output_dir}")
+    receipt = json.loads(certificate_path.read_text())
+    if (
+        receipt.get("schema") != recorded["schema"]
+        or receipt.get("status") != recorded["status"]
+        or receipt.get("specification_sha256") != specification_sha256
+        or receipt.get("scheduler_preflight") != recorded.get("scheduler_preflight")
+    ):
+        raise RuntimeError(f"COMPLETE runtime-certification receipt content mismatch: {output_dir}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", choices=PROFILES, required=True)
@@ -533,6 +970,32 @@ def main() -> None:
     parser.add_argument("--guidance-repeats", type=int, default=1)
     parser.add_argument("--guidance-lr", type=float, default=0.1)
     parser.add_argument(
+        "--debug-guidance-consistency",
+        action="store_true",
+        help="Emit non-mutating prediction and VAE consistency traces for runtime certification.",
+    )
+    parser.add_argument(
+        "--runtime-certification",
+        action="store_true",
+        help=(
+            "Require and persist a passing receipt from the actual adapted-GeCo guidance path "
+            "using the committed certificate specification."
+        ),
+    )
+    parser.add_argument(
+        "--expected-runtime-certification-spec-sha256",
+        help="Required SHA-256 of the committed runtime-certificate specification.",
+    )
+    parser.add_argument(
+        "--scheduler-preflight-receipt",
+        type=Path,
+        help="Same-environment 50-step scheduler equivalence receipt required for certification.",
+    )
+    parser.add_argument(
+        "--expected-scheduler-preflight-sha256",
+        help="Required SHA-256 of --scheduler-preflight-receipt.",
+    )
+    parser.add_argument(
         "--wan-negative-prompt-mode",
         choices=("none", "frozen"),
         default="none",
@@ -553,6 +1016,33 @@ def main() -> None:
             setattr(args, key, value)
     if args.method == "adapted_geco" and args.decode_spatial_scale != 1.0:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
+    if args.runtime_certification and args.method != "adapted_geco":
+        parser.error("--runtime-certification requires --method adapted_geco")
+    if args.runtime_certification and args.repo.resolve() != REPO_ROOT.resolve():
+        parser.error("runtime-certification --repo must be the repository executing this runner")
+    if args.runtime_certification and not args.expected_runtime_certification_spec_sha256:
+        parser.error("runtime-certification requires --expected-runtime-certification-spec-sha256")
+    if args.runtime_certification and (
+        args.scheduler_preflight_receipt is None
+        or not args.expected_scheduler_preflight_sha256
+    ):
+        parser.error(
+            "runtime-certification requires --scheduler-preflight-receipt and "
+            "--expected-scheduler-preflight-sha256"
+        )
+    runtime_certification_path = None
+    runtime_certification_spec = None
+    runtime_certification_spec_sha256 = None
+    if args.runtime_certification:
+        (
+            runtime_certification_path,
+            runtime_certification_spec,
+            runtime_certification_spec_sha256,
+        ) = load_runtime_certification_spec(args.repo.resolve())
+        if runtime_certification_spec_sha256 != args.expected_runtime_certification_spec_sha256:
+            parser.error("runtime-certification specification SHA mismatch")
+        if args.steps != runtime_certification_spec["scheduler_preflight"]["steps"]:
+            parser.error("runtime-certification requires the frozen scheduler-preflight step count")
 
     is_frozen_protocol = args.protocol_mode == "frozen"
     if is_frozen_protocol and args.method in {"adapted_geco", "online_geometry_selection"}:
@@ -612,6 +1102,14 @@ def main() -> None:
             args.manifest, args.case_id, args.case_index
         )
     code_identity = git_identity(REPO_ROOT if is_frozen_protocol else args.repo.resolve())
+    if args.runtime_certification and code_identity["dirty"]:
+        raise RuntimeError("runtime-certification requires a clean repository commit")
+    if args.runtime_certification:
+        validate_committed_file(
+            runtime_certification_path,
+            REPO_ROOT,
+            code_identity["commit"],
+        )
     locked_model_identity = None
     model_lock_sha256 = None
     experiment_lock_sha256 = None
@@ -808,6 +1306,14 @@ def main() -> None:
         "ufm_scale": args.ufm_scale,
         "decode_spatial_scale": args.decode_spatial_scale,
         "max_relative_delta": args.max_relative_delta,
+        "debug_guidance_consistency": (
+            args.debug_guidance_consistency if args.method == "adapted_geco" else None
+        ),
+        "runtime_certification": args.runtime_certification if args.method == "adapted_geco" else None,
+        "runtime_certification_spec_sha256": runtime_certification_spec_sha256,
+        "scheduler_preflight_sha256": (
+            args.expected_scheduler_preflight_sha256 if args.runtime_certification else None
+        ),
         "transformer_block_checkpointing": args.transformer_block_checkpointing,
         "split_vae_smoke_report_sha256": (
             sha256_file(args.split_vae_smoke_report)
@@ -852,6 +1358,12 @@ def main() -> None:
             raise RuntimeError(f"COMPLETE metadata run_id mismatch: {output_dir}")
         if not video_path.is_file() or stored.get("video_sha256") != sha256_file(video_path):
             raise RuntimeError(f"COMPLETE video integrity mismatch: {output_dir}")
+        if args.runtime_certification:
+            verify_completed_runtime_certificate(
+                stored,
+                output_dir=output_dir,
+                specification_sha256=runtime_certification_spec_sha256,
+            )
         probe_video(
             video_path,
             frames=args.frames,
@@ -865,6 +1377,22 @@ def main() -> None:
     atexit.register(run_lock.release)
 
     pipe, vae_device = build_pipeline(args)
+    runtime_scheduler_identity = None
+    runtime_scheduler_preflight = None
+    if args.runtime_certification:
+        runtime_scheduler_identity = validate_runtime_certification_scheduler(
+            pipe.scheduler, runtime_certification_spec, repo=args.repo.resolve()
+        )
+        runtime_scheduler_preflight = validate_scheduler_preflight_receipt(
+            args.scheduler_preflight_receipt,
+            args.expected_scheduler_preflight_sha256,
+            code_commit=code_identity["commit"],
+            model=args.model,
+            steps=args.steps,
+            scheduler_identity=runtime_scheduler_identity,
+            runtime_identity=cuda_runtime_identity(args.pipe_device),
+            spec=runtime_certification_spec,
+        )
     online_selector = None
     online_runtime = None
     if online_config is not None:
@@ -904,11 +1432,19 @@ def main() -> None:
                 "Cross-device metric guidance requires --cross-device-grad-via-cpu"
             )
         metric = load_metric(args)
+        runtime_certification_events: list[dict] | None = (
+            [] if args.runtime_certification else None
+        )
         additional_inputs = {
             "residual_motion_metric": metric,
             "decode_spatial_scale": args.decode_spatial_scale,
             "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
+            "debug_guidance_consistency": (
+                args.debug_guidance_consistency or args.runtime_certification
+            ),
         }
+        if runtime_certification_events is not None:
+            additional_inputs["runtime_certification_events"] = runtime_certification_events
         if args.backbone == "wan":
             additional_inputs["max_relative_delta"] = args.max_relative_delta
         else:
@@ -935,6 +1471,32 @@ def main() -> None:
             output = pipe(**common)
     else:
         output = pipe(**common)
+    runtime_certificate = None
+    certificate_path = None
+    if args.runtime_certification:
+        runtime_certificate = runtime_certification_report(
+            runtime_certification_events,
+            guidance_step=guidance_step,
+            fixed_frames=fixed_frames,
+            prediction_max_abs=float(
+                runtime_certification_spec["thresholds"]["prediction_max_abs"]
+            ),
+            x0_max_abs=float(runtime_certification_spec["thresholds"]["x0_max_abs"]),
+            vae_max_abs=float(runtime_certification_spec["thresholds"]["vae_max_abs"]),
+            scheduler_config=dict(pipe.scheduler.config),
+            scheduler_identity=runtime_scheduler_identity,
+            scheduler_preflight=runtime_scheduler_preflight,
+            specification_sha256=runtime_certification_spec_sha256,
+        )
+        certificate_path = output_dir / "runtime_certification.json"
+        temporary_certificate = output_dir / f".runtime_certificate.{uuid.uuid4().hex}.tmp.json"
+        temporary_certificate.write_text(json.dumps(runtime_certificate, indent=2) + "\n")
+        temporary_certificate.replace(certificate_path)
+        if runtime_certificate["status"] != "passed":
+            raise RuntimeError(
+                "Wan adapted-GeCo runtime certification failed: "
+                + "; ".join(runtime_certificate["failures"])
+            )
     temporary_video = output_dir / f".video.{uuid.uuid4().hex}.tmp.mp4"
     export_to_video(output.frames[0], str(temporary_video), fps=args.fps)
     video_probe = probe_video(
@@ -1015,12 +1577,16 @@ def main() -> None:
             "ufm_scale": args.ufm_scale,
             "decode_spatial_scale": args.decode_spatial_scale,
             "max_relative_delta": args.max_relative_delta,
+            "debug_guidance_consistency": (
+                args.debug_guidance_consistency if args.method == "adapted_geco" else None
+            ),
             "grad_through_vggt": False,
             "pair_mode": "adjacent",
             "time_travel": None,
             "schedule_source": (
-                "Adapted single-repeat schedule for a flow-matching backbone; "
-                "VGGT geometry is re-estimated with stop-gradient at every update."
+                "Adapted GeCo schedule for a flow-matching backbone; the latent "
+                "gradient retains the transformer Jacobian while frozen VGGT geometry "
+                "is re-estimated with stop-gradient at every update."
             ),
             "guidance_start_fraction": args.guidance_start_fraction,
             "guidance_end_fraction": args.guidance_end_fraction,
@@ -1046,6 +1612,20 @@ def main() -> None:
             ),
         },
         "runtime": runtime_meta(),
+        "runtime_certification": (
+            {
+                "path": str(certificate_path.resolve()),
+                "sha256": sha256_file(certificate_path),
+                "status": runtime_certificate["status"],
+                "schema": runtime_certificate["schema"],
+                "specification_path": str(runtime_certification_path.resolve()),
+                "specification_sha256": runtime_certification_spec_sha256,
+                "scheduler": runtime_scheduler_identity,
+                "scheduler_preflight": runtime_scheduler_preflight,
+            }
+            if runtime_certificate is not None
+            else None
+        ),
         "video": str(video_path),
         "video_sha256": video_sha256,
         "video_probe": video_probe,

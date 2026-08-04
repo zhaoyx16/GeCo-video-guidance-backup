@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -20,6 +21,31 @@ def tensor_sha256(tensor: torch.Tensor) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def git_output(repo: Path, *args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+
+def cuda_runtime_identity(device: str) -> dict:
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        raise ValueError(f"Scheduler preflight requires CUDA, got {device!r}")
+    index = 0 if resolved.index is None else resolved.index
+    return {
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "device_name": torch.cuda.get_device_name(index),
+        "device_capability": list(torch.cuda.get_device_capability(index)),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
@@ -29,6 +55,9 @@ def main() -> None:
     args = parser.parse_args()
 
     repo = args.repo.resolve()
+    if git_output(repo, "status", "--porcelain"):
+        raise RuntimeError("Scheduler preflight requires a clean repository.")
+    code_commit = git_output(repo, "rev-parse", "HEAD")
     sys.path.insert(0, str(repo))
     import diffusers
     from benchmarks.dl3dv_geco.run_generation_case import build_pipeline
@@ -93,6 +122,11 @@ def main() -> None:
             )
     report = {
         "schema": "wan_scheduler_runtime_preflight_v1",
+        "repo": str(repo),
+        "code_commit": code_commit,
+        "model": str(Path(args.model).resolve()),
+        "flow_match_helper_source_sha256": file_sha256(repo / "geometry_selection/online.py"),
+        "runtime": cuda_runtime_identity(args.device),
         "scheduler_class": type(scheduler).__name__,
         "scheduler_module": type(scheduler).__module__,
         "diffusers_version": diffusers.__version__,

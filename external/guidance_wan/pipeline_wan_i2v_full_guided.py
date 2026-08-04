@@ -16,6 +16,7 @@
 '''
 # pipeline 里真正插入 guidance
 '''
+import hashlib
 import html
 import os
 from typing import Any, Callable
@@ -54,6 +55,14 @@ else:
     XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _runtime_tensor_sha256(tensor: torch.Tensor) -> str:
+    """Hash a detached tensor only for the optional runtime certificate trace."""
+    detached = tensor.detach().contiguous()
+    header = f"dtype={detached.dtype};shape={tuple(detached.shape)};".encode()
+    payload = detached.view(torch.uint8).cpu().numpy().tobytes()
+    return hashlib.sha256(header + payload).hexdigest()
 
 
 def _geco_move_tensor(
@@ -1365,6 +1374,26 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 只是在它的 denoising prediction 上额外加 GeCo latent guidance。
                                 noise_pred_g = noise_uncond_g + current_guidance_scale * (noise_pred_g - noise_uncond_g)
 
+                        debug_guidance_consistency = bool(
+                            additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
+                        )
+                        runtime_certification_events = (
+                            additional_inputs.get("runtime_certification_events")
+                            if additional_inputs is not None
+                            else None
+                        )
+                        if runtime_certification_events is not None and not isinstance(
+                            runtime_certification_events, list
+                        ):
+                            raise TypeError("runtime_certification_events must be a list")
+                        noise_pred_requires_grad = bool(noise_pred_g.requires_grad)
+                        if runtime_certification_events is not None:
+                            # The actual loss-to-model-output VJP is checked below, after loss
+                            # construction.  Here we fail early if the transformer output itself
+                            # was detached from the latent input.
+                            if not noise_pred_requires_grad:
+                                raise RuntimeError("Guidance transformer prediction is detached.")
+
                         # Predict the clean latent without mutating scheduler state.
                         with torch.enable_grad():
                             # Do not detach noise_pred_g: transformer weights are frozen, but the latent update
@@ -1374,9 +1403,6 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 noise_pred_g,
                                 latents,
                                 step_index=i,
-                            )
-                            debug_guidance_consistency = bool(
-                                additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
                             )
                             if debug_guidance_consistency and rep == 0:
                                 # Debug only: the recomputed differentiable prediction must agree with
@@ -1406,6 +1432,20 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                         f"x0_mean_abs_diff={x0_abs_diff.mean().item():.8e} "
                                         f"x0_max_abs_diff={x0_abs_diff.max().item():.8e}"
                                     )
+                                    if runtime_certification_events is not None:
+                                        runtime_certification_events.append(
+                                            {
+                                                "kind": "prediction",
+                                                "step_index": int(i),
+                                                "repeat_index": int(rep),
+                                                "sampling_finite": float(sampling_finite),
+                                                "guidance_finite": float(guidance_finite),
+                                                "pred_mean_abs_diff": float(pred_abs_diff.mean().item()),
+                                                "pred_max_abs_diff": float(pred_abs_diff.max().item()),
+                                                "x0_mean_abs_diff": float(x0_abs_diff.mean().item()),
+                                                "x0_max_abs_diff": float(x0_abs_diff.max().item()),
+                                            }
+                                        )
                                 del x0_from_sampling_pred, pred_abs_diff, x0_abs_diff
                                 # 对于 Wan 的 flow_prediction，Diffusers scheduler 内部基本就是：x0_pred = sample - sigma * model_output
                                 # 一句话：这个公式来自 flow matching：模型输出的是从当前 noisy latent 到 clean latent 的 velocity/flow，
@@ -1721,6 +1761,18 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                                 f"mean_abs_diff={decode_abs_diff.mean().item():.8e} "
                                                 f"max_abs_diff={decode_abs_diff.max().item():.8e}"
                                             )
+                                            if runtime_certification_events is not None:
+                                                runtime_certification_events.append(
+                                                    {
+                                                        "kind": "vae",
+                                                        "step_index": int(i),
+                                                        "repeat_index": int(rep),
+                                                        "frame_index": int(fidx),
+                                                        "per_tile": bool(use_per_tile_checkpoint),
+                                                        "mean_abs_diff": float(decode_abs_diff.mean().item()),
+                                                        "max_abs_diff": float(decode_abs_diff.max().item()),
+                                                    }
+                                                )
                                         del native_decoded_chunk, decode_abs_diff
 
                                     # 意思：把 VAE 输出从 [B,C,T,H,W] 转成 [B,T,H,W,C]，并从 [-1,1] 映射到 [0,1]。
@@ -1783,12 +1835,14 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 把 selected frames 输入 GeCo residual motion metric，得到 loss
                                 # additional_inputs["residual_motion_metric"] 是什么？
                                 # 它是在 runner 里创建并传进 pipeline 的函数。
+                                frames_requires_grad = bool(frames_01.requires_grad)
                                 score = additional_inputs["residual_motion_metric"](frames_01)
 
                                 # 意思：检查梯度链没有断。
                                 # IMPORTANT为什么：这是非常重要的 correctness guard。如果这里不 requires_grad，说明 VAE/UFM/metric 某处 detach/no_grad 了，guidance 就是假跑。
                                 if not score.requires_grad:
                                     raise RuntimeError("Residual motion metric returned a detached score.")
+                                score_requires_grad = bool(score.requires_grad)
                                 # 意思：把 score 转成 minimization loss。
                                 # 因为：
                                 # score = -residual
@@ -1800,6 +1854,43 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 del frames_01, rm_frames
                             else:
                                 raise RuntimeError(f"Unexpected loss_fn: {loss_fn}")
+
+                            loss_wrt_noise_norm = None
+                            transformer_loss_vjp_norm = None
+                            if runtime_certification_events is not None:
+                                # A nonzero d(loss)/d(latents) alone is insufficient because
+                                # x0 has a direct x0 <- latents term.  These two read-only VJPs
+                                # establish the actual path: loss -> model output -> latents.
+                                loss_wrt_noise = torch.autograd.grad(
+                                    loss,
+                                    noise_pred_g,
+                                    retain_graph=True,
+                                    create_graph=False,
+                                    allow_unused=True,
+                                )[0]
+                                loss_wrt_noise_norm = (
+                                    0.0
+                                    if loss_wrt_noise is None
+                                    else float(loss_wrt_noise.float().norm().item())
+                                )
+                                transformer_loss_vjp = (
+                                    None
+                                    if loss_wrt_noise is None
+                                    else torch.autograd.grad(
+                                        noise_pred_g,
+                                        latents,
+                                        grad_outputs=loss_wrt_noise,
+                                        retain_graph=True,
+                                        create_graph=False,
+                                        allow_unused=True,
+                                    )[0]
+                                )
+                                transformer_loss_vjp_norm = (
+                                    0.0
+                                    if transformer_loss_vjp is None
+                                    else float(transformer_loss_vjp.float().norm().item())
+                                )
+                                del loss_wrt_noise, transformer_loss_vjp
 
                             # 计算 guidance loss 对当前 latents 的梯度
 
@@ -1950,6 +2041,36 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             f"latent_delta={latent_delta:.8f} relative_delta={relative_delta:.6f}% relative_grad={relative_grad:.8f}%",
                             flush=True,
                         )
+                        if runtime_certification_events is not None:
+                            runtime_certification_events.append(
+                                {
+                                    "kind": "update",
+                                    "step_index": int(i),
+                                    "repeat_index": int(rep),
+                                    "latent_before_sha256": _runtime_tensor_sha256(
+                                        latents_before_guidance
+                                    ),
+                                    "latent_after_sha256": _runtime_tensor_sha256(latents),
+                                    "latent_before_finite": float(
+                                        torch.isfinite(latents_before_guidance.detach())
+                                        .float()
+                                        .mean()
+                                        .item()
+                                    ),
+                                    "latent_after_finite": float(
+                                        torch.isfinite(latents.detach()).float().mean().item()
+                                    ),
+                                    "loss": float(loss.item()),
+                                    "frames_requires_grad": bool(frames_requires_grad),
+                                    "score_requires_grad": bool(score_requires_grad),
+                                    "noise_pred_requires_grad": bool(noise_pred_requires_grad),
+                                    "loss_wrt_noise_norm": float(loss_wrt_noise_norm),
+                                    "transformer_loss_vjp_norm": float(transformer_loss_vjp_norm),
+                                    "grad_norm": float(grad_norm),
+                                    "latent_delta": float(latent_delta),
+                                    "relative_delta": float(relative_delta),
+                                }
+                            )
 
                         del grad, noise_pred_g, x0_pred, loss
 
@@ -1989,12 +2110,51 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             )[0]
                         noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
+                    if runtime_certification_events is not None and any(
+                        event.get("kind") == "update" and event.get("step_index") == int(i)
+                        for event in runtime_certification_events
+                    ):
+                        runtime_certification_events.append(
+                            {
+                                "kind": "scheduler_recompute",
+                                "step_index": int(i),
+                                "repeat_index": int(guidance_step[i] - 1),
+                                "latents_sha256": _runtime_tensor_sha256(latents),
+                                "model_output_sha256": _runtime_tensor_sha256(noise_pred),
+                                "latents_finite": float(
+                                    torch.isfinite(latents.detach()).float().mean().item()
+                                ),
+                                "prediction_finite": float(
+                                    torch.isfinite(noise_pred.detach()).float().mean().item()
+                                ),
+                                "prediction_mean_abs": float(
+                                    torch.nan_to_num(noise_pred.detach().float()).abs().mean().item()
+                                ),
+                            }
+                        )
+
                 # compute the previous noisy sample x_t -> x_t-1
                 # 正常 denoising 进入下一步。
                 # 这里使用的是：
                 # guidance 更新后的 latents
                 # guidance 后重算的 noise_pred
                 if online_scheduler_transition is None:
+                    if runtime_certification_events is not None and any(
+                        event.get("kind") == "update" and event.get("step_index") == int(i)
+                        for event in runtime_certification_events
+                    ):
+                        runtime_certification_events.append(
+                            {
+                                "kind": "scheduler_step_input",
+                                "step_index": int(i),
+                                "repeat_index": int(guidance_step[i] - 1),
+                                "latents_sha256": _runtime_tensor_sha256(latents),
+                                "model_output_sha256": _runtime_tensor_sha256(noise_pred),
+                                "latents_finite": float(
+                                    torch.isfinite(latents.detach()).float().mean().item()
+                                ),
+                            }
+                        )
                     latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 else:
                     latents = finish_online_scheduler_transition(
