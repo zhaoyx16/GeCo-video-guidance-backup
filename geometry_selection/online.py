@@ -49,6 +49,18 @@ def flow_match_predicted_x0(
     return sample.float() - sigma * model_output.float()
 
 
+def tensor_sha256(tensor: torch.Tensor) -> str:
+    """Content hash including tensor shape and dtype for decision provenance."""
+
+    if not isinstance(tensor, torch.Tensor):
+        raise TypeError("tensor_sha256 expects a torch.Tensor")
+    value = tensor.detach().contiguous().cpu()
+    header = f"{value.dtype}|{tuple(value.shape)}|".encode("utf-8")
+    digest = hashlib.sha256(header)
+    digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class OnlineBranchConfig:
     """Frozen parameters for a branching event.
@@ -102,6 +114,10 @@ class OnlineCandidate:
     x0: torch.Tensor
     is_incumbent: bool
     perturbation_rms: float
+    branch_seed: int | None
+    noise_sha256: str | None
+    latent_sha256: str
+    x0_sha256: str
 
 
 class GeometryReportFn(Protocol):
@@ -120,12 +136,18 @@ class OnlineSelectionOutcome:
     selection: SelectionResult
     step_index: int
     timestep: int | float | str
+    parent_latent_sha256: str
+    selected_latent_sha256: str
     candidate_perturbation_rms: dict[str, float]
+    candidates: tuple[OnlineCandidate, ...]
+    geometry_artifacts: tuple[dict[str, Any], ...]
 
     def metadata(self) -> dict[str, Any]:
         return {
             "step_index": self.step_index,
             "timestep": self.timestep,
+            "parent_latent_sha256": self.parent_latent_sha256,
+            "selected_latent_sha256": self.selected_latent_sha256,
             "selected_candidate_id": self.selection.selected_candidate_id,
             "incumbent_candidate_id": self.selection.incumbent_candidate_id,
             "decision": self.selection.decision,
@@ -135,6 +157,16 @@ class OnlineSelectionOutcome:
             "common_long_range_edges": self.selection.common_long_range_edges,
             "comparable_scores": self.selection.comparable_scores,
             "candidate_perturbation_rms": self.candidate_perturbation_rms,
+            "geometry_artifacts": list(self.geometry_artifacts),
+            "candidates": {
+                candidate.candidate_id: {
+                    "branch_seed": candidate.branch_seed,
+                    "noise_sha256": candidate.noise_sha256,
+                    "latent_sha256": candidate.latent_sha256,
+                    "x0_sha256": candidate.x0_sha256,
+                }
+                for candidate in self.candidates
+            },
             "candidate_reports": {
                 candidate.candidate_id: {
                     "status": candidate.report.status,
@@ -198,14 +230,19 @@ class OnlineGeometrySelectionController:
                 x0=context.incumbent_x0.detach(),
                 is_incumbent=True,
                 perturbation_rms=0.0,
+                branch_seed=None,
+                noise_sha256=None,
+                latent_sha256=tensor_sha256(incumbent),
+                x0_sha256=tensor_sha256(context.incumbent_x0),
             )
         ]
         latent_rms = _masked_rms(incumbent, context.mutable_mask)
         for index in range(1, self.branch_config.candidate_count):
             generator = torch.Generator(device=incumbent.device)
-            generator.manual_seed(
-                _candidate_seed(self.branch_config.random_seed, context.step_index, index)
+            branch_seed = _candidate_seed(
+                self.branch_config.random_seed, context.step_index, index
             )
+            generator.manual_seed(branch_seed)
             noise = torch.randn(
                 incumbent.shape,
                 dtype=incumbent.dtype,
@@ -228,6 +265,10 @@ class OnlineGeometrySelectionController:
                     x0=x0,
                     is_incumbent=False,
                     perturbation_rms=float(_masked_rms(delta, context.mutable_mask).cpu()),
+                    branch_seed=branch_seed,
+                    noise_sha256=tensor_sha256(noise),
+                    latent_sha256=tensor_sha256(candidate_latents),
+                    x0_sha256=tensor_sha256(x0),
                 )
             )
         return tuple(candidates)
@@ -239,6 +280,11 @@ class OnlineGeometrySelectionController:
         reports = tuple(self.report_fn(candidates, context))
         if len(reports) != len(candidates):
             raise ValueError("geometry report function must return one report per candidate")
+        artifacts = getattr(self.report_fn, "last_artifacts", ())
+        if not isinstance(artifacts, (list, tuple)) or not all(
+            isinstance(value, dict) for value in artifacts
+        ):
+            raise TypeError("geometry report function has invalid last_artifacts")
         scored = [
             CandidateScore(
                 candidate_id=candidate.candidate_id,
@@ -264,10 +310,21 @@ class OnlineGeometrySelectionController:
             selection=selection,
             step_index=context.step_index,
             timestep=timestep,
+            parent_latent_sha256=tensor_sha256(context.incumbent_latents),
+            selected_latent_sha256=tensor_sha256(selected.latents),
             candidate_perturbation_rms={
                 candidate.candidate_id: candidate.perturbation_rms
                 for candidate in candidates
             },
+            candidates=candidates,
+            geometry_artifacts=tuple(artifacts),
         )
         self.events.append(outcome.metadata())
         return outcome
+
+    def record_scheduler_output(self, step_index: int, next_latents: torch.Tensor) -> None:
+        """Bind a logged selection to the next denoising state it actually produced."""
+
+        if not self.events or self.events[-1].get("step_index") != step_index:
+            raise ValueError("scheduler output does not match the latest selection event")
+        self.events[-1]["next_step_input_latent_sha256"] = tensor_sha256(next_latents)

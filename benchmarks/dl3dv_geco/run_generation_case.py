@@ -22,6 +22,7 @@ import sys
 import uuid
 from pathlib import Path
 
+import numpy as np
 import torch
 from diffusers.utils import export_to_video
 from PIL import Image
@@ -43,6 +44,16 @@ from geometry_selection.model_lock import load_model_lock, verify_generation_mod
 from geometry_selection.generation_lock import GenerationRunLock
 from geometry_selection.selection import validate_candidate_spec
 from geometry_selection.video_probe import probe_video
+from geometry_selection.online import OnlineGeometrySelectionController
+from geometry_selection.online_config import (
+    OnlineSelectionRunConfig,
+    load_online_selection_config,
+)
+from geometry_selection.online_vggt import (
+    OnlinePoseGraphScorerConfig,
+    OnlineVGGTPoseGraphScorer,
+)
+from geometry_selection.backbones.vggt_omega import VGGTOmegaAdapter
 
 
 WAN_NEGATIVE = (
@@ -278,6 +289,124 @@ def place_vae(
     return requested
 
 
+def _resolve_online_path(value: str, *, config_path: Path, repo: Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    from_config = (config_path.parent / path).resolve()
+    if from_config.exists():
+        return from_config
+    return (repo / path).resolve()
+
+
+def make_wan_provisional_keyframe_decoder(pipe, expected_frames: int):
+    """Decode a predicted clean Wan latent without exporting a temporary video."""
+
+    def decode_keyframes(x0: torch.Tensor, indices, output_dir: Path) -> dict[int, Path]:
+        if x0.ndim != 5 or x0.shape[0] != 1:
+            raise ValueError("online Wan provisional decode requires one [1,C,T,H,W] latent")
+        if output_dir.exists():
+            if any(output_dir.iterdir()):
+                raise FileExistsError(f"provisional frame directory is not empty: {output_dir}")
+        else:
+            output_dir.mkdir(parents=True)
+        vae_device = next(pipe.vae.parameters()).device
+        vae_dtype = pipe.vae.dtype
+        latents_mean = torch.tensor(pipe.vae.config.latents_mean).view(
+            1, pipe.vae.config.z_dim, 1, 1, 1
+        ).to(vae_device, vae_dtype)
+        latents_std = 1.0 / torch.tensor(pipe.vae.config.latents_std).view(
+            1, pipe.vae.config.z_dim, 1, 1, 1
+        ).to(vae_device, vae_dtype)
+        with torch.inference_mode():
+            vae_latents = x0.to(device=vae_device, dtype=vae_dtype)
+            vae_latents = vae_latents / latents_std + latents_mean
+            decoded = pipe.vae.decode(vae_latents, return_dict=False)[0]
+            processed = pipe.video_processor.postprocess_video(decoded, output_type="np")
+        if hasattr(pipe.vae, "clear_cache"):
+            pipe.vae.clear_cache()
+        frames = processed[0] if isinstance(processed, (list, tuple)) else processed
+        if isinstance(frames, torch.Tensor):
+            frames = frames.detach().cpu().numpy()
+        frames = np.asarray(frames)
+        if frames.ndim == 5 and frames.shape[0] == 1:
+            frames = frames[0]
+        if frames.ndim != 4:
+            raise ValueError(f"unexpected decoded provisional video shape: {frames.shape}")
+        if frames.shape[-1] != 3 and frames.shape[0] == 3:
+            frames = np.moveaxis(frames, 0, -1)
+        if frames.shape[-1] != 3 or frames.shape[0] != expected_frames:
+            raise ValueError(
+                "decoded provisional video does not match expected [T,H,W,3]: "
+                f"{frames.shape}, expected T={expected_frames}"
+            )
+        if frames.dtype != np.uint8:
+            scale = 255.0 if float(np.nanmax(frames)) <= 1.0 else 1.0
+            frames = np.clip(frames * scale, 0.0, 255.0).astype(np.uint8)
+        paths: dict[int, Path] = {}
+        for index in indices:
+            if not 0 <= int(index) < expected_frames:
+                raise IndexError(f"provisional keyframe index out of range: {index}")
+            path = output_dir / f"frame_{int(index):06d}.png"
+            Image.fromarray(np.ascontiguousarray(frames[int(index)])).save(path)
+            paths[int(index)] = path
+        return paths
+
+    return decode_keyframes
+
+
+def build_online_geometry_selector(
+    args: argparse.Namespace,
+    pipe,
+    config: OnlineSelectionRunConfig,
+    config_path: Path,
+    output_dir: Path,
+):
+    if args.backbone != "wan":
+        raise ValueError("online geometry selection is currently implemented only for Wan")
+    source_root = _resolve_online_path(
+        config.vggt_omega.source_root,
+        config_path=config_path,
+        repo=args.repo.resolve(),
+    )
+    checkpoint = _resolve_online_path(
+        config.vggt_omega.checkpoint,
+        config_path=config_path,
+        repo=args.repo.resolve(),
+    )
+    adapter = VGGTOmegaAdapter(
+        source_root=source_root,
+        checkpoint=checkpoint,
+        device=config.vggt_omega.device,
+        image_resolution=config.vggt_omega.image_resolution,
+        preprocessing_mode=config.vggt_omega.preprocessing_mode,
+    )
+    scorer = OnlineVGGTPoseGraphScorer(
+        adapter=adapter,
+        decode_keyframes=make_wan_provisional_keyframe_decoder(pipe, args.frames),
+        work_root=output_dir / "online_provisionals",
+        config=OnlinePoseGraphScorerConfig(
+            total_frames=args.frames,
+            extraction=config.geometry_extraction,
+            scorer=config.scorer,
+            graph_score=config.graph_score,
+            retain_frames=config.provisional.retain_frames,
+        ),
+    )
+    controller = OnlineGeometrySelectionController(
+        config.branch,
+        config.selection,
+        scorer,
+    )
+    return controller, {
+        "config": config.resolved_dict(),
+        "config_hash": config.config_hash,
+        "config_path": str(config_path.resolve()),
+        "config_sha256": sha256_file(config_path),
+        "geometry_backbone": adapter.identity(),
+    }
+
+
 def build_pipeline(args: argparse.Namespace):
     repo = args.repo.resolve()
     if args.backbone == "wan":
@@ -352,7 +481,11 @@ def runtime_meta() -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", choices=PROFILES, required=True)
-    parser.add_argument("--method", choices=("baseline", "adapted_geco"), required=True)
+    parser.add_argument(
+        "--method",
+        choices=("baseline", "adapted_geco", "online_geometry_selection"),
+        required=True,
+    )
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument(
@@ -368,6 +501,7 @@ def main() -> None:
     parser.add_argument("--model-verification-cache", type=Path)
     parser.add_argument("--experiment-lock", type=Path)
     parser.add_argument("--candidate-spec", type=Path)
+    parser.add_argument("--online-selection-config", type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -412,15 +546,25 @@ def main() -> None:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
 
     is_frozen_protocol = args.protocol_mode == "frozen"
-    if is_frozen_protocol and args.method == "adapted_geco":
+    if is_frozen_protocol and args.method in {"adapted_geco", "online_geometry_selection"}:
         parser.error(
-            "formal adapted-GeCo runs are disabled until guidance hyperparameters "
-            "and VGGT/UFM checkpoints are included in the frozen model/method lock"
+            "formal guided runs are disabled until the method configuration and geometry "
+            "backbone are included in the frozen experiment lock"
         )
     if is_frozen_protocol and args.overwrite:
         parser.error("frozen protocol forbids --overwrite of completed generations")
     if is_frozen_protocol and args.repo.resolve() != REPO_ROOT.resolve():
         raise ValueError("formal generation --repo must be the repository executing this runner")
+    online_config = None
+    online_config_sha256 = None
+    if args.method == "online_geometry_selection":
+        if args.online_selection_config is None:
+            parser.error("online geometry selection requires --online-selection-config")
+        online_config = load_online_selection_config(args.online_selection_config)
+        online_config.validate(num_steps=args.steps)
+        online_config_sha256 = sha256_file(args.online_selection_config)
+    elif args.online_selection_config is not None:
+        parser.error("--online-selection-config requires --method online_geometry_selection")
     if is_frozen_protocol:
         if args.expected_split is None:
             parser.error("frozen protocol requires --expected-split")
@@ -553,9 +697,7 @@ def main() -> None:
             else "external/guidance_cosmos/pipeline_cosmos2_5_predict_guided.py"
         )
     )
-    pipeline_sha256 = (
-        sha256_file(pipeline_path) if args.method == "adapted_geco" else None
-    )
+    pipeline_sha256 = sha256_file(pipeline_path) if args.method != "baseline" else None
     split_vae_report = None
     requested_vae_device = args.vae_device or args.pipe_device
     if torch.device(requested_vae_device) != torch.device(args.pipe_device):
@@ -619,6 +761,15 @@ def main() -> None:
         "ufm_model": model_identity(args.ufm_model)
         if args.method == "adapted_geco"
         else None,
+        "online_geometry_selection": (
+            {
+                "config_sha256": online_config_sha256,
+                "config": online_config.resolved_dict(),
+                "config_hash": online_config.config_hash,
+            }
+            if online_config is not None
+            else None
+        ),
         "steps": args.steps,
         "frames": args.frames,
         "height": args.height,
@@ -689,6 +840,16 @@ def main() -> None:
     atexit.register(run_lock.release)
 
     pipe, vae_device = build_pipeline(args)
+    online_selector = None
+    online_runtime = None
+    if online_config is not None:
+        online_selector, online_runtime = build_online_geometry_selector(
+            args,
+            pipe,
+            online_config,
+            args.online_selection_config,
+            output_dir,
+        )
     image = Image.open(image_path).convert("RGB")
     generator = torch.Generator(device=args.pipe_device).manual_seed(args.seed)
 
@@ -739,8 +900,10 @@ def main() -> None:
             loss_fn="residual_motion",
             additional_inputs=additional_inputs,
         )
+    if online_selector is not None:
+        common["online_selector"] = online_selector
 
-    if args.method == "baseline":
+    if args.method in {"baseline", "online_geometry_selection"}:
         with torch.inference_mode():
             output = pipe(**common)
     else:
@@ -797,6 +960,14 @@ def main() -> None:
         "ufm_model": model_identity(args.ufm_model)
         if args.method == "adapted_geco"
         else None,
+        "online_geometry_selection": (
+            {
+                **online_runtime,
+                "events": online_selector.events,
+            }
+            if online_selector is not None
+            else None
+        ),
         "generation": {
             "steps": args.steps,
             "frames": args.frames,

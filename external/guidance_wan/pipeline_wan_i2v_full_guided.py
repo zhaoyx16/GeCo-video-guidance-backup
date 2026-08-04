@@ -872,11 +872,14 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         if online_selector is not None:
             if loss_fn is not None:
                 raise ValueError("online selection cannot be combined with gradient guidance")
-            if not callable(online_selector) or not callable(
-                getattr(online_selector, "is_active", None)
+            if (
+                not callable(online_selector)
+                or not callable(getattr(online_selector, "is_active", None))
+                or not callable(getattr(online_selector, "record_scheduler_output", None))
             ):
                 raise TypeError(
-                    "online_selector must be a callable with an is_active(step_index) method"
+                    "online_selector must provide __call__, is_active(step_index), "
+                    "and record_scheduler_output(step_index, latents)"
                 )
 
         if isinstance(guidance_step, int):
@@ -909,6 +912,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     continue
 
                 self._current_timestep = t
+                online_selection_outcome = None
 
                 if boundary_timestep is None or t >= boundary_timestep:
                     # wan2.1 or high-noise stage in wan2.2
@@ -1060,7 +1064,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             (1 - first_frame_mask.float()) * condition.float()
                             + first_frame_mask.float() * incumbent_x0
                         )
-                    selection_outcome = online_selector(
+                    online_selection_outcome = online_selector(
                         OnlineSelectionContext(
                             step_index=i,
                             timestep=t,
@@ -1070,7 +1074,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             predict_x0=_predict_x0_for_candidate,
                         )
                     )
-                    selected_latents = selection_outcome.selected_latents
+                    selected_latents = online_selection_outcome.selected_latents
                     if not isinstance(selected_latents, torch.Tensor):
                         raise TypeError("online selector must return tensor selected_latents")
                     if (
@@ -1965,6 +1969,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # guidance 更新后的 latents
                 # guidance 后重算的 noise_pred
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if online_selection_outcome is not None:
+                    online_selector.record_scheduler_output(i, latents)
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

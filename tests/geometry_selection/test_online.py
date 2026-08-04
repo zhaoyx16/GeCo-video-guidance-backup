@@ -113,6 +113,12 @@ def test_controller_branches_deterministically_and_selects_geometry_winner() -> 
     assert not torch.equal(outcome.selected_latents, context.incumbent_latents)
     assert torch.equal(context.incumbent_latents, torch.arange(8, dtype=torch.float32).reshape(1, 1, 2, 2, 2))
     assert controller.events == [outcome.metadata()]
+    assert outcome.parent_latent_sha256 == outcome.candidates[0].latent_sha256
+    assert outcome.selected_latent_sha256 == outcome.candidates[1].latent_sha256
+    assert outcome.candidates[1].branch_seed is not None
+    assert outcome.candidates[1].noise_sha256 is not None
+    controller.record_scheduler_output(7, outcome.selected_latents + 1.0)
+    assert "next_step_input_latent_sha256" in controller.events[0]
     json.dumps(outcome.metadata(), allow_nan=False)
 
 

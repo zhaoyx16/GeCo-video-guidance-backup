@@ -1,0 +1,111 @@
+schema_version: 1
+method_version: static_online_vggt_omega_pose_graph_pilot_v1
+
+branch:
+  # The first smoke test uses a single mid/late denoising decision.
+  selection_steps: [32]
+  candidate_count: 3
+  perturbation_scale: 0.01
+  random_seed: 0
+
+geometry_extraction:
+  mode: independent-window-pose-graph-v1
+  num_keyframes: 8
+  local_window_size: 4
+  local_stride: 2
+  loop_context: 2
+  min_loop_node_gap: 3
+  max_loop_windows: 1
+
+score:
+  local_offsets: [1, 2]
+  min_long_range_gap: 3
+  confidence_quantile: 0.20
+  confidence_evidence_floor: 0.001
+  min_pair_confidence_evidence: 0.01
+  depth_edge_relative_threshold: 0.10
+  occlusion_relative_tolerance: 0.05
+  min_pair_overlap: 0.05
+  min_long_range_overlap: 0.15
+  min_valid_pixels: 64
+  min_comparable_fraction: 0.01
+  min_valid_local_fraction: 0.75
+  min_valid_long_range_fraction: 0.20
+  pixel_stride: 4
+  huber_delta: 0.05
+  cycle_weight: 0.25
+  local_weight: 1.0
+  long_range_weight: 0.5
+  require_long_range: false
+
+graph_score:
+  window:
+    use_loop_edges: true
+    min_shared_frames_for_scale: 2
+    confidence_quantile: 0.20
+    confidence_evidence_floor: 0.001
+    depth_sample_stride: 8
+    min_depth_scale_pixels: 32
+    min_camera_baseline: 0.0001
+    scale_huber_delta: 0.10
+    scale_max_iterations: 20
+    scale_tolerance: 0.000000001
+    min_loop_node_gap: 3
+    require_reobservation_support: true
+    min_loop_overlap: 0.15
+    min_loop_comparable_fraction: 0.05
+    min_loop_valid_pixels: 64
+    require_appearance_support: true
+    min_appearance_ratio_matches: 16
+    min_appearance_inliers: 12
+    min_appearance_inlier_ratio: 0.30
+    min_appearance_spatial_coverage: 0.10
+    require_loop_edges: false
+  optimizer:
+    translation_scale: 1.0
+    rotation_scale: 0.1745329252
+    huber_delta: 1.0
+    loop_switch_prior: 1.0
+    use_switchable_loops: true
+    max_iterations: 40
+    finite_difference_epsilon: 0.000001
+    step_tolerance: 0.00000001
+    cost_tolerance: 0.0000000001
+    initial_damping: 0.00001
+    condition_threshold: 1000000000000.0
+    rank_tolerance: 0.000000001
+    min_effective_edge_weight: 0.000001
+  switch_penalty_weight: 0.25
+  missing_loop_penalty_weight: 0.0
+  missing_local_penalty_weight: 0.0
+  missing_scale_penalty_weight: 0.0
+  scale_residual_weight: 0.10
+  require_convergence: true
+
+selection:
+  abstain: true
+  min_relative_improvement: 0.01
+  min_motion_ratio: 0.80
+  max_motion_ratio: 1.25
+  min_net_translation_ratio: 0.75
+  max_net_translation_ratio: 1.33
+  min_rotation_ratio: 0.50
+  max_rotation_ratio: 2.00
+  min_shared_comparable_fraction: 0.02
+  min_support_ratio: 0.50
+  edge_huber_delta: 0.10
+  retain_unguided_incumbent: true
+  min_common_local_edges: 4
+  min_common_long_range_edges: 0
+  require_common_long_range: false
+  random_control_seed: 0
+
+vggt_omega:
+  source_root: /path/to/VGGT-Omega-source
+  checkpoint: /path/to/vggt_omega_1b_512.pt
+  device: cuda:0
+  image_resolution: 512
+  preprocessing_mode: balanced
+
+provisional:
+  retain_frames: false

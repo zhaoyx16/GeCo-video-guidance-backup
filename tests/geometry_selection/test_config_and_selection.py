@@ -31,9 +31,11 @@ from geometry_selection.window_bundle import WINDOW_EXTRACTION_MODE, make_window
 @pytest.mark.parametrize(
     "config_path",
     sorted(
-        (Path(__file__).resolve().parents[2] / "configs" / "geometry_selection").glob(
-            "*.yaml"
-        )
+        path
+        for path in (
+            Path(__file__).resolve().parents[2] / "configs" / "geometry_selection"
+        ).glob("*.yaml")
+        if not path.name.startswith("static_online_")
     ),
 )
 def test_repository_ranking_config_templates_are_parseable(config_path: Path) -> None:
