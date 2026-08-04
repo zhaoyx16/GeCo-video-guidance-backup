@@ -46,6 +46,15 @@ def cuda_runtime_identity(device: str) -> dict:
     }
 
 
+def canonical_scheduler_config(config: dict) -> dict:
+    """Canonicalise the order-insensitive Diffusers default-value set for hashing."""
+    canonical = dict(config)
+    defaults = canonical.get("_use_default_values")
+    if isinstance(defaults, list) and all(isinstance(value, str) for value in defaults):
+        canonical["_use_default_values"] = sorted(defaults)
+    return canonical
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
@@ -96,7 +105,7 @@ def main() -> None:
         )
     if len(scheduler.sigmas) < 50:
         raise RuntimeError(f"Scheduler has only {len(scheduler.sigmas)} sigmas for 50 inference steps.")
-    config = dict(scheduler.config)
+    config = canonical_scheduler_config(dict(scheduler.config))
     sample = torch.tensor([1.25], device=args.device)
     model_output = torch.tensor([0.5], device=args.device)
     helper_errors = []

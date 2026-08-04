@@ -6,7 +6,7 @@
     "class_name": "UniPCMultistepScheduler",
     "module": "diffusers.schedulers.scheduling_unipc_multistep",
     "diffusers_version": "0.38.0",
-    "config_sha256": "8de7c63193c2e74bcac015e0d4f6f74b3a9dc820a121c2dcf99728f53f31c1e9",
+    "config_sha256": "697a7683deeda24b150e458ddaa2076be855884680df22dcf623a59f5fb93453",
     "prediction_type": "flow_prediction",
     "predict_x0": true,
     "thresholding": false,

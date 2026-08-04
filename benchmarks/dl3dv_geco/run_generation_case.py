@@ -501,6 +501,15 @@ def cuda_runtime_identity(device: str) -> dict:
     }
 
 
+def canonical_scheduler_config(config: dict) -> dict:
+    """Canonicalise the order-insensitive Diffusers default-value set for hashing."""
+    canonical = dict(config)
+    defaults = canonical.get("_use_default_values")
+    if isinstance(defaults, list) and all(isinstance(value, str) for value in defaults):
+        canonical["_use_default_values"] = sorted(defaults)
+    return canonical
+
+
 def runtime_certification_report(
     events: list[dict],
     *,
@@ -704,7 +713,12 @@ def runtime_certification_report(
         failures.append("x0 agreement exceeds threshold")
     if observed["vae_max_abs_diff"] is None or observed["vae_max_abs_diff"] > vae_max_abs:
         failures.append("VAE agreement exceeds threshold")
-    scheduler_json = json.dumps(scheduler_config, sort_keys=True, default=str, separators=(",", ":"))
+    scheduler_json = json.dumps(
+        canonical_scheduler_config(scheduler_config),
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
     return {
         "schema": "wan_geco_runtime_certificate_v1",
         "status": "passed" if not failures else "failed",
@@ -784,7 +798,7 @@ def validate_runtime_certification_scheduler(scheduler, spec: dict, *, repo: Pat
     import diffusers
 
     expected = spec["scheduler"]
-    config = dict(scheduler.config)
+    config = canonical_scheduler_config(dict(scheduler.config))
     config_json = json.dumps(config, sort_keys=True, default=str, separators=(",", ":"))
     actual = {
         "class_name": type(scheduler).__name__,
