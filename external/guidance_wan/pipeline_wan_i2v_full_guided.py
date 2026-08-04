@@ -913,6 +913,19 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         else:
             assert len(guidance_lr) == num_inference_steps, "guidance_lr length mismatch"
 
+        debug_guidance_consistency = bool(
+            additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
+        )
+        runtime_certification_events = (
+            additional_inputs.get("runtime_certification_events")
+            if additional_inputs is not None
+            else None
+        )
+        if runtime_certification_events is not None and not isinstance(
+            runtime_certification_events, list
+        ):
+            raise TypeError("runtime_certification_events must be a list")
+
         # 冻结模型参数： freeze transformer 和 VAE 权重，只更新 latent
         # 作用：不训练 transformer / VAE 权重。后面只更新当前 latents。
         # 注意：VAE 参数冻结，但梯度仍然可以通过 VAE decode 传回 latent。
@@ -1374,18 +1387,6 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 只是在它的 denoising prediction 上额外加 GeCo latent guidance。
                                 noise_pred_g = noise_uncond_g + current_guidance_scale * (noise_pred_g - noise_uncond_g)
 
-                        debug_guidance_consistency = bool(
-                            additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
-                        )
-                        runtime_certification_events = (
-                            additional_inputs.get("runtime_certification_events")
-                            if additional_inputs is not None
-                            else None
-                        )
-                        if runtime_certification_events is not None and not isinstance(
-                            runtime_certification_events, list
-                        ):
-                            raise TypeError("runtime_certification_events must be a list")
                         noise_pred_requires_grad = bool(noise_pred_g.requires_grad)
                         if runtime_certification_events is not None:
                             # The actual loss-to-model-output VJP is checked below, after loss
