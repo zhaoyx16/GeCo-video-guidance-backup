@@ -35,6 +35,7 @@ def main() -> None:
     from geometry_selection.online import flow_match_predicted_x0
 
     pipeline_args = SimpleNamespace(
+        repo=repo,
         backbone="wan",
         method="adapted_geco",
         model=args.model,
