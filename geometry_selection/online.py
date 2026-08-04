@@ -57,7 +57,9 @@ def tensor_sha256(tensor: torch.Tensor) -> str:
     value = tensor.detach().contiguous().cpu()
     header = f"{value.dtype}|{tuple(value.shape)}|".encode("utf-8")
     digest = hashlib.sha256(header)
-    digest.update(value.numpy().tobytes())
+    # NumPy does not support bfloat16.  A byte view preserves the exact tensor
+    # representation for every PyTorch dtype while retaining dtype in header.
+    digest.update(value.view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()
 
 

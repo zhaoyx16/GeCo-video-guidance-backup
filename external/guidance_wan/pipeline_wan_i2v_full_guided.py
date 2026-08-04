@@ -881,6 +881,13 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     "online_selector must provide __call__, is_active(step_index), "
                     "and record_scheduler_output(step_index, latents)"
                 )
+            for candidate_model in (self.transformer, getattr(self, "transformer_2", None)):
+                if candidate_model is not None and bool(
+                    getattr(candidate_model, "is_cache_enabled", False)
+                ):
+                    raise ValueError(
+                        "online selection requires transformer caching to be disabled"
+                    )
 
         if isinstance(guidance_step, int):
             guidance_step = [guidance_step] * num_inference_steps

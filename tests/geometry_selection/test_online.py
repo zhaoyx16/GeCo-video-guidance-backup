@@ -10,6 +10,7 @@ from geometry_selection.online import (
     OnlineGeometrySelectionController,
     OnlineSelectionContext,
     flow_match_predicted_x0,
+    tensor_sha256,
 )
 from geometry_selection.scorer import GeometryScoreReport, PairScore, ScorerConfig
 from geometry_selection.selection import SelectionConfig
@@ -87,6 +88,12 @@ def test_flow_match_x0_is_pure_and_matches_the_scheduler_formula() -> None:
     assert Scheduler.step_index is None
     with pytest.raises(IndexError, match="exceeds"):
         flow_match_predicted_x0(Scheduler(), velocity, sample, step_index=3)
+
+
+def test_tensor_hash_supports_bfloat16_and_distinguishes_dtype() -> None:
+    values = torch.tensor([1.0, -2.0], dtype=torch.bfloat16)
+    assert len(tensor_sha256(values)) == 64
+    assert tensor_sha256(values) != tensor_sha256(values.float())
 
 
 def test_controller_branches_deterministically_and_selects_geometry_winner() -> None:

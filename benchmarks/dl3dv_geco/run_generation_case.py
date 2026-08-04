@@ -355,13 +355,11 @@ def make_wan_provisional_keyframe_decoder(pipe, expected_frames: int):
     return decode_keyframes
 
 
-def build_online_geometry_selector(
+def build_online_vggt_adapter(
     args: argparse.Namespace,
-    pipe,
     config: OnlineSelectionRunConfig,
     config_path: Path,
-    output_dir: Path,
-):
+) -> VGGTOmegaAdapter:
     if args.backbone != "wan":
         raise ValueError("online geometry selection is currently implemented only for Wan")
     source_root = _resolve_online_path(
@@ -374,13 +372,24 @@ def build_online_geometry_selector(
         config_path=config_path,
         repo=args.repo.resolve(),
     )
-    adapter = VGGTOmegaAdapter(
+    return VGGTOmegaAdapter(
         source_root=source_root,
         checkpoint=checkpoint,
         device=config.vggt_omega.device,
         image_resolution=config.vggt_omega.image_resolution,
         preprocessing_mode=config.vggt_omega.preprocessing_mode,
     )
+
+
+def build_online_geometry_selector(
+    args: argparse.Namespace,
+    pipe,
+    config: OnlineSelectionRunConfig,
+    config_path: Path,
+    output_dir: Path,
+    adapter: VGGTOmegaAdapter,
+    geometry_identity: dict,
+):
     scorer = OnlineVGGTPoseGraphScorer(
         adapter=adapter,
         decode_keyframes=make_wan_provisional_keyframe_decoder(pipe, args.frames),
@@ -403,7 +412,7 @@ def build_online_geometry_selector(
         "config_hash": config.config_hash,
         "config_path": str(config_path.resolve()),
         "config_sha256": sha256_file(config_path),
-        "geometry_backbone": adapter.identity(),
+        "geometry_backbone": geometry_identity,
     }
 
 
@@ -557,12 +566,20 @@ def main() -> None:
         raise ValueError("formal generation --repo must be the repository executing this runner")
     online_config = None
     online_config_sha256 = None
+    online_adapter = None
+    online_geometry_identity = None
     if args.method == "online_geometry_selection":
         if args.online_selection_config is None:
             parser.error("online geometry selection requires --online-selection-config")
         online_config = load_online_selection_config(args.online_selection_config)
         online_config.validate(num_steps=args.steps)
         online_config_sha256 = sha256_file(args.online_selection_config)
+        online_adapter = build_online_vggt_adapter(
+            args, online_config, args.online_selection_config
+        )
+        # Content identity is computed before run_id so stale COMPLETE outputs
+        # cannot be reused after a checkpoint/source update at the same path.
+        online_geometry_identity = online_adapter.artifact_identity()
     elif args.online_selection_config is not None:
         parser.error("--online-selection-config requires --method online_geometry_selection")
     if is_frozen_protocol:
@@ -700,6 +717,13 @@ def main() -> None:
     pipeline_sha256 = sha256_file(pipeline_path) if args.method != "baseline" else None
     split_vae_report = None
     requested_vae_device = args.vae_device or args.pipe_device
+    if (
+        online_config is not None
+        and torch.device(requested_vae_device) != torch.device(args.pipe_device)
+    ):
+        parser.error(
+            "online geometry selection currently requires VAE and transformer on one device"
+        )
     if torch.device(requested_vae_device) != torch.device(args.pipe_device):
         if not args.allow_split_vae or args.split_vae_smoke_report is None:
             parser.error(
@@ -766,6 +790,7 @@ def main() -> None:
                 "config_sha256": online_config_sha256,
                 "config": online_config.resolved_dict(),
                 "config_hash": online_config.config_hash,
+                "geometry_backbone": online_geometry_identity,
             }
             if online_config is not None
             else None
@@ -849,6 +874,8 @@ def main() -> None:
             online_config,
             args.online_selection_config,
             output_dir,
+            online_adapter,
+            online_geometry_identity,
         )
     image = Image.open(image_path).convert("RGB")
     generator = torch.Generator(device=args.pipe_device).manual_seed(args.seed)
