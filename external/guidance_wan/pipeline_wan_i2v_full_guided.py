@@ -38,7 +38,12 @@ from diffusers.video_processor import VideoProcessor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.wan.pipeline_output import WanPipelineOutput
 
-from geometry_selection.online import OnlineSelectionContext, flow_match_predicted_x0
+from geometry_selection.online import (
+    OnlineSelectionContext,
+    finish_online_scheduler_transition,
+    flow_match_predicted_x0,
+    prepare_online_scheduler_transition,
+)
 
 
 if is_torch_xla_available():
@@ -920,6 +925,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                 self._current_timestep = t
                 online_selection_outcome = None
+                online_scheduler_transition = None
 
                 if boundary_timestep is None or t >= boundary_timestep:
                     # wan2.1 or high-noise stage in wan2.2
@@ -1095,46 +1101,59 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         raise ValueError("online selector returned non-finite latents")
                     latents = selected_latents.detach().to(dtype=latents.dtype)
 
-                    # Run the selected branch once more to obtain the matching
-                    # model output used by the actual scheduler update.
-                    if self.config.expand_timesteps:
-                        selected_model_input = (
-                            (1 - first_frame_mask) * condition + first_frame_mask * latents
-                        ).to(transformer_dtype)
-                        selected_temp_ts = (
-                            first_frame_mask[0][0][:, ::2, ::2] * t
-                        ).flatten()
-                        selected_timestep = selected_temp_ts.unsqueeze(0).expand(
-                            latents.shape[0], -1
-                        )
-                    else:
-                        selected_model_input = torch.cat([latents, condition], dim=1).to(
-                            transformer_dtype
-                        )
-                        selected_timestep = t.expand(latents.shape[0])
-                    with torch.inference_mode():
-                        with current_model.cache_context("cond"):
-                            noise_pred = current_model(
-                                hidden_states=selected_model_input,
-                                timestep=selected_timestep,
-                                encoder_hidden_states=prompt_embeds,
-                                encoder_hidden_states_image=image_embeds,
-                                attention_kwargs=attention_kwargs,
-                                return_dict=False,
-                            )[0]
-                        if self.do_classifier_free_guidance:
-                            with current_model.cache_context("uncond"):
-                                noise_uncond = current_model(
+                    # Bind the final scheduler transition to a fresh model
+                    # output from the selected latent, never to the stale
+                    # incumbent output computed before branching.
+                    def _predict_selected_model_output(
+                        selected_branch_latents: torch.Tensor,
+                    ) -> torch.Tensor:
+                        if self.config.expand_timesteps:
+                            selected_model_input = (
+                                (1 - first_frame_mask) * condition
+                                + first_frame_mask * selected_branch_latents
+                            ).to(transformer_dtype)
+                            selected_temp_ts = (
+                                first_frame_mask[0][0][:, ::2, ::2] * t
+                            ).flatten()
+                            selected_timestep = selected_temp_ts.unsqueeze(0).expand(
+                                selected_branch_latents.shape[0], -1
+                            )
+                        else:
+                            selected_model_input = torch.cat(
+                                [selected_branch_latents, condition], dim=1
+                            ).to(transformer_dtype)
+                            selected_timestep = t.expand(selected_branch_latents.shape[0])
+                        with torch.inference_mode():
+                            with current_model.cache_context("cond"):
+                                selected_noise = current_model(
                                     hidden_states=selected_model_input,
                                     timestep=selected_timestep,
-                                    encoder_hidden_states=negative_prompt_embeds,
+                                    encoder_hidden_states=prompt_embeds,
                                     encoder_hidden_states_image=image_embeds,
                                     attention_kwargs=attention_kwargs,
                                     return_dict=False,
                                 )[0]
-                            noise_pred = noise_uncond + current_guidance_scale * (
-                                noise_pred - noise_uncond
-                            )
+                            if self.do_classifier_free_guidance:
+                                with current_model.cache_context("uncond"):
+                                    noise_uncond = current_model(
+                                        hidden_states=selected_model_input,
+                                        timestep=selected_timestep,
+                                        encoder_hidden_states=negative_prompt_embeds,
+                                        encoder_hidden_states_image=image_embeds,
+                                        attention_kwargs=attention_kwargs,
+                                        return_dict=False,
+                                    )[0]
+                                selected_noise = noise_uncond + current_guidance_scale * (
+                                    selected_noise - noise_uncond
+                                )
+                        return selected_noise
+
+                    online_scheduler_transition = prepare_online_scheduler_transition(
+                        selected_latents=latents,
+                        predict_model_output=_predict_selected_model_output,
+                        step_index=i,
+                    )
+                    noise_pred = online_scheduler_transition.model_output
 
                 if additional_inputs is not None:
                     debug_x0_interval = int(additional_inputs.get("debug_x0_interval", 0) or 0)
@@ -1975,9 +1994,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # 这里使用的是：
                 # guidance 更新后的 latents
                 # guidance 后重算的 noise_pred
-                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-                if online_selection_outcome is not None:
-                    online_selector.record_scheduler_output(i, latents)
+                if online_scheduler_transition is None:
+                    latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                else:
+                    latents = finish_online_scheduler_transition(
+                        scheduler=self.scheduler,
+                        timestep=t,
+                        transition=online_scheduler_transition,
+                        selector=online_selector,
+                    )
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

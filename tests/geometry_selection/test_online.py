@@ -119,7 +119,12 @@ def test_controller_branches_deterministically_and_selects_geometry_winner() -> 
     assert outcome.selection.decision == "select_geometry_best"
     assert not torch.equal(outcome.selected_latents, context.incumbent_latents)
     assert torch.equal(context.incumbent_latents, torch.arange(8, dtype=torch.float32).reshape(1, 1, 2, 2, 2))
-    assert controller.events == [outcome.metadata()]
+    assert controller.events == [
+        {
+            **outcome.metadata(),
+            "selection_config": controller.selection_config.__dict__,
+        }
+    ]
     assert outcome.parent_latent_sha256 == outcome.candidates[0].latent_sha256
     assert outcome.selected_latent_sha256 == outcome.candidates[1].latent_sha256
     assert outcome.candidates[1].branch_seed is not None
@@ -127,6 +132,57 @@ def test_controller_branches_deterministically_and_selects_geometry_winner() -> 
     controller.record_scheduler_output(7, outcome.selected_latents + 1.0)
     assert "next_step_input_latent_sha256" in controller.events[0]
     json.dumps(outcome.metadata(), allow_nan=False)
+
+
+def test_selection_event_preserves_full_geometry_evidence_and_thresholds() -> None:
+    context, _ = _context()
+    evidence = {
+        "window_scale_ids": ["local_00", "loop_00"],
+        "window_scales": [1.0, 1.1],
+        "accepted_local_edge_ids": ["local_00:0-1"],
+        "accepted_loop_edge_ids": ["loop_00:0-3"],
+        "graph_score_config_sha256": "a" * 64,
+    }
+
+    def reports(candidates, _context):
+        return [
+            GeometryScoreReport(
+                **{
+                    **_report(0.30 if candidate.is_incumbent else 0.10, 1.0).__dict__,
+                    "graph_diagnostics": evidence,
+                }
+            )
+            for candidate in candidates
+        ]
+
+    selection_config = SelectionConfig(
+        min_relative_improvement=0.02,
+        min_net_translation_ratio=0.81,
+        max_net_translation_ratio=1.23,
+    )
+    controller = OnlineGeometrySelectionController(
+        OnlineBranchConfig((7,), candidate_count=2, perturbation_scale=0.02, random_seed=13),
+        selection_config,
+        reports,
+    )
+    outcome = controller(context)
+    event = controller.events[0]
+
+    assert event["selection"] == {
+        "selected_candidate_id": outcome.selection.selected_candidate_id,
+        "incumbent_candidate_id": outcome.selection.incumbent_candidate_id,
+        "decision": outcome.selection.decision,
+        "score_improvement": outcome.selection.score_improvement,
+        "motion_ratio": outcome.selection.motion_ratio,
+        "common_local_edges": outcome.selection.common_local_edges,
+        "common_long_range_edges": outcome.selection.common_long_range_edges,
+        "comparable_scores": outcome.selection.comparable_scores,
+        "candidate_ids": ["incumbent", "branch_01"],
+    }
+    assert event["selection_config"] == selection_config.__dict__
+    assert event["candidate_reports"]["incumbent"]["graph_diagnostics"] == evidence
+    assert event["candidate_reports"]["branch_01"]["pairs"]
+    json.dumps(event, allow_nan=False)
 
 
 def test_branch_respects_immutable_conditioning_support_and_abstains() -> None:

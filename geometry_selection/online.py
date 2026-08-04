@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Protocol, Sequence
 
 import torch
@@ -133,6 +133,80 @@ class GeometryReportFn(Protocol):
 
 
 @dataclass(frozen=True)
+class OnlineSchedulerTransition:
+    """Recomputed model output bound to one selected latent state.
+
+    It prevents the easy-to-miss error of applying a scheduler update with a
+    latent selected by the online controller but a model output predicted from
+    the earlier incumbent state.
+    """
+
+    selected_latents: torch.Tensor
+    model_output: torch.Tensor
+    step_index: int
+
+
+def prepare_online_scheduler_transition(
+    *,
+    selected_latents: torch.Tensor,
+    predict_model_output: Callable[[torch.Tensor], torch.Tensor],
+    step_index: int,
+) -> OnlineSchedulerTransition:
+    """Recompute the denoiser output for the exact latent selected online."""
+
+    if not isinstance(selected_latents, torch.Tensor):
+        raise TypeError("selected_latents must be a torch.Tensor")
+    if not callable(predict_model_output):
+        raise TypeError("predict_model_output must be callable")
+    if not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+        raise ValueError("step_index must be a non-negative integer")
+    model_output = predict_model_output(selected_latents)
+    if not isinstance(model_output, torch.Tensor):
+        raise TypeError("selected-branch model output must be a torch.Tensor")
+    if model_output.shape != selected_latents.shape or model_output.device != selected_latents.device:
+        raise ValueError("selected-branch model output must match selected latents")
+    if not bool(torch.isfinite(model_output).all()):
+        raise ValueError("selected-branch model output must be finite")
+    return OnlineSchedulerTransition(
+        selected_latents=selected_latents.detach(),
+        model_output=model_output.detach(),
+        step_index=step_index,
+    )
+
+
+def finish_online_scheduler_transition(
+    *,
+    scheduler: Any,
+    timestep: Any,
+    transition: OnlineSchedulerTransition,
+    selector: Any,
+) -> torch.Tensor:
+    """Advance exactly once and record the state produced by a selection."""
+
+    if not isinstance(transition, OnlineSchedulerTransition):
+        raise TypeError("transition must be an OnlineSchedulerTransition")
+    if not callable(getattr(selector, "record_scheduler_output", None)):
+        raise TypeError("online selector must record the scheduler output")
+    result = scheduler.step(
+        transition.model_output,
+        timestep,
+        transition.selected_latents,
+        return_dict=False,
+    )
+    if not isinstance(result, tuple) or len(result) < 1 or not isinstance(result[0], torch.Tensor):
+        raise TypeError("scheduler.step must return a tensor as its first tuple element")
+    next_latents = result[0]
+    if (
+        next_latents.shape != transition.selected_latents.shape
+        or next_latents.device != transition.selected_latents.device
+        or not bool(torch.isfinite(next_latents).all())
+    ):
+        raise ValueError("scheduler returned invalid selected-branch latents")
+    selector.record_scheduler_output(transition.step_index, next_latents)
+    return next_latents
+
+
+@dataclass(frozen=True)
 class OnlineSelectionOutcome:
     selected_latents: torch.Tensor
     selection: SelectionResult
@@ -145,6 +219,10 @@ class OnlineSelectionOutcome:
     geometry_artifacts: tuple[dict[str, Any], ...]
 
     def metadata(self) -> dict[str, Any]:
+        # Keep the complete geometry reports, not only their scalar scores.
+        # The temporary decoded frames are normally deleted, therefore the
+        # serialized reports and graph diagnostics are the decision evidence
+        # required to reproduce or audit a selection event afterwards.
         return {
             "step_index": self.step_index,
             "timestep": self.timestep,
@@ -169,16 +247,21 @@ class OnlineSelectionOutcome:
                 }
                 for candidate in self.candidates
             },
+            "selection": {
+                "selected_candidate_id": self.selection.selected_candidate_id,
+                "incumbent_candidate_id": self.selection.incumbent_candidate_id,
+                "decision": self.selection.decision,
+                "score_improvement": self.selection.score_improvement,
+                "motion_ratio": self.selection.motion_ratio,
+                "common_local_edges": self.selection.common_local_edges,
+                "common_long_range_edges": self.selection.common_long_range_edges,
+                "comparable_scores": self.selection.comparable_scores,
+                "candidate_ids": [
+                    candidate.candidate_id for candidate in self.selection.candidates
+                ],
+            },
             "candidate_reports": {
-                candidate.candidate_id: {
-                    "status": candidate.report.status,
-                    "total_score": candidate.report.total_score
-                    if math.isfinite(candidate.report.total_score)
-                    else None,
-                    "normalized_camera_motion": candidate.report.normalized_camera_motion,
-                    "valid_local_edges": candidate.report.valid_local_edges,
-                    "valid_long_range_edges": candidate.report.valid_long_range_edges,
-                }
+                candidate.candidate_id: candidate.report.to_dict()
                 for candidate in self.selection.candidates
             },
         }
@@ -291,8 +374,11 @@ class OnlineGeometrySelectionController:
             CandidateScore(
                 candidate_id=candidate.candidate_id,
                 seed=index,
-                video_sha256=(str(index) * 64),
-                geometry_cache_key=(str(index) * 64),
+                # Online candidates have no exported video or reusable cache
+                # key.  Their actual x0 and latent content hashes are logged
+                # in OnlineSelectionOutcome.metadata instead.
+                video_sha256="",
+                geometry_cache_key="",
                 is_incumbent=candidate.is_incumbent,
                 report=report,
             )
@@ -321,7 +407,11 @@ class OnlineGeometrySelectionController:
             candidates=candidates,
             geometry_artifacts=tuple(artifacts),
         )
-        self.events.append(outcome.metadata())
+        event = outcome.metadata()
+        # The full frozen thresholds are needed to interpret an abstention or
+        # a motion-guard rejection independently of the original YAML file.
+        event["selection_config"] = asdict(self.selection_config)
+        self.events.append(event)
         return outcome
 
     def record_scheduler_output(self, step_index: int, next_latents: torch.Tensor) -> None:
