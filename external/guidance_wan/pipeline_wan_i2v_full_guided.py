@@ -38,6 +38,8 @@ from diffusers.video_processor import VideoProcessor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.wan.pipeline_output import WanPipelineOutput
 
+from geometry_selection.online import OnlineSelectionContext, flow_match_predicted_x0
+
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -647,6 +649,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         attention_kwargs: dict[str, Any] | None = None,
         callback_on_step_end: Callable[[int, int], None] | PipelineCallback | MultiPipelineCallbacks | None = None,
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
+        online_selector: Callable[[OnlineSelectionContext], Any] | None = None,
         max_sequence_length: int = 512,
         fixed_frames: int | list[int] | None = None,
         guidance_step: int | list[int] = 0,
@@ -866,6 +869,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         allowed_losses = {None, "latent_l2", "residual_motion"}
         if loss_fn not in allowed_losses:
             raise ValueError(f"loss_fn must be one of {allowed_losses}")
+        if online_selector is not None:
+            if loss_fn is not None:
+                raise ValueError("online selection cannot be combined with gradient guidance")
+            if not callable(online_selector) or not callable(
+                getattr(online_selector, "is_active", None)
+            ):
+                raise TypeError(
+                    "online_selector must be a callable with an is_active(step_index) method"
+                )
 
         if isinstance(guidance_step, int):
             guidance_step = [guidance_step] * num_inference_steps
@@ -971,6 +983,148 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         # 含义： cond - uncond = prompt 指向的方向； scale 越大，越强化 prompt 约束
                         noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
+                # Gradient-free online selection happens before the scheduler update.
+                # It compares clean-video predictions from the same current state,
+                # then recomputes the selected trajectory's model output so that
+                # scheduler.step never mixes a changed latent with stale noise.
+                if online_selector is not None and online_selector.is_active(i):
+                    def _predict_x0_for_candidate(candidate_latents: torch.Tensor) -> torch.Tensor:
+                        if candidate_latents.shape != latents.shape:
+                            raise ValueError(
+                                "online selector returned a candidate with a different latent shape"
+                            )
+                        if candidate_latents.device != latents.device:
+                            raise ValueError(
+                                "online selector candidate must remain on the pipeline device"
+                            )
+                        if self.config.expand_timesteps:
+                            candidate_model_input = (
+                                (1 - first_frame_mask) * condition
+                                + first_frame_mask * candidate_latents
+                            ).to(transformer_dtype)
+                            candidate_temp_ts = (
+                                first_frame_mask[0][0][:, ::2, ::2] * t
+                            ).flatten()
+                            candidate_timestep = candidate_temp_ts.unsqueeze(0).expand(
+                                candidate_latents.shape[0], -1
+                            )
+                        else:
+                            candidate_model_input = torch.cat(
+                                [candidate_latents, condition], dim=1
+                            ).to(transformer_dtype)
+                            candidate_timestep = t.expand(candidate_latents.shape[0])
+                        with torch.inference_mode():
+                            with current_model.cache_context("cond"):
+                                candidate_noise = current_model(
+                                    hidden_states=candidate_model_input,
+                                    timestep=candidate_timestep,
+                                    encoder_hidden_states=prompt_embeds,
+                                    encoder_hidden_states_image=image_embeds,
+                                    attention_kwargs=attention_kwargs,
+                                    return_dict=False,
+                                )[0]
+                            if self.do_classifier_free_guidance:
+                                with current_model.cache_context("uncond"):
+                                    candidate_noise_uncond = current_model(
+                                        hidden_states=candidate_model_input,
+                                        timestep=candidate_timestep,
+                                        encoder_hidden_states=negative_prompt_embeds,
+                                        encoder_hidden_states_image=image_embeds,
+                                        attention_kwargs=attention_kwargs,
+                                        return_dict=False,
+                                    )[0]
+                                candidate_noise = candidate_noise_uncond + current_guidance_scale * (
+                                    candidate_noise - candidate_noise_uncond
+                                )
+                            candidate_x0 = flow_match_predicted_x0(
+                                self.scheduler,
+                                candidate_noise,
+                                candidate_latents,
+                                step_index=i,
+                            )
+                            if self.config.expand_timesteps:
+                                candidate_x0 = (
+                                    (1 - first_frame_mask.float()) * condition.float()
+                                    + first_frame_mask.float() * candidate_x0
+                                )
+                        return candidate_x0
+
+                    incumbent_x0 = flow_match_predicted_x0(
+                        self.scheduler,
+                        noise_pred.detach(),
+                        latents,
+                        step_index=i,
+                    )
+                    if self.config.expand_timesteps:
+                        incumbent_x0 = (
+                            (1 - first_frame_mask.float()) * condition.float()
+                            + first_frame_mask.float() * incumbent_x0
+                        )
+                    selection_outcome = online_selector(
+                        OnlineSelectionContext(
+                            step_index=i,
+                            timestep=t,
+                            incumbent_latents=latents.detach(),
+                            incumbent_x0=incumbent_x0.detach(),
+                            mutable_mask=(first_frame_mask if self.config.expand_timesteps else None),
+                            predict_x0=_predict_x0_for_candidate,
+                        )
+                    )
+                    selected_latents = selection_outcome.selected_latents
+                    if not isinstance(selected_latents, torch.Tensor):
+                        raise TypeError("online selector must return tensor selected_latents")
+                    if (
+                        selected_latents.shape != latents.shape
+                        or selected_latents.device != latents.device
+                    ):
+                        raise ValueError(
+                            "online selector selected_latents must match the current latent shape and device"
+                        )
+                    if not bool(torch.isfinite(selected_latents).all()):
+                        raise ValueError("online selector returned non-finite latents")
+                    latents = selected_latents.detach().to(dtype=latents.dtype)
+
+                    # Run the selected branch once more to obtain the matching
+                    # model output used by the actual scheduler update.
+                    if self.config.expand_timesteps:
+                        selected_model_input = (
+                            (1 - first_frame_mask) * condition + first_frame_mask * latents
+                        ).to(transformer_dtype)
+                        selected_temp_ts = (
+                            first_frame_mask[0][0][:, ::2, ::2] * t
+                        ).flatten()
+                        selected_timestep = selected_temp_ts.unsqueeze(0).expand(
+                            latents.shape[0], -1
+                        )
+                    else:
+                        selected_model_input = torch.cat([latents, condition], dim=1).to(
+                            transformer_dtype
+                        )
+                        selected_timestep = t.expand(latents.shape[0])
+                    with torch.inference_mode():
+                        with current_model.cache_context("cond"):
+                            noise_pred = current_model(
+                                hidden_states=selected_model_input,
+                                timestep=selected_timestep,
+                                encoder_hidden_states=prompt_embeds,
+                                encoder_hidden_states_image=image_embeds,
+                                attention_kwargs=attention_kwargs,
+                                return_dict=False,
+                            )[0]
+                        if self.do_classifier_free_guidance:
+                            with current_model.cache_context("uncond"):
+                                noise_uncond = current_model(
+                                    hidden_states=selected_model_input,
+                                    timestep=selected_timestep,
+                                    encoder_hidden_states=negative_prompt_embeds,
+                                    encoder_hidden_states_image=image_embeds,
+                                    attention_kwargs=attention_kwargs,
+                                    return_dict=False,
+                                )[0]
+                            noise_pred = noise_uncond + current_guidance_scale * (
+                                noise_pred - noise_uncond
+                            )
+
                 if additional_inputs is not None:
                     debug_x0_interval = int(additional_inputs.get("debug_x0_interval", 0) or 0)
                 else:
@@ -979,9 +1133,12 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     debug_x0_dir = additional_inputs.get("debug_x0_dir", None)
                     if debug_x0_dir is not None:
                         with torch.no_grad():
-                            if self.scheduler.step_index is None:
-                                self.scheduler._init_step_index(t)
-                            x0_debug = self.scheduler.convert_model_output(noise_pred.float().detach(), sample=latents.float())
+                            x0_debug = flow_match_predicted_x0(
+                                self.scheduler,
+                                noise_pred.detach(),
+                                latents,
+                                step_index=i,
+                            )
                             if self.config.expand_timesteps:
                                 x0_debug = (1 - first_frame_mask.float()) * condition.float() + first_frame_mask.float() * x0_debug.float()
 
@@ -1178,53 +1335,16 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # 只是在它的 denoising prediction 上额外加 GeCo latent guidance。
                                 noise_pred_g = noise_uncond_g + current_guidance_scale * (noise_pred_g - noise_uncond_g)
 
-                        # 用 scheduler 得到 x0_pred
-                        # 用 scheduler 把当前 noisy latent 和 model output 转成 predicted clean latent x0_pred。
+                        # Predict the clean latent without mutating scheduler state.
                         with torch.enable_grad():
-                            # 因为我们在 scheduler.step 之前提前调用 scheduler.convert_model_output，
-                            # 所以先手动初始化 scheduler.step_index，让它用当前 timestep 对应的 sigma 来计算 x0_pred。
-                            if self.scheduler.step_index is None:
-                                # 意思：确保 scheduler 知道当前是第几个 step。
-                                # 为什么：Wan 的 scheduler 内部用 step_index 找当前 sigma。没有初始化会取不到正确 sigma。
-                                # Wan 用的是 Diffusers scheduler。scheduler 里面有一串：
-                                # self.sigmas
-                                # 表示每个 inference step 对应的 noise level。
-
-                                # 平时 step_index 什么时候初始化？
-                                # 正常情况下，scheduler 在：
-                                # self.scheduler.step(noise_pred, t, latents)
-                                # 里面会初始化/更新 step_index。
-                                # 但我们的 guidance 插在：
-                                # scheduler.step 之前
-                                # 我们提前调用了：
-                                # self.scheduler.convert_model_output(...)
-                                # 所以这时候 step_index 可能还没被 scheduler 初始化。
-                                # 因此要手动做：
-                                # self.scheduler._init_step_index(t)
-                                # 如果没有这两行会怎样？
-                                # 可能会出现：
-                                # self.scheduler.step_index is None
-                                # 然后 convert_model_output 内部找 sigma 时失败。
-                                # 或者更隐蔽地：
-                                # 用错 sigma
-                                # 那 x0_pred 就算错了，后面的 VAE decode 和 GeCo loss 都不可信。
-
-                                self.scheduler._init_step_index(t)
-                            # 这行是 guidance 里非常关键的一步：把当前 noisy latent x_t 和 model output 转成 predicted clean sample x0_pred。
-                            # 为什么不用直接 decode latents： latents 是 noisy intermediate。
-                            # GeCo/VGGT/UFM 需要看的是“当前模型认为最终视频大概长什么样”。
-                            # 所以应该 decode x0_pred，不是 decode noisy x_t。
                             # Do not detach noise_pred_g: transformer weights are frozen, but the latent update
                             # should include the transformer Jacobian d(noise_pred)/d(latent).
-                            x0_pred = self.scheduler.convert_model_output(
-                                # noise_pred_g 是 Wan transformer 对当前 step 的 model output。对 Wan flow-matching 来说，它更像：
-                                # velocity / flow prediction, 虽然变量名叫 noise_pred。
-                                # =====FIXME+TODO：应该需要不detach noise_pred_g， 考虑transformer的prediction的影响，这样计算的梯度更准确=====
-                                # IMPORTANT: 原 GeCo 是考虑 transformer Jacobian 的
-                                noise_pred_g.float(),
-                                # latents是当前 timestep 的 noisy latent：x_t，也就是还在 denoising 中间过程里的 latent，不是最终干净视频。
-                                sample=latents.float()
-                                )
+                            x0_pred = flow_match_predicted_x0(
+                                self.scheduler,
+                                noise_pred_g,
+                                latents,
+                                step_index=i,
+                            )
                             debug_guidance_consistency = bool(
                                 additional_inputs and additional_inputs.get("debug_guidance_consistency", False)
                             )
@@ -1233,8 +1353,11 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                 # the ordinary denoising prediction before its latent update. This does
                                 # not enter the loss or alter the guidance update.
                                 with torch.no_grad():
-                                    x0_from_sampling_pred = self.scheduler.convert_model_output(
-                                        noise_pred.float(), sample=latents.float()
+                                    x0_from_sampling_pred = flow_match_predicted_x0(
+                                        self.scheduler,
+                                        noise_pred,
+                                        latents,
+                                        step_index=i,
                                     )
                                     pred_abs_diff = (noise_pred_g.detach().float() - noise_pred.detach().float()).abs()
                                     x0_abs_diff = (x0_pred.detach().float() - x0_from_sampling_pred.float()).abs()
