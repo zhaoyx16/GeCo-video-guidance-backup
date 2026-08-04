@@ -863,7 +863,7 @@ def validate_scheduler_preflight_receipt(
     expected_fields = {
         "schema": preflight["schema"],
         "code_commit": code_commit,
-        "model": str(model.resolve()),
+        "model": str(Path(model).resolve()),
         "scheduler_class": scheduler_identity["class_name"],
         "scheduler_module": scheduler_identity["module"],
         "diffusers_version": scheduler_identity["diffusers_version"],
