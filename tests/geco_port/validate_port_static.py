@@ -9,9 +9,10 @@ Passing this script is never sufficient to certify a migration.
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
 import re
-import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -25,6 +26,204 @@ class Check:
 
 def contains(path: Path, pattern: str, flags: int = 0) -> bool:
     return re.search(pattern, path.read_text(), flags) is not None
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_enable_grad_context(node: ast.withitem) -> bool:
+    context = node.context_expr
+    return (
+        isinstance(context, ast.Call)
+        and isinstance(context.func, ast.Attribute)
+        and isinstance(context.func.value, ast.Name)
+        and context.func.value.id == "torch"
+        and context.func.attr == "enable_grad"
+    )
+
+
+def live_x0_lines_in_guidance_repeat(path: Path) -> set[int]:
+    """Locate the x0 calls used by the differentiable guidance repeat path."""
+
+    tree = ast.parse(path.read_text(), filename=str(path))
+    lines: set[int] = set()
+
+    class Visitor(ast.NodeVisitor):
+        grad_depth = 0
+        repeat_depth = 0
+
+        @staticmethod
+        def is_guidance_repeat(node: ast.For) -> bool:
+            return (
+                isinstance(node.target, ast.Name)
+                and node.target.id == "rep"
+                and isinstance(node.iter, ast.Call)
+                and isinstance(node.iter.func, ast.Name)
+                and node.iter.func.id == "range"
+                and len(node.iter.args) == 1
+                and isinstance(node.iter.args[0], ast.Subscript)
+                and isinstance(node.iter.args[0].value, ast.Name)
+                and node.iter.args[0].value.id == "guidance_step"
+                and isinstance(node.iter.args[0].slice, ast.Name)
+                and node.iter.args[0].slice.id == "i"
+            )
+
+        def visit_For(self, node: ast.For) -> None:
+            is_repeat = self.is_guidance_repeat(node)
+            self.repeat_depth += int(is_repeat)
+            self.generic_visit(node)
+            self.repeat_depth -= int(is_repeat)
+
+        def visit_With(self, node: ast.With) -> None:
+            enabled = any(is_enable_grad_context(item) for item in node.items)
+            self.grad_depth += int(enabled)
+            self.generic_visit(node)
+            self.grad_depth -= int(enabled)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            is_x0_target = any(
+                isinstance(target, ast.Name) and target.id == "x0_pred"
+                for target in node.targets
+            )
+            call = node.value
+            if (
+                is_x0_target
+                and isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "flow_match_predicted_x0"
+                and len(call.args) >= 3
+                and isinstance(call.args[1], ast.Name)
+                and call.args[1].id == "noise_pred_g"
+                and isinstance(call.args[2], ast.Name)
+                and call.args[2].id == "latents"
+                and any(
+                    keyword.arg == "step_index"
+                    and isinstance(keyword.value, ast.Name)
+                    and keyword.value.id == "i"
+                    for keyword in call.keywords
+                )
+                and self.grad_depth > 0
+                and self.repeat_depth > 0
+            ):
+                lines.add(node.lineno)
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return lines
+
+
+def has_live_x0_call_in_grad_context(path: Path) -> bool:
+    return bool(live_x0_lines_in_guidance_repeat(path))
+
+
+def detaches_noise_prediction_before_live_x0(path: Path) -> bool:
+    """Reject direct or aliased detach operations before the guidance x0 call."""
+
+    tree = ast.parse(path.read_text(), filename=str(path))
+    x0_lines = live_x0_lines_in_guidance_repeat(path)
+    if not x0_lines:
+        return True
+    live_x0_line = min(x0_lines)
+    aliases = {"noise_pred_g"}
+    for node in sorted(ast.walk(tree), key=lambda item: getattr(item, "lineno", -1)):
+        if getattr(node, "lineno", live_x0_line) >= live_x0_line:
+            break
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in aliases:
+            aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "detach"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in aliases
+        ):
+            return True
+    return False
+
+
+def flow_helper_is_pure_x0(path: Path) -> bool:
+    """Reject scheduler mutation and require x_t - sigma_t * model_output."""
+
+    tree = ast.parse(path.read_text(), filename=str(path))
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "flow_match_predicted_x0"
+        ),
+        None,
+    )
+    if function is None:
+        return False
+    has_sigma_index = False
+    has_return_formula = False
+    mutates_scheduler = False
+    scheduler_aliases = {"scheduler"}
+    nodes = sorted(ast.walk(function), key=lambda item: getattr(item, "lineno", -1))
+    for node in nodes:
+        if isinstance(node, ast.Assign):
+            if isinstance(node.value, ast.Name) and node.value.id in scheduler_aliases:
+                scheduler_aliases.update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+            has_sigma_target = any(
+                isinstance(target, ast.Name) and target.id == "sigma"
+                for target in node.targets
+            )
+            sigma_source = (
+                node.value.func.value
+                if isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                else None
+            )
+            has_sigma_index |= (
+                has_sigma_target
+                and isinstance(sigma_source, ast.Subscript)
+                and isinstance(sigma_source.value, ast.Name)
+                and sigma_source.value.id == "sigmas"
+                and isinstance(sigma_source.slice, ast.Name)
+                and sigma_source.slice.id == "step_index"
+            )
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            mutates_scheduler |= any(
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in scheduler_aliases
+                for target in targets
+            )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            mutates_scheduler |= (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in scheduler_aliases
+                and node.func.attr not in {"__class__"}
+            )
+        if isinstance(node, ast.Return):
+            value = node.value
+            has_return_formula |= (
+                isinstance(value, ast.BinOp)
+                and isinstance(value.op, ast.Sub)
+                and isinstance(value.left, ast.Call)
+                and isinstance(value.left.func, ast.Attribute)
+                and isinstance(value.left.func.value, ast.Name)
+                and value.left.func.value.id == "sample"
+                and value.left.func.attr == "float"
+                and isinstance(value.right, ast.BinOp)
+                and isinstance(value.right.op, ast.Mult)
+                and isinstance(value.right.left, ast.Name)
+                and value.right.left.id == "sigma"
+                and isinstance(value.right.right, ast.Call)
+                and isinstance(value.right.right.func, ast.Attribute)
+                and isinstance(value.right.right.func.value, ast.Name)
+                and value.right.right.func.value.id == "model_output"
+                and value.right.right.func.attr == "float"
+            )
+    return has_sigma_index and has_return_formula and not mutates_scheduler
 
 
 def add(checks: list[Check], name: str, ok: bool, detail: str) -> None:
@@ -45,37 +244,57 @@ def main() -> None:
     cog = repo / "external/guidance_cogvideox/cogvideox.py"
     demo = repo / "demo_guidance.py"
     wan = repo / "external/guidance_wan/pipeline_wan_i2v_full_guided.py"
+    wan_x0 = repo / "geometry_selection/online.py"
     wan_runner = repo / "run_wan_geco_case_full.py"
     cosmos = repo / "external/guidance_cosmos/pipeline_cosmos2_5_predict_guided.py"
     cosmos_runner = repo / "run_cosmos_geco_case.py"
-    required = [cog, demo, wan, wan_runner, cosmos, cosmos_runner]
+    required = [cog, demo, wan, wan_x0, wan_runner, cosmos, cosmos_runner]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise SystemExit(f"Missing required files: {missing}")
 
     checks: list[Check] = []
-    diff = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--quiet", "origin/main", "--", str(cog), str(demo)],
-        check=False,
-    )
     add(
         checks,
-        "official_geco_reference_unchanged",
-        diff.returncode == 0,
-        "CogVideoX guidance and demo match origin/main.",
+        "official_geco_reference_pinned",
+        sha256(cog) == "f19ffee43f55354a6e154ab5ae7bcf9331f6ba436927bd944ddf7a51dfa3992c"
+        and sha256(demo) == "7a1d376179feae23eaf23a426d097778c9cb2682018271f1e7c6bc3b6a7dce54",
+        "CogVideoX guidance and demo match the frozen official reference hashes.",
     )
 
     wan_text = wan.read_text()
-    x0_match = re.search(
-        r"x0_pred\s*=\s*self\.scheduler\.convert_model_output\((.*?)sample=latents\.float\(\)",
-        wan_text,
-        re.S,
+    add(
+        checks,
+        "wan_flowmatch_helper_import",
+        contains(
+            wan,
+            r"from\s+geometry_selection\.online\s+import\s*\(.*?flow_match_predicted_x0",
+            re.S,
+        ),
+        "The Wan pipeline imports the checked pure flow-matching helper from geometry_selection.online.",
     )
     add(
         checks,
-        "wan_transformer_jacobian",
-        bool(x0_match and ".detach()" not in x0_match.group(1)),
-        "Wan x0 conversion must use differentiable noise_pred_g.",
+        "wan_flowmatch_scheduler_contract",
+        contains(wan, r"scheduler:\s*FlowMatchEulerDiscreteScheduler"),
+        "The Wan pipeline declares a FlowMatchEulerDiscreteScheduler.",
+    )
+    add(
+        checks,
+        "wan_transformer_jacobian_source_path",
+        has_live_x0_call_in_grad_context(wan)
+        and not detaches_noise_prediction_before_live_x0(wan),
+        "Wan clean prediction is called with the live transformer output; runtime autograd is checked separately.",
+    )
+    add(
+        checks,
+        "wan_transformer_autograd_context",
+        contains(
+            wan,
+            r"with\s+torch\.enable_grad\(\):.*?noise_pred_g\s*=\s*current_model\(",
+            re.S,
+        ),
+        "The guidance transformer prediction is computed in an enabled autograd context.",
     )
     add(
         checks,
@@ -85,9 +304,20 @@ def main() -> None:
     )
     add(
         checks,
+        "wan_prediction_recomputed_after_guidance",
+        contains(
+            wan,
+            r"if guidance_step\[i\] > 0.*?# Recompute noise_pred after latent update.*?"
+            r"noise_pred\s*=\s*current_model\(.*?self\.scheduler\.step\(noise_pred,\s*t,\s*latents",
+            re.S,
+        ),
+        "The Wan scheduler receives a transformer prediction recomputed at the updated latent.",
+    )
+    add(
+        checks,
         "wan_scheduler_x0",
-        "self.scheduler.convert_model_output" in wan_text,
-        "Wan uses the scheduler's configured flow-prediction conversion.",
+        flow_helper_is_pure_x0(wan_x0),
+        "Wan uses the FlowMatchEuler clean prediction x_t - sigma_t * model_output without mutating scheduler state.",
     )
     add(
         checks,
