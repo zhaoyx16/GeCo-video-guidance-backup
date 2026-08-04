@@ -1278,10 +1278,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         if self.config.expand_timesteps: #这个分支通常用于 I2V / first-frame conditioning 的特殊输入方式。
                             # 用 mask 混合 condition 和当前 latent
                             # 这保证 transformer 看到的是：已知部分固定，未知部分正在 denoise。
-                            latent_model_input_g = (1 - first_frame_mask) * condition + first_frame_mask * latents
+                            # The mixed model input is rebuilt in the local autograd scope
+                            # immediately before the transformer forward below.
                             # 把输入转成 transformer 的 dtype，比如 bfloat16
                             # 原因： transformer 权重通常是 bf16; 输入 dtype 匹配更省显存，也避免 dtype mismatch
-                            latent_model_input_g = latent_model_input_g.to(transformer_dtype)
                             # 构造 token-level timestep
                             # first_frame_mask[0][0]取出 batch 0、channel 0 的 mask，形状大概：[T, H, W]
                             # [:, ::2, ::2]空间下采样 2 倍，匹配 transformer token grid：[T, H, W] -> [T, H/2, W/2]
@@ -1330,7 +1330,8 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             # 也就是说 transformer 一次性看到：
                             # 当前 noisy latent
                             # condition latent
-                            latent_model_input_g = torch.cat([latents, condition], dim=1).to(transformer_dtype)
+                            # The channel-concatenated model input is rebuilt in the local
+                            # autograd scope immediately before the transformer forward below.
                             # 这里 timestep 是 sample-level，不是 token-level。形状：[B]
                             # 意思是：整个 sample 都使用同一个 timestep t
                             # 没有区分：
@@ -1345,6 +1346,29 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         # 为什么要每次 repeat 都算：
                         # 因为 latent 每次 update 后变了，对应的 noise_pred 也应该变。否则就是旧 prediction 配新 latent，梯度方向会错。
                         with torch.enable_grad():
+                            # ``__call__`` is globally decorated with ``no_grad``.  Build the
+                            # input here, rather than above, so its dependence on ``latents`` is
+                            # recorded even though every model parameter remains frozen.
+                            if self.config.expand_timesteps:
+                                latent_model_input_g = (
+                                    (1 - first_frame_mask) * condition
+                                    + first_frame_mask * latents
+                                ).to(transformer_dtype)
+                            else:
+                                latent_model_input_g = torch.cat(
+                                    [latents, condition], dim=1
+                                ).to(transformer_dtype)
+
+                            if runtime_certification_events is not None:
+                                if torch.is_inference_mode_enabled():
+                                    raise RuntimeError(
+                                        "Guidance cannot run inside torch.inference_mode()."
+                                    )
+                                if not latent_model_input_g.requires_grad:
+                                    raise RuntimeError(
+                                        "Guidance transformer input is detached from latents."
+                                    )
+
                             with current_model.cache_context("cond"): #这是 Wan transformer 的 cache 管理上下文
                             # cond 表示：conditional branch, 也就是使用 prompt embedding 的那次 forward。
                             # 因为 CFG 有两次 forward：
