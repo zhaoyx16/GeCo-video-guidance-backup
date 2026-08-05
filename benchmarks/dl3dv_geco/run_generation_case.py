@@ -96,6 +96,19 @@ PROFILES = {
 }
 
 
+SPLIT_VAE_RUNTIME_RECEIPT_SCHEMA = "wan_split_vae_runtime_receipt_v1"
+MODEL_CONTENT_MANIFEST_SCHEMA = "geco-model-content-manifest-v1"
+SPLIT_VAE_BOOTSTRAP_PROFILE = {
+    "steps": 50,
+    "frames": 121,
+    "height": 704,
+    "width": 1280,
+    "fps": 24,
+    "guidance_scale": 5.0,
+    "wan_negative_prompt_mode": "none",
+}
+
+
 def load_class(path: Path, class_name: str):
     spec = importlib.util.spec_from_file_location(f"_geco_benchmark_{path.stem}", path)
     if spec is None or spec.loader is None:
@@ -149,31 +162,155 @@ def model_identity(model: str) -> dict:
     return identity
 
 
+def require_sha256(value: str, *, field: str) -> None:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise RuntimeError(f"{field} must be a lower-case SHA-256 digest")
+
+
+def canonical_json_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def validate_immutable_model_tree(root: Path, records: list[dict], *, role: str) -> None:
+    """Re-hash every file and reject writable/symlinked tree changes before loading."""
+    expected = {}
+    for record in records:
+        relative = record.get("relative_path")
+        size_bytes = record.get("size_bytes")
+        digest = record.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or not isinstance(digest, str)
+            or relative in expected
+        ):
+            raise RuntimeError(f"model-content manifest file record is invalid for {role}")
+        expected[relative] = {"size_bytes": size_bytes, "sha256": digest}
+    observed = {}
+    for directory, directory_names, filenames in os.walk(str(root), followlinks=False):
+        directory_path = Path(directory)
+        if directory_path.is_symlink() or os.access(directory_path, os.W_OK):
+            raise RuntimeError(f"{role} frozen model tree contains writable/symlink directory")
+        for directory_name in directory_names:
+            if (directory_path / directory_name).is_symlink():
+                raise RuntimeError(f"{role} frozen model tree contains a symlink directory")
+        for filename in filenames:
+            child = directory_path / filename
+            if child.is_symlink() or not child.is_file() or os.access(child, os.W_OK):
+                raise RuntimeError(f"{role} frozen model tree contains writable/symlink file")
+            relative = child.relative_to(root).as_posix()
+            observed[relative] = {
+                "size_bytes": child.stat().st_size,
+                "sha256": sha256_file(child),
+            }
+    if observed != expected:
+        raise RuntimeError(f"{role} frozen model file set or sizes differ from content manifest")
+
+
+def load_verified_model_content_manifest(
+    path: Path,
+    *,
+    expected_sha256: str,
+    requested_models: dict[str, str],
+) -> dict:
+    """Bind every adapted-GeCo model path to a full, immutable content manifest.
+
+    The manifest producer hashes every model byte before publication.  Runtime
+    validation then requires the published SHA, the expected three roles, the
+    exact resolved model roots, and non-writable roots before any loader runs.
+    """
+
+    require_sha256(expected_sha256, field="expected model-content manifest SHA")
+    manifest_path = path.resolve()
+    if not manifest_path.is_file():
+        raise RuntimeError(f"model-content manifest is missing: {manifest_path}")
+    if sha256_file(manifest_path) != expected_sha256:
+        raise RuntimeError("model-content manifest SHA mismatch")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if payload.get("schema") != MODEL_CONTENT_MANIFEST_SCHEMA:
+        raise RuntimeError("model-content manifest schema mismatch")
+    content_sha256 = payload.get("content_sha256")
+    if not isinstance(content_sha256, str):
+        raise RuntimeError("model-content manifest has no content SHA")
+    require_sha256(content_sha256, field="model-content manifest content SHA")
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise RuntimeError("model-content manifest artifacts are invalid")
+    content_body = {
+        "schema": MODEL_CONTENT_MANIFEST_SCHEMA,
+        "artifacts": [
+            {
+                "name": artifact.get("name"),
+                "file_count": artifact.get("file_count"),
+                "total_bytes": artifact.get("total_bytes"),
+                "files": artifact.get("files"),
+            }
+            for artifact in artifacts
+            if isinstance(artifact, dict)
+        ],
+    }
+    if hashlib.sha256(canonical_json_bytes(content_body)).hexdigest() != content_sha256:
+        raise RuntimeError("model-content manifest aggregate content SHA mismatch")
+    by_role = {artifact.get("name"): artifact for artifact in artifacts if isinstance(artifact, dict)}
+    if set(by_role) != {"wan", "vggt_omega", "ufm"}:
+        raise RuntimeError("model-content manifest must contain exactly Wan, VGGT-Omega, and UFM")
+    verified_roots = {}
+    for role, requested in requested_models.items():
+        artifact = by_role[role]
+        raw_root = artifact.get("resolved_root")
+        if not isinstance(raw_root, str) or not raw_root:
+            raise RuntimeError(f"model-content manifest root is invalid for {role}")
+        root = Path(raw_root).resolve()
+        requested_path = Path(requested).expanduser().resolve()
+        if requested_path != root:
+            raise RuntimeError(
+                f"{role} model path differs from frozen manifest root: "
+                f"{requested_path} != {root}"
+            )
+        if not root.is_dir() or os.access(root, os.W_OK):
+            raise RuntimeError(f"{role} frozen model root is missing or writable: {root}")
+        files = artifact.get("files")
+        if not isinstance(files, list) or not files:
+            raise RuntimeError(f"model-content manifest has no file records for {role}")
+        validate_immutable_model_tree(root, files, role=role)
+        verified_roots[role] = str(root)
+    return {
+        "path": str(manifest_path),
+        "sha256": expected_sha256,
+        "content_sha256": content_sha256,
+        "verified_roots": verified_roots,
+    }
+
+
 def mapped_fixed_frames(num_frames: int) -> list[int]:
     # Original GeCo uses 1-based 12,24,36,48 over 49 CogVideoX frames.
     fractions = (11 / 48, 23 / 48, 35 / 48, 47 / 48)
     return sorted({min(num_frames - 1, round(fraction * (num_frames - 1))) for fraction in fractions})
 
 
-def adapted_geco_schedule(
-    num_steps: int,
-    start_fraction: float,
-    end_fraction: float,
-    repeats_per_step: int,
-    learning_rate: float,
-) -> tuple[list[int], list[float]]:
-    """Create the default full-transformer-Jacobian GeCo update schedule."""
+def resolve_adapted_geco_schedule(
+    spec: dict,
+    schedule_id: str,
+) -> tuple[list[int], list[int], list[float], dict]:
+    """Resolve one pre-registered Wan adaptation; no CLI schedule is permitted."""
 
-    if not 0.0 <= start_fraction < end_fraction <= 1.0:
-        raise ValueError("Guidance fractions must satisfy 0 <= start < end <= 1")
-    if repeats_per_step < 1:
-        raise ValueError("repeats_per_step must be positive")
-    start = min(num_steps - 1, int(round(start_fraction * num_steps)))
-    end = min(num_steps, max(start + 1, int(round(end_fraction * num_steps))))
-    repeats = [0] * num_steps
-    for index in range(start, end):
-        repeats[index] = repeats_per_step
-    return repeats, [learning_rate if repeat else 0.0 for repeat in repeats]
+    adapted = spec["adapted_geco"]
+    schedule = adapted["schedule_candidates"][schedule_id]
+    fixed_frames = list(adapted["fixed_frame_indices"])
+    guidance_step = list(schedule["guidance_step"])
+    learning_rate = schedule["guidance_learning_rate"]
+    guidance_lr = [learning_rate if repeats else 0.0 for repeats in guidance_step]
+    return fixed_frames, guidance_step, guidance_lr, {
+        "id": schedule_id,
+        "description": schedule["description"],
+        "updates": schedule["updates"],
+        "time_travel": adapted["time_travel"],
+        "time_travel_note": adapted["time_travel_note"],
+    }
 
 
 def load_case(
@@ -452,8 +589,14 @@ def build_pipeline(args: argparse.Namespace):
             args.pipe_device
         )
 
+    transformer_block_checkpointing_actual = False
     if args.method == "adapted_geco" and args.transformer_block_checkpointing:
         pipe.transformer.enable_gradient_checkpointing()
+        transformer_block_checkpointing_actual = bool(
+            getattr(pipe.transformer, "is_gradient_checkpointing", False)
+        )
+        if not transformer_block_checkpointing_actual:
+            raise RuntimeError("Wan transformer did not enable gradient checkpointing")
     vae_device = place_vae(
         pipe,
         args.vae_device,
@@ -462,7 +605,7 @@ def build_pipeline(args: argparse.Namespace):
         method=args.method,
         allow_split_vae=args.allow_split_vae,
     )
-    return pipe, vae_device
+    return pipe, vae_device, transformer_block_checkpointing_actual
 
 
 def runtime_meta() -> dict:
@@ -501,6 +644,61 @@ def cuda_runtime_identity(device: str) -> dict:
     }
 
 
+def scheduler_sampling_trace(scheduler) -> dict:
+    """Capture the actual 50-step scheduler grid used by this generation."""
+
+    def values(name: str) -> list[float | int] | None:
+        raw = getattr(scheduler, name, None)
+        if raw is None:
+            return None
+        if isinstance(raw, torch.Tensor):
+            raw = raw.detach().to("cpu").tolist()
+        if not isinstance(raw, list):
+            return None
+        return [value.item() if hasattr(value, "item") else value for value in raw]
+
+    def tensor_hash(name: str) -> str | None:
+        raw = getattr(scheduler, name, None)
+        if not isinstance(raw, torch.Tensor):
+            return None
+        payload = raw.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
+        return hashlib.sha256(payload).hexdigest()
+
+    return {
+        "timesteps": values("timesteps"),
+        "sigmas": values("sigmas"),
+        "timesteps_length": len(getattr(scheduler, "timesteps", ())),
+        "sigmas_length": len(getattr(scheduler, "sigmas", ())),
+        "timesteps_sha256": tensor_hash("timesteps"),
+        "sigmas_sha256": tensor_hash("sigmas"),
+    }
+
+
+def validate_scheduler_sampling_trace(trace: dict, preflight: dict) -> None:
+    """Require this run's scheduler grid to equal the SHA-bound preflight grid."""
+
+    expected = {
+        key: preflight.get(key)
+        for key in (
+            "timesteps_length",
+            "sigmas_length",
+            "timesteps_sha256",
+            "sigmas_sha256",
+        )
+    }
+    actual = {key: trace.get(key) for key in expected}
+    if (
+        not isinstance(trace.get("timesteps"), list)
+        or not isinstance(trace.get("sigmas"), list)
+        or not all(math.isfinite(float(value)) for value in trace["timesteps"] + trace["sigmas"])
+        or any(value is None for value in expected.values())
+        or actual != expected
+    ):
+        raise RuntimeError(
+            f"Scheduler sampling grid differs from preflight: expected={expected}, actual={actual}"
+        )
+
+
 def canonical_scheduler_config(config: dict) -> dict:
     """Canonicalise the order-insensitive Diffusers default-value set for hashing."""
     canonical = dict(config)
@@ -522,6 +720,9 @@ def runtime_certification_report(
     scheduler_identity: dict,
     scheduler_preflight: dict,
     specification_sha256: str,
+    scheduler_sampling_trace: dict,
+    adapted_geco_schedule: dict,
+    guidance_lr: list[float],
 ) -> dict:
     """Validate non-mutating traces from the actual full guidance path."""
 
@@ -745,6 +946,11 @@ def runtime_certification_report(
         "scheduler_config_sha256": hashlib.sha256(scheduler_json.encode()).hexdigest(),
         "scheduler": scheduler_identity,
         "scheduler_preflight": scheduler_preflight,
+        "scheduler_sampling_trace": scheduler_sampling_trace,
+        "adapted_geco_schedule": adapted_geco_schedule,
+        "fixed_frames": fixed_frames,
+        "guidance_step": guidance_step,
+        "guidance_lr": guidance_lr,
         "specification_sha256": specification_sha256,
         "events": events,
         "failures": failures,
@@ -767,10 +973,12 @@ def load_runtime_certification_spec(repo: Path) -> tuple[Path, dict, str]:
         raise RuntimeError(f"Invalid runtime-certification spec identity: {path}")
     scheduler = spec.get("scheduler")
     scheduler_preflight = spec.get("scheduler_preflight")
+    adapted_geco = spec.get("adapted_geco")
     thresholds = spec.get("thresholds")
     if (
         not isinstance(scheduler, dict)
         or not isinstance(scheduler_preflight, dict)
+        or not isinstance(adapted_geco, dict)
         or not isinstance(thresholds, dict)
     ):
         raise RuntimeError(f"Invalid runtime-certification spec structure: {path}")
@@ -789,7 +997,122 @@ def load_runtime_certification_spec(repo: Path) -> tuple[Path, dict, str]:
         for key in ("prediction_max_abs", "x0_max_abs", "vae_max_abs")
     ):
         raise RuntimeError(f"Invalid runtime-certification thresholds: {path}")
+    required_geco = {
+        "backbone": "wan",
+        "frames": 121,
+        "fixed_frame_indices": [28, 58, 88, 118],
+        "ufm_scale": 0.25,
+        "decode_spatial_scale": 1.0,
+        "max_relative_delta": 0.0,
+        "pair_mode": "adjacent",
+        "vggt_strategy": "once",
+        "time_travel": None,
+    }
+    if any(adapted_geco.get(key) != value for key, value in required_geco.items()):
+        raise RuntimeError(f"Invalid frozen adapted-GeCo schedule: {path}")
+    fixed_frames = adapted_geco.get("fixed_frame_indices")
+    if (
+        not isinstance(fixed_frames, list)
+        or not all(type(index) is int for index in fixed_frames)
+        or fixed_frames != sorted(set(fixed_frames))
+    ):
+        raise RuntimeError(f"Invalid adapted-GeCo index types/order: {path}")
+    if type(adapted_geco.get("frames")) is not int:
+        raise RuntimeError(f"Invalid adapted-GeCo frame-count type: {path}")
+    float_fields = (
+        "ufm_scale",
+        "decode_spatial_scale",
+        "max_relative_delta",
+    )
+    if any(
+        type(adapted_geco.get(key)) is not float
+        or not math.isfinite(adapted_geco[key])
+        for key in float_fields
+    ):
+        raise RuntimeError(f"Invalid adapted-GeCo floating-point type/value: {path}")
+    if not isinstance(adapted_geco.get("time_travel_note"), str):
+        raise RuntimeError(f"Missing adapted-GeCo time-travel note: {path}")
+    schedules = adapted_geco.get("schedule_candidates")
+    expected_schedules = {
+        "conservative_late_22": ([0] * 20 + [1] * 22 + [0] * 8, 0.1, 22),
+        "medium_shape_64": ([0] * 3 + [2] * 17 + [1] * 30, 0.1, 64),
+        "geco_repeat_shape_111": ([0] * 3 + [3] * 17 + [2] * 30, 3.0, 111),
+    }
+    if not isinstance(schedules, dict) or set(schedules) != set(expected_schedules):
+        raise RuntimeError(f"Invalid pre-registered adapted-GeCo schedules: {path}")
+    for schedule_id, (expected_steps, expected_lr, expected_updates) in expected_schedules.items():
+        schedule = schedules[schedule_id]
+        if (
+            not isinstance(schedule, dict)
+            or schedule.get("guidance_step") != expected_steps
+            or type(schedule.get("guidance_learning_rate")) is not float
+            or schedule.get("guidance_learning_rate") != expected_lr
+            or type(schedule.get("updates")) is not int
+            or schedule.get("updates") != expected_updates
+            or sum(schedule["guidance_step"]) != schedule["updates"]
+            or not isinstance(schedule.get("description"), str)
+        ):
+            raise RuntimeError(f"Invalid adapted-GeCo schedule {schedule_id!r}: {path}")
     return path, spec, sha256_file(path)
+
+
+def validate_runtime_certification_geco_schedule(
+    args: argparse.Namespace,
+    spec: dict,
+    *,
+    schedule_id: str,
+    fixed_frames: list[int],
+    guidance_step: list[int],
+    guidance_lr: list[float],
+) -> None:
+    """Reject any adapted-GeCo run that drifts from its registered schedule."""
+
+    adapted = spec["adapted_geco"]
+    expected_schedule = adapted["schedule_candidates"][schedule_id]
+    observed = {
+        "backbone": args.backbone,
+        "frames": args.frames,
+        "fixed_frame_indices": fixed_frames,
+        "guidance_step": guidance_step,
+        "guidance_learning_rate": [
+            expected_schedule["guidance_learning_rate"] if repeats else 0.0
+            for repeats in guidance_step
+        ],
+        "ufm_scale": args.ufm_scale,
+        "decode_spatial_scale": args.decode_spatial_scale,
+        "max_relative_delta": args.max_relative_delta,
+        "pair_mode": "adjacent",
+        "vggt_strategy": "once",
+        "time_travel": None,
+    }
+    expected = {
+        "backbone": adapted["backbone"],
+        "frames": adapted["frames"],
+        "fixed_frame_indices": adapted["fixed_frame_indices"],
+        "guidance_step": expected_schedule["guidance_step"],
+        "guidance_learning_rate": [
+            expected_schedule["guidance_learning_rate"] if repeats else 0.0
+            for repeats in expected_schedule["guidance_step"]
+        ],
+        "ufm_scale": adapted["ufm_scale"],
+        "decode_spatial_scale": adapted["decode_spatial_scale"],
+        "max_relative_delta": adapted["max_relative_delta"],
+        "pair_mode": adapted["pair_mode"],
+        "vggt_strategy": adapted["vggt_strategy"],
+        "time_travel": adapted["time_travel"],
+    }
+    mismatch = {
+        key: {"expected": value, "actual": observed[key]}
+        for key, value in expected.items()
+        if observed.get(key) != value
+    }
+    if guidance_lr != observed["guidance_learning_rate"]:
+        mismatch["guidance_learning_rate"] = {
+            "expected": observed["guidance_learning_rate"],
+            "actual": guidance_lr,
+        }
+    if mismatch:
+        raise RuntimeError(f"Adapted-GeCo schedule differs from frozen certificate spec: {mismatch}")
 
 
 def validate_runtime_certification_scheduler(scheduler, spec: dict, *, repo: Path) -> dict:
@@ -894,6 +1217,15 @@ def validate_scheduler_preflight_receipt(
             }
     if mismatch:
         raise RuntimeError(f"Scheduler preflight receipt contract mismatch: {mismatch}")
+    trace_fields = ("timesteps_length", "sigmas_length", "timesteps_sha256", "sigmas_sha256")
+    if (
+        type(receipt.get("timesteps_length")) is not int
+        or type(receipt.get("sigmas_length")) is not int
+        or receipt["timesteps_length"] != steps
+        or receipt["sigmas_length"] < steps
+        or any(not isinstance(receipt.get(key), str) or len(receipt[key]) != 64 for key in trace_fields[2:])
+    ):
+        raise RuntimeError("Scheduler preflight receipt has no valid timestep/sigma grid binding")
     return {
         "path": str(receipt_path),
         "sha256": actual_sha256,
@@ -901,6 +1233,7 @@ def validate_scheduler_preflight_receipt(
         "model": receipt["model"],
         "flow_x0_max_abs_error": receipt["flow_x0_max_abs_error"],
         "scheduler_x0_max_abs_error": receipt["scheduler_x0_max_abs_error"],
+        **{key: receipt[key] for key in trace_fields},
     }
 
 
@@ -909,6 +1242,10 @@ def verify_completed_runtime_certificate(
     *,
     output_dir: Path,
     specification_sha256: str,
+    adapted_geco_schedule: dict,
+    fixed_frames: list[int],
+    guidance_step: list[int],
+    guidance_lr: list[float],
 ) -> None:
     """Verify that a completed certified run still has its bound receipt."""
 
@@ -936,6 +1273,298 @@ def verify_completed_runtime_certificate(
         or receipt.get("scheduler_preflight") != recorded.get("scheduler_preflight")
     ):
         raise RuntimeError(f"COMPLETE runtime-certification receipt content mismatch: {output_dir}")
+    if (
+        receipt.get("adapted_geco_schedule") != adapted_geco_schedule
+        or receipt.get("fixed_frames") != fixed_frames
+        or receipt.get("guidance_step") != guidance_step
+        or receipt.get("guidance_lr") != guidance_lr
+    ):
+        raise RuntimeError(f"COMPLETE runtime-certification schedule mismatch: {output_dir}")
+
+
+def split_vae_contract(
+    args: argparse.Namespace,
+    *,
+    code_identity: dict,
+    runner_sha256: str,
+    pipeline_sha256: str,
+    model_content_manifest: dict,
+) -> dict:
+    """Split-VAE execution contract shared by all pre-registered schedules."""
+
+    return {
+        "backbone": args.backbone,
+        "method": args.method,
+        "code_commit": code_identity["commit"],
+        "runner_sha256": runner_sha256,
+        "pipeline_sha256": pipeline_sha256,
+        "runtime_certification_spec_sha256": args.expected_runtime_certification_spec_sha256,
+        "scheduler_preflight_sha256": args.expected_scheduler_preflight_sha256,
+        "profile": {
+            "steps": args.steps,
+            "frames": args.frames,
+            "height": args.height,
+            "width": args.width,
+            "fps": args.fps,
+            "guidance_scale": args.guidance_scale,
+            "wan_negative_prompt_mode": args.wan_negative_prompt_mode,
+        },
+        "devices": {
+            "pipe": args.pipe_device,
+            "vae": args.vae_device or args.pipe_device,
+            "metric": args.metric_device,
+            "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
+        },
+        "transformer_block_checkpointing": args.transformer_block_checkpointing,
+        "geometry_models": {
+            "vggt_model": args.vggt_model,
+            "ufm_model": args.ufm_model,
+        },
+        "model_identities": {
+            "generator": model_identity(args.model),
+            "vggt": model_identity(args.vggt_model),
+            "ufm": model_identity(args.ufm_model),
+        },
+        "model_content_manifest": model_content_manifest,
+        "runtime_devices": {
+            "pipe": cuda_runtime_identity(args.pipe_device),
+            "vae": cuda_runtime_identity(args.vae_device or args.pipe_device),
+            "metric": cuda_runtime_identity(args.metric_device),
+        },
+        "geco": {
+            "ufm_scale": args.ufm_scale,
+            "decode_spatial_scale": args.decode_spatial_scale,
+            "max_relative_delta": args.max_relative_delta,
+            "loss": "residual_motion",
+            "grad_through_vggt": False,
+            "pair_mode": "adjacent",
+            "vggt_strategy": "once",
+            "time_travel": None,
+        },
+    }
+
+
+def bootstrap_split_vae_contract_errors(args: argparse.Namespace) -> dict:
+    """Return fail-closed violations for the one-time split-VAE bootstrap run."""
+
+    expected = {
+        "backbone": "wan",
+        "method": "adapted_geco",
+        "protocol_mode": "legacy-debug",
+        "runtime_certification": True,
+        "pipe_device": "cuda:0",
+        "vae_device": "cuda:1",
+        "metric_device": "cuda:2",
+        "cross_device_grad_via_cpu": True,
+        "transformer_block_checkpointing": True,
+        "allow_split_vae": True,
+        "adapted_geco_schedule": "conservative_late_22",
+    }
+    errors = {
+        key: {"expected": value, "actual": getattr(args, key)}
+        for key, value in expected.items()
+        if getattr(args, key) != value
+    }
+    for key, value in SPLIT_VAE_BOOTSTRAP_PROFILE.items():
+        if getattr(args, key) != value:
+            errors[key] = {"expected": value, "actual": getattr(args, key)}
+    if args.split_vae_smoke_report is not None:
+        errors["split_vae_smoke_report"] = {
+            "expected": None,
+            "actual": str(args.split_vae_smoke_report),
+        }
+    if len({args.pipe_device, args.vae_device, args.metric_device}) != 3:
+        errors["distinct_devices"] = {
+            "expected": "three distinct CUDA devices",
+            "actual": [args.pipe_device, args.vae_device, args.metric_device],
+        }
+    return errors
+
+
+def load_and_validate_split_vae_runtime_receipt(
+    receipt_path: Path,
+    *,
+    expected_contract: dict,
+) -> dict:
+    """Validate a non-overwritable receipt emitted after a complete bootstrap run."""
+
+    receipt_path = receipt_path.resolve()
+    if not receipt_path.is_file():
+        raise RuntimeError(f"Split-VAE runtime receipt is missing: {receipt_path}")
+    receipt = json.loads(receipt_path.read_text())
+    if receipt.get("schema") != SPLIT_VAE_RUNTIME_RECEIPT_SCHEMA or receipt.get("passed") is not True:
+        raise RuntimeError("Split-VAE runtime receipt schema/status mismatch")
+    if receipt.get("contract") != expected_contract:
+        raise RuntimeError("Split-VAE runtime receipt contract differs from this run")
+
+    source = receipt.get("source")
+    if not isinstance(source, dict):
+        raise RuntimeError("Split-VAE runtime receipt has no source binding")
+    def source_path(key: str) -> Path:
+        raw = source.get(key)
+        if not isinstance(raw, str) or not raw:
+            raise RuntimeError(f"Split-VAE runtime receipt has no valid {key}")
+        path = Path(raw)
+        if not path.is_absolute():
+            raise RuntimeError(f"Split-VAE runtime receipt path is not absolute: {key}")
+        return path
+
+    metadata_path = source_path("metadata_path")
+    complete_path = source_path("complete_path")
+    video_path = source_path("video_path")
+    certificate_path = source_path("runtime_certificate_path")
+    required_files = (metadata_path, complete_path, video_path, certificate_path)
+    if any(not path.is_file() for path in required_files):
+        raise RuntimeError("Split-VAE runtime receipt source artifact is missing")
+    if source.get("metadata_sha256") != sha256_file(metadata_path):
+        raise RuntimeError("Split-VAE receipt source metadata SHA mismatch")
+    if source.get("complete_sha256") != sha256_file(complete_path):
+        raise RuntimeError("Split-VAE receipt source COMPLETE SHA mismatch")
+    if source.get("video_sha256") != sha256_file(video_path):
+        raise RuntimeError("Split-VAE receipt source video SHA mismatch")
+    if source.get("runtime_certificate_sha256") != sha256_file(certificate_path):
+        raise RuntimeError("Split-VAE receipt source certificate SHA mismatch")
+
+    source_metadata = json.loads(metadata_path.read_text())
+    if source_metadata.get("run_id") != source.get("run_id"):
+        raise RuntimeError("Split-VAE receipt source run_id mismatch")
+    if complete_path.read_text().strip() != source_metadata.get("run_id"):
+        raise RuntimeError("Split-VAE receipt source COMPLETE content mismatch")
+    if source_metadata.get("video") != str(video_path) or source_metadata.get("video_sha256") != source.get("video_sha256"):
+        raise RuntimeError("Split-VAE receipt source video metadata mismatch")
+    source_certificate = source_metadata.get("runtime_certification")
+    if not isinstance(source_certificate, dict):
+        raise RuntimeError("Split-VAE receipt source lacks runtime certification metadata")
+    if source_certificate.get("status") != "passed" or source_certificate.get("sha256") != source.get("runtime_certificate_sha256"):
+        raise RuntimeError("Split-VAE receipt source runtime certification mismatch")
+    if source_metadata.get("run_config") != source.get("run_config"):
+        raise RuntimeError("Split-VAE receipt source configuration binding mismatch")
+    if (
+        source_metadata.get("adapted_geco_model_content_manifest")
+        != expected_contract["model_content_manifest"]
+    ):
+        raise RuntimeError("Split-VAE receipt source model-content manifest mismatch")
+    for key in ("model", "vggt_model", "ufm_model"):
+        if source_metadata.get(key) != source.get(key):
+            raise RuntimeError(f"Split-VAE receipt source {key} binding mismatch")
+    source_certificate_payload = json.loads(certificate_path.read_text())
+    if (
+        source_certificate_payload.get("schema") != "wan_geco_runtime_certificate_v1"
+        or source_certificate_payload.get("status") != "passed"
+        or source_certificate_payload.get("specification_sha256")
+        != source_certificate.get("specification_sha256")
+    ):
+        raise RuntimeError("Split-VAE receipt source certificate content mismatch")
+    source_profile = source_metadata.get("generation", {})
+    profile_mismatch = {
+        key: {"expected": value, "actual": source_profile.get(key)}
+        for key, value in expected_contract["profile"].items()
+        if source_profile.get(key) != value
+    }
+    if profile_mismatch:
+        raise RuntimeError(f"Split-VAE receipt source profile mismatch: {profile_mismatch}")
+    if (
+        source_metadata.get("code_identity", {}).get("commit") != expected_contract["code_commit"]
+        or source_metadata.get("code_identity", {}).get("dirty") is not False
+        or source_metadata.get("runner_sha256") != expected_contract["runner_sha256"]
+        or source_metadata.get("pipeline_sha256") != expected_contract["pipeline_sha256"]
+        or source_metadata.get("model") != expected_contract["model_identities"]["generator"]
+        or source_metadata.get("vggt_model") != expected_contract["model_identities"]["vggt"]
+        or source_metadata.get("ufm_model") != expected_contract["model_identities"]["ufm"]
+    ):
+        raise RuntimeError("Split-VAE receipt source code/model binding mismatch")
+    source_devices = source_metadata.get("devices", {})
+    if any(
+        source_devices.get(key) != expected_contract["devices"].get(key)
+        for key in ("pipe", "vae", "metric", "cross_device_grad_via_cpu")
+    ):
+        raise RuntimeError("Split-VAE receipt source device-request binding mismatch")
+    source_geco = source_metadata.get("geco", {})
+    if any(
+        source_geco.get(key) != value
+        for key, value in expected_contract["geco"].items()
+    ):
+        raise RuntimeError("Split-VAE receipt source geometry-execution binding mismatch")
+    if (
+        source_certificate_payload.get("specification_sha256")
+        != expected_contract["runtime_certification_spec_sha256"]
+        or source_certificate_payload.get("scheduler_preflight", {}).get("sha256")
+        != expected_contract["scheduler_preflight_sha256"]
+    ):
+        raise RuntimeError("Split-VAE receipt source certificate-contract mismatch")
+    source_runtime = source_metadata.get("runtime", {})
+    for role, expected_device in expected_contract["runtime_devices"].items():
+        device_name = expected_contract["devices"][role]
+        try:
+            index = int(device_name.split(":", 1)[1])
+            source_device = source_runtime["devices"][index]
+        except (AttributeError, IndexError, KeyError, ValueError) as error:
+            raise RuntimeError(f"Split-VAE receipt source runtime lacks {role} device") from error
+        observed_device = {
+            "torch_version": source_runtime.get("torch"),
+            "cuda_version": source_runtime.get("cuda"),
+            "device_name": source_device.get("name"),
+            "device_capability": source_device.get("capability"),
+        }
+        if observed_device != expected_device:
+            raise RuntimeError(f"Split-VAE receipt source runtime mismatch for {role}")
+    return receipt
+
+
+def publish_split_vae_runtime_receipt(
+    destination: Path,
+    *,
+    contract: dict,
+    source_metadata: dict,
+    metadata_path: Path,
+    complete_path: Path,
+    video_path: Path,
+    certificate_path: Path,
+) -> Path:
+    """Publish exactly once, after the source video, metadata and COMPLETE are durable."""
+
+    if not complete_path.is_file() or complete_path.read_text().strip() != source_metadata["run_id"]:
+        raise RuntimeError("Refusing to publish split-VAE receipt before COMPLETE")
+    destination = destination.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "schema": SPLIT_VAE_RUNTIME_RECEIPT_SCHEMA,
+        "passed": True,
+        "contract": contract,
+        "source": {
+            "run_id": source_metadata["run_id"],
+            "metadata_path": str(metadata_path.resolve()),
+            "metadata_sha256": sha256_file(metadata_path),
+            "complete_path": str(complete_path.resolve()),
+            "complete_sha256": sha256_file(complete_path),
+            "video_path": str(video_path.resolve()),
+            "video_sha256": sha256_file(video_path),
+            "runtime_certificate_path": str(certificate_path.resolve()),
+            "runtime_certificate_sha256": sha256_file(certificate_path),
+            "run_config": source_metadata["run_config"],
+            "model": source_metadata["model"],
+            "vggt_model": source_metadata["vggt_model"],
+            "ufm_model": source_metadata["ufm_model"],
+        },
+    }
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(receipt, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError as error:
+            raise RuntimeError(f"Refusing to overwrite split-VAE runtime receipt: {destination}") from error
+        directory_fd = os.open(destination.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
 
 
 def main() -> None:
@@ -968,6 +1597,18 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--vggt-model", default="facebook/VGGT-1B")
     parser.add_argument("--ufm-model", default="infinity1096/UFM-Base")
+    parser.add_argument(
+        "--model-content-manifest",
+        type=Path,
+        help=(
+            "Required full content manifest for adapted-GeCo model roots; it is "
+            "validated before loading Wan, VGGT-Omega, or UFM."
+        ),
+    )
+    parser.add_argument(
+        "--expected-model-content-manifest-sha256",
+        help="Required SHA-256 of --model-content-manifest.",
+    )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--steps", type=int)
@@ -979,6 +1620,13 @@ def main() -> None:
     parser.add_argument("--ufm-scale", type=float, default=0.25)
     parser.add_argument("--decode-spatial-scale", type=float, default=1.0)
     parser.add_argument("--max-relative-delta", type=float, default=0.0)
+    parser.add_argument(
+        "--adapted-geco-schedule",
+        help=(
+            "Required pre-registered schedule ID for adapted-GeCo. The original "
+            "DDIM time-travel is intentionally not migrated to Wan flow matching."
+        ),
+    )
     parser.add_argument("--guidance-start-fraction", type=float, default=0.40)
     parser.add_argument("--guidance-end-fraction", type=float, default=0.84)
     parser.add_argument("--guidance-repeats", type=int, default=1)
@@ -1022,6 +1670,14 @@ def main() -> None:
     parser.add_argument("--transformer-block-checkpointing", action="store_true")
     parser.add_argument("--allow-split-vae", action="store_true")
     parser.add_argument("--split-vae-smoke-report", type=Path)
+    parser.add_argument(
+        "--emit-split-vae-smoke-report",
+        type=Path,
+        help=(
+            "One-time, non-overwriting split-VAE runtime receipt. It is permitted only "
+            "for the full-profile legacy-debug adapted-GeCo certification run."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -1034,20 +1690,44 @@ def main() -> None:
         parser.error("--runtime-certification requires --method adapted_geco")
     if args.runtime_certification and args.repo.resolve() != REPO_ROOT.resolve():
         parser.error("runtime-certification --repo must be the repository executing this runner")
-    if args.runtime_certification and not args.expected_runtime_certification_spec_sha256:
-        parser.error("runtime-certification requires --expected-runtime-certification-spec-sha256")
-    if args.runtime_certification and (
-        args.scheduler_preflight_receipt is None
-        or not args.expected_scheduler_preflight_sha256
+    needs_adapted_geco_contract = args.method == "adapted_geco"
+    if needs_adapted_geco_contract and not args.adapted_geco_schedule:
+        parser.error("adapted-GeCo requires --adapted-geco-schedule")
+    if needs_adapted_geco_contract and (
+        args.guidance_start_fraction != 0.40
+        or args.guidance_end_fraction != 0.84
+        or args.guidance_repeats != 1
+        or args.guidance_lr != 0.1
     ):
         parser.error(
-            "runtime-certification requires --scheduler-preflight-receipt and "
+            "adapted-GeCo schedule hyperparameters are registered in the certificate spec; "
+            "use --adapted-geco-schedule instead of --guidance-* overrides"
+        )
+    if needs_adapted_geco_contract and not args.expected_runtime_certification_spec_sha256:
+        parser.error("adapted-GeCo requires --expected-runtime-certification-spec-sha256")
+    if needs_adapted_geco_contract and not args.expected_scheduler_preflight_sha256:
+        parser.error("adapted-GeCo requires --expected-scheduler-preflight-sha256")
+    if needs_adapted_geco_contract and args.scheduler_preflight_receipt is None:
+        parser.error(
+            "adapted-GeCo requires --scheduler-preflight-receipt and "
             "--expected-scheduler-preflight-sha256"
         )
+    if needs_adapted_geco_contract and args.model_content_manifest is None:
+        parser.error("adapted-GeCo requires --model-content-manifest")
+    if needs_adapted_geco_contract and not args.expected_model_content_manifest_sha256:
+        parser.error("adapted-GeCo requires --expected-model-content-manifest-sha256")
+    is_split_vae_bootstrap = args.emit_split_vae_smoke_report is not None
+    if is_split_vae_bootstrap:
+        bootstrap_errors = bootstrap_split_vae_contract_errors(args)
+        if bootstrap_errors:
+            parser.error(
+                "--emit-split-vae-smoke-report has a fail-closed contract: "
+                + json.dumps(bootstrap_errors, sort_keys=True)
+            )
     runtime_certification_path = None
     runtime_certification_spec = None
     runtime_certification_spec_sha256 = None
-    if args.runtime_certification:
+    if needs_adapted_geco_contract:
         (
             runtime_certification_path,
             runtime_certification_spec,
@@ -1057,6 +1737,25 @@ def main() -> None:
             parser.error("runtime-certification specification SHA mismatch")
         if args.steps != runtime_certification_spec["scheduler_preflight"]["steps"]:
             parser.error("runtime-certification requires the frozen scheduler-preflight step count")
+        if args.adapted_geco_schedule not in runtime_certification_spec["adapted_geco"]["schedule_candidates"]:
+            parser.error("unknown pre-registered adapted-GeCo schedule")
+
+    adapted_geco_model_manifest = None
+    if needs_adapted_geco_contract:
+        adapted_geco_model_manifest = load_verified_model_content_manifest(
+            args.model_content_manifest,
+            expected_sha256=args.expected_model_content_manifest_sha256,
+            requested_models={
+                "wan": args.model,
+                "vggt_omega": args.vggt_model,
+                "ufm": args.ufm_model,
+            },
+        )
+        # Load only canonical roots validated above, never a caller-supplied
+        # alias that could change between validation and from_pretrained().
+        args.model = adapted_geco_model_manifest["verified_roots"]["wan"]
+        args.vggt_model = adapted_geco_model_manifest["verified_roots"]["vggt_omega"]
+        args.ufm_model = adapted_geco_model_manifest["verified_roots"]["ufm"]
 
     is_frozen_protocol = args.protocol_mode == "frozen"
     if is_frozen_protocol and args.method in {"adapted_geco", "online_geometry_selection"}:
@@ -1237,36 +1936,53 @@ def main() -> None:
             "online geometry selection currently requires VAE and transformer on one device"
         )
     if torch.device(requested_vae_device) != torch.device(args.pipe_device):
-        if not args.allow_split_vae or args.split_vae_smoke_report is None:
+        if not args.allow_split_vae or (
+            args.split_vae_smoke_report is None and not is_split_vae_bootstrap
+        ):
             parser.error(
-                "Split VAE requires --allow-split-vae and --split-vae-smoke-report"
+                "Split VAE requires --allow-split-vae and an existing runtime receipt"
             )
-        split_vae_report = json.loads(args.split_vae_smoke_report.read_text())
-        expected_report = {
-            "passed": True,
-            "backbone": args.backbone,
-            "pipeline_sha256": pipeline_sha256,
-            "pipe_device": args.pipe_device,
-            "vae_device": requested_vae_device,
-            "metric_device": args.metric_device,
-            "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
-        }
-        mismatches = {
-            key: (split_vae_report.get(key), expected)
-            for key, expected in expected_report.items()
-            if split_vae_report.get(key) != expected
-        }
-        if mismatches:
-            raise RuntimeError(f"Split-VAE smoke report mismatch: {mismatches}")
 
-    fixed_frames = mapped_fixed_frames(args.frames)
-    guidance_step, guidance_lr = adapted_geco_schedule(
-        args.steps,
-        args.guidance_start_fraction,
-        args.guidance_end_fraction,
-        args.guidance_repeats,
-        args.guidance_lr,
+    if needs_adapted_geco_contract:
+        fixed_frames, guidance_step, guidance_lr, adapted_geco_schedule_meta = (
+            resolve_adapted_geco_schedule(
+                runtime_certification_spec,
+                args.adapted_geco_schedule,
+            )
+        )
+    else:
+        fixed_frames = mapped_fixed_frames(args.frames)
+        guidance_step = [0] * args.steps
+        guidance_lr = [0.0] * args.steps
+        adapted_geco_schedule_meta = None
+    if needs_adapted_geco_contract:
+        validate_runtime_certification_geco_schedule(
+            args,
+            runtime_certification_spec,
+            schedule_id=args.adapted_geco_schedule,
+            fixed_frames=fixed_frames,
+            guidance_step=guidance_step,
+            guidance_lr=guidance_lr,
+        )
+    expected_split_vae_contract = (
+        split_vae_contract(
+            args,
+            code_identity=code_identity,
+            runner_sha256=runner_sha256,
+            pipeline_sha256=pipeline_sha256,
+            model_content_manifest=adapted_geco_model_manifest,
+        )
+        if needs_adapted_geco_contract
+        else None
     )
+    if (
+        torch.device(requested_vae_device) != torch.device(args.pipe_device)
+        and not is_split_vae_bootstrap
+    ):
+        split_vae_report = load_and_validate_split_vae_runtime_receipt(
+            args.split_vae_smoke_report,
+            expected_contract=expected_split_vae_contract,
+        )
     negative_prompt = (
         WAN_NEGATIVE
         if args.backbone == "wan" and args.wan_negative_prompt_mode == "frozen"
@@ -1286,7 +2002,8 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
-        "model_content_verified": bool(is_frozen_protocol),
+        "model_content_verified": bool(is_frozen_protocol or adapted_geco_model_manifest),
+        "adapted_geco_model_content_manifest": adapted_geco_model_manifest,
         "experiment_lock_sha256": experiment_lock_sha256,
         "implementation_sha256": implementation_sha256,
         "runner_sha256": runner_sha256,
@@ -1315,6 +2032,7 @@ def main() -> None:
         "guidance_scale": args.guidance_scale,
         "negative_prompt": negative_prompt,
         "fixed_frames": fixed_frames,
+        "adapted_geco_schedule": adapted_geco_schedule_meta,
         "guidance_step": guidance_step if args.method == "adapted_geco" else None,
         "guidance_lr": guidance_lr if args.method == "adapted_geco" else None,
         "ufm_scale": args.ufm_scale,
@@ -1326,9 +2044,15 @@ def main() -> None:
         "runtime_certification": args.runtime_certification if args.method == "adapted_geco" else None,
         "runtime_certification_spec_sha256": runtime_certification_spec_sha256,
         "scheduler_preflight_sha256": (
-            args.expected_scheduler_preflight_sha256 if args.runtime_certification else None
+            args.expected_scheduler_preflight_sha256 if args.method == "adapted_geco" else None
+        ),
+        "model_content_manifest_sha256": (
+            args.expected_model_content_manifest_sha256
+            if args.method == "adapted_geco"
+            else None
         ),
         "transformer_block_checkpointing": args.transformer_block_checkpointing,
+        "split_vae_bootstrap": is_split_vae_bootstrap,
         "split_vae_smoke_report_sha256": (
             sha256_file(args.split_vae_smoke_report)
             if args.split_vae_smoke_report is not None
@@ -1377,6 +2101,10 @@ def main() -> None:
                 stored,
                 output_dir=output_dir,
                 specification_sha256=runtime_certification_spec_sha256,
+                adapted_geco_schedule=adapted_geco_schedule_meta,
+                fixed_frames=fixed_frames,
+                guidance_step=guidance_step,
+                guidance_lr=guidance_lr,
             )
         probe_video(
             video_path,
@@ -1385,15 +2113,30 @@ def main() -> None:
             width=args.width,
             fps=args.fps,
         )
+        if is_split_vae_bootstrap:
+            certificate_path = output_dir / "runtime_certification.json"
+            publish_split_vae_runtime_receipt(
+                args.emit_split_vae_smoke_report,
+                contract=expected_split_vae_contract,
+                source_metadata=stored,
+                metadata_path=metadata_path,
+                complete_path=complete_path,
+                video_path=video_path,
+                certificate_path=certificate_path,
+            )
         print(json.dumps({"status": "already_complete", "video": str(video_path)}, indent=2))
         return
     run_lock = GenerationRunLock(output_dir)
     atexit.register(run_lock.release)
 
-    pipe, vae_device = build_pipeline(args)
+    pipe, vae_device, transformer_block_checkpointing_actual = build_pipeline(args)
+    if is_split_vae_bootstrap and not transformer_block_checkpointing_actual:
+        raise RuntimeError("Split-VAE bootstrap requires active transformer checkpointing")
+    if split_vae_report is not None and not transformer_block_checkpointing_actual:
+        raise RuntimeError("Split-VAE receipt requires active transformer checkpointing")
     runtime_scheduler_identity = None
     runtime_scheduler_preflight = None
-    if args.runtime_certification:
+    if needs_adapted_geco_contract:
         runtime_scheduler_identity = validate_runtime_certification_scheduler(
             pipe.scheduler, runtime_certification_spec, repo=args.repo.resolve()
         )
@@ -1439,11 +2182,14 @@ def main() -> None:
 
     if args.method == "adapted_geco":
         if (
-            torch.device(args.metric_device) != torch.device(args.pipe_device)
+            (
+                torch.device(args.metric_device) != torch.device(args.pipe_device)
+                or torch.device(requested_vae_device) != torch.device(args.pipe_device)
+            )
             and not args.cross_device_grad_via_cpu
         ):
             raise ValueError(
-                "Cross-device metric guidance requires --cross-device-grad-via-cpu"
+                "Cross-device adapted-GeCo requires --cross-device-grad-via-cpu"
             )
         metric = load_metric(args)
         runtime_certification_events: list[dict] | None = (
@@ -1485,6 +2231,11 @@ def main() -> None:
             output = pipe(**common)
     else:
         output = pipe(**common)
+    scheduler_trace = (
+        scheduler_sampling_trace(pipe.scheduler) if args.method == "adapted_geco" else None
+    )
+    if needs_adapted_geco_contract:
+        validate_scheduler_sampling_trace(scheduler_trace, runtime_scheduler_preflight)
     runtime_certificate = None
     certificate_path = None
     if args.runtime_certification:
@@ -1501,6 +2252,9 @@ def main() -> None:
             scheduler_identity=runtime_scheduler_identity,
             scheduler_preflight=runtime_scheduler_preflight,
             specification_sha256=runtime_certification_spec_sha256,
+            scheduler_sampling_trace=scheduler_trace,
+            adapted_geco_schedule=adapted_geco_schedule_meta,
+            guidance_lr=guidance_lr,
         )
         certificate_path = output_dir / "runtime_certification.json"
         temporary_certificate = output_dir / f".runtime_certificate.{uuid.uuid4().hex}.tmp.json"
@@ -1553,7 +2307,8 @@ def main() -> None:
         "model": model_identity(args.model),
         "locked_model_identity": locked_model_identity,
         "model_lock_sha256": model_lock_sha256,
-        "model_content_verified": bool(is_frozen_protocol),
+        "model_content_verified": bool(is_frozen_protocol or adapted_geco_model_manifest),
+        "adapted_geco_model_content_manifest": adapted_geco_model_manifest,
         "experiment_lock_sha256": experiment_lock_sha256,
         "implementation_sha256": implementation_sha256,
         "candidate_spec_sha256": candidate_spec_sha256,
@@ -1597,16 +2352,18 @@ def main() -> None:
             "grad_through_vggt": False,
             "pair_mode": "adjacent",
             "time_travel": None,
+            "schedule": adapted_geco_schedule_meta,
+            "scheduler_sampling_trace": scheduler_trace,
+            "scheduler_identity": runtime_scheduler_identity,
+            "scheduler_preflight": runtime_scheduler_preflight,
             "schedule_source": (
-                "Adapted GeCo schedule for a flow-matching backbone; the latent "
-                "gradient retains the transformer Jacobian while frozen VGGT geometry "
-                "is re-estimated with stop-gradient at every update."
+                "Pre-registered GeCo adaptation for Wan flow matching; frozen VGGT "
+                "geometry is re-estimated with stop-gradient at every update. The "
+                "original DDIM time-travel/re-noising is intentionally not migrated."
             ),
-            "guidance_start_fraction": args.guidance_start_fraction,
-            "guidance_end_fraction": args.guidance_end_fraction,
-            "guidance_repeats": args.guidance_repeats,
             "vggt_strategy_argument": "once",
             "vggt_is_cached_across_updates": False,
+            "transformer_block_checkpointing_actual": transformer_block_checkpointing_actual,
         },
         "devices": {
             "pipe": args.pipe_device,
@@ -1624,6 +2381,8 @@ def main() -> None:
                 if args.split_vae_smoke_report is not None
                 else None
             ),
+            "split_vae_bootstrap": is_split_vae_bootstrap,
+            "transformer_block_checkpointing_actual": transformer_block_checkpointing_actual,
         },
         "runtime": runtime_meta(),
         "runtime_certification": (
@@ -1652,6 +2411,18 @@ def main() -> None:
     temporary_complete = output_dir / f".complete.{uuid.uuid4().hex}.tmp"
     temporary_complete.write_text(f"{run_id}\n")
     temporary_complete.replace(complete_path)
+    if is_split_vae_bootstrap:
+        if certificate_path is None:
+            raise RuntimeError("Split-VAE bootstrap cannot publish without runtime certificate")
+        publish_split_vae_runtime_receipt(
+            args.emit_split_vae_smoke_report,
+            contract=expected_split_vae_contract,
+            source_metadata=metadata,
+            metadata_path=metadata_path,
+            complete_path=complete_path,
+            video_path=video_path,
+            certificate_path=certificate_path,
+        )
     run_lock.release()
     print(json.dumps({"video": str(video_path), "metadata": str(metadata_path)}, indent=2))
 

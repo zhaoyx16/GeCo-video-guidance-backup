@@ -17,6 +17,38 @@
     "steps": 50,
     "max_abs_error": 1e-6
   },
+  "adapted_geco": {
+    "backbone": "wan",
+    "frames": 121,
+    "fixed_frame_indices": [28, 58, 88, 118],
+    "ufm_scale": 0.25,
+    "decode_spatial_scale": 1.0,
+    "max_relative_delta": 0.0,
+    "pair_mode": "adjacent",
+    "vggt_strategy": "once",
+    "time_travel": null,
+    "time_travel_note": "Not migrated: original GeCo re-noising is DDIM-specific and has no validated flow-matching equivalent.",
+    "schedule_candidates": {
+      "conservative_late_22": {
+        "guidance_step": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        "guidance_learning_rate": 0.1,
+        "updates": 22,
+        "description": "Previous conservative Wan setting; late, single updates."
+      },
+      "medium_shape_64": {
+        "guidance_step": [0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        "guidance_learning_rate": 0.1,
+        "updates": 64,
+        "description": "Reduced-repeat version of the original early-to-late 3-to-2 schedule shape."
+      },
+      "geco_repeat_shape_111": {
+        "guidance_step": [0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        "guidance_learning_rate": 3.0,
+        "updates": 111,
+        "description": "Original GeCo repeat schedule and learning rate, without DDIM-specific time-travel."
+      }
+    }
+  },
   "flow_match_helper_source_sha256": "ebd5573f7f925534632694c37d647f6d2a96f41b20e50e3c7928a5f90d411cea",
   "thresholds": {
     "prediction_max_abs": 0.001,
