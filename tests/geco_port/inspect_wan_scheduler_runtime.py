@@ -84,7 +84,7 @@ def main() -> None:
         allow_split_vae=False,
         transformer_block_checkpointing=False,
     )
-    pipe, vae_device = build_pipeline(pipeline_args)
+    pipe, vae_device, _ = build_pipeline(pipeline_args)
     scheduler = pipe.scheduler
     scheduler.set_timesteps(50, device=args.device)
     if type(scheduler).__name__ != "UniPCMultistepScheduler":
