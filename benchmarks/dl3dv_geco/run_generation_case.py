@@ -2346,6 +2346,7 @@ def main() -> None:
             "ufm_scale": args.ufm_scale,
             "decode_spatial_scale": args.decode_spatial_scale,
             "max_relative_delta": args.max_relative_delta,
+            "loss": "residual_motion",
             "debug_guidance_consistency": (
                 args.debug_guidance_consistency if args.method == "adapted_geco" else None
             ),
@@ -2362,6 +2363,7 @@ def main() -> None:
                 "original DDIM time-travel/re-noising is intentionally not migrated."
             ),
             "vggt_strategy_argument": "once",
+            "vggt_strategy": "once",
             "vggt_is_cached_across_updates": False,
             "transformer_block_checkpointing_actual": transformer_block_checkpointing_actual,
         },
