@@ -406,6 +406,7 @@ def build_online_geometry_selector(
         config.branch,
         config.selection,
         scorer,
+        forced_candidate_id=args.online_force_candidate_id,
     )
     return controller, {
         "config": config.resolved_dict(),
@@ -413,6 +414,7 @@ def build_online_geometry_selector(
         "config_path": str(config_path.resolve()),
         "config_sha256": sha256_file(config_path),
         "geometry_backbone": geometry_identity,
+        "audit_forced_candidate_id": args.online_force_candidate_id,
     }
 
 
@@ -511,6 +513,13 @@ def main() -> None:
     parser.add_argument("--experiment-lock", type=Path)
     parser.add_argument("--candidate-spec", type=Path)
     parser.add_argument("--online-selection-config", type=Path)
+    parser.add_argument(
+        "--online-force-candidate-id",
+        help=(
+            "Legacy-debug audit only: force one deterministic online branch to continue "
+            "to the final video. Repeat once per candidate and verify branch hashes across runs."
+        ),
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
     group.add_argument("--case-index", type=int)
@@ -582,6 +591,13 @@ def main() -> None:
         online_geometry_identity = online_adapter.artifact_identity()
     elif args.online_selection_config is not None:
         parser.error("--online-selection-config requires --method online_geometry_selection")
+    if args.online_force_candidate_id is not None:
+        if args.method != "online_geometry_selection":
+            parser.error(
+                "--online-force-candidate-id requires --method online_geometry_selection"
+            )
+        if args.protocol_mode != "legacy-debug":
+            parser.error("forced online rollout is audit-only and forbidden in frozen mode")
     if is_frozen_protocol:
         if args.expected_split is None:
             parser.error("frozen protocol requires --expected-split")
@@ -791,6 +807,7 @@ def main() -> None:
                 "config": online_config.resolved_dict(),
                 "config_hash": online_config.config_hash,
                 "geometry_backbone": online_geometry_identity,
+                "audit_forced_candidate_id": args.online_force_candidate_id,
             }
             if online_config is not None
             else None

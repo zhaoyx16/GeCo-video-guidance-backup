@@ -217,13 +217,14 @@ class OnlineSelectionOutcome:
     candidate_perturbation_rms: dict[str, float]
     candidates: tuple[OnlineCandidate, ...]
     geometry_artifacts: tuple[dict[str, Any], ...]
+    policy_selection: SelectionResult | None = None
 
     def metadata(self) -> dict[str, Any]:
         # Keep the complete geometry reports, not only their scalar scores.
         # The temporary decoded frames are normally deleted, therefore the
         # serialized reports and graph diagnostics are the decision evidence
         # required to reproduce or audit a selection event afterwards.
-        return {
+        payload = {
             "step_index": self.step_index,
             "timestep": self.timestep,
             "parent_latent_sha256": self.parent_latent_sha256,
@@ -265,6 +266,13 @@ class OnlineSelectionOutcome:
                 for candidate in self.selection.candidates
             },
         }
+        if self.policy_selection is not None:
+            payload["audit_forced_rollout"] = {
+                "forced_candidate_id": self.selection.selected_candidate_id,
+                "policy_selected_candidate_id": self.policy_selection.selected_candidate_id,
+                "policy_decision": self.policy_selection.decision,
+            }
+        return payload
 
 
 def _candidate_seed(random_seed: int, step_index: int, candidate_index: int) -> int:
@@ -295,12 +303,27 @@ class OnlineGeometrySelectionController:
         branch_config: OnlineBranchConfig,
         selection_config: SelectionConfig,
         report_fn: GeometryReportFn,
+        *,
+        forced_candidate_id: str | None = None,
     ) -> None:
         branch_config.validate()
         selection_config.validate()
         self.branch_config = branch_config
         self.selection_config = selection_config
         self.report_fn = report_fn
+        candidate_ids = {"incumbent"} | {
+            f"branch_{index:02d}" for index in range(1, branch_config.candidate_count)
+        }
+        if forced_candidate_id is not None:
+            if forced_candidate_id not in candidate_ids:
+                raise ValueError(
+                    "forced_candidate_id must name one deterministic branch candidate"
+                )
+            if len(branch_config.selection_steps) != 1:
+                raise ValueError(
+                    "audit forced rollout requires exactly one selection checkpoint"
+                )
+        self.forced_candidate_id = forced_candidate_id
         self.events: list[dict[str, Any]] = []
 
     def is_active(self, step_index: int) -> bool:
@@ -384,7 +407,22 @@ class OnlineGeometrySelectionController:
             )
             for index, (candidate, report) in enumerate(zip(candidates, reports, strict=True))
         ]
-        selection = select_candidate(scored, self.selection_config)
+        policy_selection = select_candidate(scored, self.selection_config)
+        selection = policy_selection
+        policy_selection_evidence = None
+        if self.forced_candidate_id is not None:
+            selection = SelectionResult(
+                selected_candidate_id=self.forced_candidate_id,
+                incumbent_candidate_id=policy_selection.incumbent_candidate_id,
+                decision="audit_forced_rollout",
+                score_improvement=None,
+                motion_ratio=None,
+                common_local_edges=policy_selection.common_local_edges,
+                common_long_range_edges=policy_selection.common_long_range_edges,
+                comparable_scores=policy_selection.comparable_scores,
+                candidates=policy_selection.candidates,
+            )
+            policy_selection_evidence = policy_selection
         selected = next(
             candidate
             for candidate in candidates
@@ -406,6 +444,7 @@ class OnlineGeometrySelectionController:
             },
             candidates=candidates,
             geometry_artifacts=tuple(artifacts),
+            policy_selection=policy_selection_evidence,
         )
         event = outcome.metadata()
         # The full frozen thresholds are needed to interpret an abstention or

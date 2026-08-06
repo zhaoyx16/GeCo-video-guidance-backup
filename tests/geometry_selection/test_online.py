@@ -134,6 +134,86 @@ def test_controller_branches_deterministically_and_selects_geometry_winner() -> 
     json.dumps(outcome.metadata(), allow_nan=False)
 
 
+def test_audit_forced_rollout_preserves_policy_evidence_but_forces_handoff() -> None:
+    context, _ = _context()
+    controller = OnlineGeometrySelectionController(
+        OnlineBranchConfig((7,), candidate_count=3, perturbation_scale=0.02, random_seed=13),
+        SelectionConfig(min_relative_improvement=0.01),
+        lambda candidates, _: [
+            _report(0.30, 1.0),
+            _report(0.10, 1.0),
+            _report(0.20, 1.0),
+        ],
+        forced_candidate_id="branch_02",
+    )
+
+    outcome = controller(context)
+    event = controller.events[0]
+
+    assert outcome.selection.selected_candidate_id == "branch_02"
+    assert outcome.selection.decision == "audit_forced_rollout"
+    assert outcome.policy_selection is not None
+    assert outcome.policy_selection.selected_candidate_id == "branch_01"
+    assert torch.equal(outcome.selected_latents, outcome.candidates[2].latents)
+    assert event["audit_forced_rollout"] == {
+        "forced_candidate_id": "branch_02",
+        "policy_selected_candidate_id": "branch_01",
+        "policy_decision": "select_geometry_best",
+    }
+    assert event["candidate_reports"]["branch_01"]["total_score"] == 0.10
+    assert event["candidate_reports"]["branch_02"]["total_score"] == 0.20
+    json.dumps(event, allow_nan=False)
+
+
+def test_audit_forced_rollout_rejects_unknown_candidate_or_multiple_checkpoints() -> None:
+    with pytest.raises(ValueError, match="deterministic branch candidate"):
+        OnlineGeometrySelectionController(
+            OnlineBranchConfig((7,), candidate_count=3),
+            SelectionConfig(),
+            lambda candidates, _: [_report(0.2, 1.0) for _ in candidates],
+            forced_candidate_id="branch_03",
+        )
+    with pytest.raises(ValueError, match="exactly one selection checkpoint"):
+        OnlineGeometrySelectionController(
+            OnlineBranchConfig((7, 8), candidate_count=3),
+            SelectionConfig(),
+            lambda candidates, _: [_report(0.2, 1.0) for _ in candidates],
+            forced_candidate_id="incumbent",
+        )
+
+
+def test_independent_forced_rollouts_reconstruct_identical_branch_set() -> None:
+    snapshots = []
+    candidate_ids = ("incumbent", "branch_01", "branch_02", "branch_03")
+    for forced_candidate_id in candidate_ids:
+        context, _ = _context()
+        controller = OnlineGeometrySelectionController(
+            OnlineBranchConfig(
+                (7,), candidate_count=4, perturbation_scale=0.02, random_seed=19
+            ),
+            SelectionConfig(min_relative_improvement=0.01),
+            lambda candidates, _: [
+                _report(score, 1.0) for score in (0.30, 0.10, 0.20, 0.25)
+            ],
+            forced_candidate_id=forced_candidate_id,
+        )
+        outcome = controller(context)
+        assert outcome.selection.selected_candidate_id == forced_candidate_id
+        snapshots.append(
+            tuple(
+                (
+                    candidate.candidate_id,
+                    candidate.latent_sha256,
+                    candidate.x0_sha256,
+                    candidate.noise_sha256,
+                )
+                for candidate in outcome.candidates
+            )
+        )
+
+    assert all(snapshot == snapshots[0] for snapshot in snapshots[1:])
+
+
 def test_selection_event_preserves_full_geometry_evidence_and_thresholds() -> None:
     context, _ = _context()
     evidence = {
