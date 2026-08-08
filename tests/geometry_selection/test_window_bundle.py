@@ -11,6 +11,7 @@ from geometry_selection.window_bundle import (
     WINDOW_EXTRACTION_MODE,
     independent_run_id,
     make_window_bundle,
+    validate_geometry_extraction_config,
     validate_global_prediction_bundle,
     validate_global_prediction_keyframes,
     validate_window_bundle,
@@ -111,6 +112,22 @@ def test_window_bundle_binds_schedule_and_independent_runs() -> None:
     tampered["windows"][0]["frame_indices"][0] = 1
     with pytest.raises(ValueError, match="sorted and unique|configured ordered schedule"):
         validate_window_bundle(tampered)
+
+
+def test_local_only_extraction_allows_zero_loop_windows() -> None:
+    config = {**_config(), "max_loop_windows": 0}
+    validate_geometry_extraction_config(config)
+    first = _record("local-00", "local", (0, 1, 2, 3), "1")[0]
+    second = _record("local-01", "local", (2, 3, 4, 5), "2")[0]
+    bundle = make_window_bundle(
+        video_sha256="c" * 64,
+        global_geometry_cache_key="d" * 64,
+        global_keyframe_indices=range(6),
+        extraction_config=config,
+        window_records=(first, second),
+    )
+    validate_window_bundle(bundle, expected_video_sha256="c" * 64)
+    assert [window["kind"] for window in bundle["windows"]] == ["local", "local"]
 
 
 @pytest.mark.parametrize("tamper", ["order", "identifier", "kind", "frames"])

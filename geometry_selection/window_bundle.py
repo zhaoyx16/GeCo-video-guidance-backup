@@ -75,8 +75,6 @@ def validate_geometry_extraction_config(config: dict[str, Any]) -> None:
         raise ValueError("loop_context must be at least two")
     if config["min_loop_node_gap"] < 2:
         raise ValueError("min_loop_node_gap must be at least two")
-    if config["max_loop_windows"] < 1:
-        raise ValueError("at least one loop window is required")
 
 
 def independent_run_id(
@@ -275,7 +273,7 @@ def validate_window_bundle(
         raise ValueError("window schedule digest mismatch")
     if local_coverage != set(keyframes):
         raise ValueError("local windows must cover every global keyframe")
-    if loop_count < 1:
+    if bundle["geometry_extraction"]["max_loop_windows"] > 0 and loop_count < 1:
         raise ValueError("window bundle must contain at least one loop window")
 
 
