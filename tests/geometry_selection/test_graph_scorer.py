@@ -87,6 +87,67 @@ def test_graph_scorer_prefers_consistent_independent_windows() -> None:
     assert consistent.score_kind == "pose_graph"
 
 
+def test_heldout_graph_score_does_not_fit_its_loop_evidence() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    config = replace(_config(), use_heldout_residuals=True)
+    consistent = score_window_pose_graph(
+        global_prediction,
+        _windows(0.0),
+        graph_config=config,
+    )
+    inconsistent = score_window_pose_graph(
+        global_prediction,
+        _windows(0.20),
+        graph_config=config,
+    )
+
+    assert consistent.status == inconsistent.status == "ok_pose_graph_heldout"
+    assert consistent.total_score < inconsistent.total_score
+    assert consistent.graph_diagnostics["score_evidence_mode"] == "heldout"
+    assert consistent.graph_diagnostics["heldout_loop_edge_count"] == 1
+    assert consistent.graph_diagnostics["optimizer"]["loop_switches"] == ()
+
+
+def test_heldout_graph_score_detects_overlapping_local_disagreement() -> None:
+    global_prediction = _prediction((0, 1, 2, 3, 4, 5))
+    consistent_windows = _windows(0.0)
+    inconsistent_windows = (
+        consistent_windows[0],
+        IndependentWindow(
+            window_id="local-b",
+            kind="local",
+            prediction=_prediction((2, 3, 4, 5), scale=2.0, loop_error=0.20),
+            independent_run_id="run-local-b-heldout-error",
+        ),
+        consistent_windows[2],
+    )
+    config = GraphScoreConfig(
+        window=WindowGraphConfig(
+            use_loop_edges=False,
+            require_loop_edges=False,
+            min_depth_scale_pixels=2,
+            depth_sample_stride=2,
+        ),
+        use_heldout_residuals=True,
+        heldout_loop_weight=0.0,
+        scale_residual_weight=0.0,
+    )
+    consistent = score_window_pose_graph(
+        global_prediction,
+        consistent_windows,
+        graph_config=config,
+    )
+    inconsistent = score_window_pose_graph(
+        global_prediction,
+        inconsistent_windows,
+        graph_config=config,
+    )
+
+    assert consistent.status == inconsistent.status == "ok_pose_graph_heldout"
+    assert consistent.graph_diagnostics["heldout_local_edge_count"] == 1
+    assert consistent.total_score < inconsistent.total_score
+
+
 def test_local_only_graph_score_is_independent_of_loop_prediction() -> None:
     global_prediction = _prediction((0, 1, 2, 3, 4, 5))
     config = GraphScoreConfig(
