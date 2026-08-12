@@ -59,6 +59,28 @@ def _source_tree_sha256(source_root: Path) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _load_checkpoint_state(checkpoint: Path):
+    """Load a tensor-only VGGT state dictionary according to its file format."""
+    import torch
+
+    suffix = checkpoint.suffix.lower()
+    if suffix == ".safetensors":
+        from safetensors.torch import load_file
+
+        state = load_file(str(checkpoint), device="cpu")
+    elif suffix in {".pt", ".pth", ".bin"}:
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    else:
+        raise ValueError(f"unsupported VGGT-Omega checkpoint format: {suffix!r}")
+    if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
+        state = state["model"]
+    if not isinstance(state, dict) or not state:
+        raise TypeError(f"unexpected VGGT-Omega checkpoint payload: {type(state)!r}")
+    if not all(isinstance(key, str) and torch.is_tensor(value) for key, value in state.items()):
+        raise TypeError("VGGT-Omega checkpoint must be a non-empty string-to-tensor mapping")
+    return state
+
+
 def _homogeneous_world_to_camera(extrinsics: np.ndarray) -> np.ndarray:
     extrinsics = np.asarray(extrinsics)
     if extrinsics.ndim != 3 or extrinsics.shape[-2:] not in ((3, 4), (4, 4)):
@@ -213,11 +235,7 @@ class VGGTOmegaAdapter:
 
         VGGTOmega, _, _ = self._import_api()
         model = VGGTOmega().eval()
-        state = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
-        if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
-            state = state["model"]
-        if not isinstance(state, dict):
-            raise TypeError(f"unexpected VGGT-Omega checkpoint payload: {type(state)!r}")
+        state = _load_checkpoint_state(self.checkpoint)
         incompatible = model.load_state_dict(state, strict=True)
         if incompatible.missing_keys or incompatible.unexpected_keys:
             raise RuntimeError(f"checkpoint incompatibility: {incompatible}")
