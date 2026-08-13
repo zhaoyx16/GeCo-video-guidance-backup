@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from geometry_selection.model_lock import FROZEN_MODEL_MARKER
+from geometry_selection.model_lock import FROZEN_MODEL_MARKER, model_directory_identity
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "freeze_model_snapshot.py"
@@ -26,6 +26,7 @@ def test_freeze_snapshot_dereferences_links_and_atomically_publishes(tmp_path: P
     (source / "config.json").write_text("{}")
     (source / "model.safetensors").symlink_to(external)
     target = tmp_path / "published" / "model"
+    source_identity = model_directory_identity(source, hash_weights=True)
 
     assert MODULE.freeze_snapshot(source, target) == target
     assert target.is_dir() and not target.is_symlink()
@@ -36,6 +37,7 @@ def test_freeze_snapshot_dereferences_links_and_atomically_publishes(tmp_path: P
     for path in [target, *target.rglob("*")]:
         assert not path.is_symlink()
         assert path.stat().st_mode & 0o222 == 0
+    assert model_directory_identity(target, hash_weights=True) == source_identity
 
     with pytest.raises(FileExistsError, match="refusing to replace"):
         MODULE.freeze_snapshot(source, target)

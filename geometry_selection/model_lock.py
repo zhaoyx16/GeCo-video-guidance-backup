@@ -34,8 +34,18 @@ def model_directory_identity(path: Path, *, hash_weights: bool) -> dict[str, Any
     path = path.resolve()
     if not path.is_dir():
         raise FileNotFoundError(f"formal model must be a local pinned directory: {path}")
+    # The fixed root marker records how the snapshot was published; it is not
+    # model content. Keeping it outside the content identity lets one lock bind
+    # the source content and its frozen publication. Its exact schema and the
+    # tree's immutability are enforced separately by
+    # validate_frozen_model_snapshot().
     regular_files = sorted(
-        (item for item in path.rglob("*") if item.is_file()),
+        (
+            item
+            for item in path.rglob("*")
+            if item.is_file()
+            and item.relative_to(path).as_posix() != FROZEN_MODEL_MARKER
+        ),
         key=lambda item: item.relative_to(path).as_posix(),
     )
     json_files = [
