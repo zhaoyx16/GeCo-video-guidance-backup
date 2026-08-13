@@ -90,7 +90,7 @@ FORBIDDEN_PROMPT_PHRASES = (
     "slow camera motion",
 )
 PROMPT_POLICY_VERSION = "gt-large-camera-motion-v1"
-FORMAL_SPLIT_COUNTS = {"debug": 3, "validation": 100, "test": 100}
+FORMAL_SPLIT_COUNTS = {"debug": 3, "validation": 100, "test": 100, "dev": 100}
 FORBIDDEN_DESCRIPTION_TERMS = (
     "camera",
     " video",
@@ -177,7 +177,7 @@ def load_frozen_assignments(
     selected_splits: set[str],
     expected_counts: dict[str, int] | None = None,
 ) -> list[SplitAssignment]:
-    valid_splits = {"debug", "validation", "test"}
+    valid_splits = {"debug", "validation", "test", "dev"}
     if not selected_splits or not selected_splits <= valid_splits:
         raise ValueError("invalid selected split")
     all_assignments: list[SplitAssignment] = []
@@ -595,7 +595,7 @@ def main() -> None:
     parser.add_argument(
         "--splits",
         nargs="+",
-        choices=["debug", "validation", "test"],
+        choices=["debug", "validation", "test", "dev"],
         default=["validation"],
     )
     parser.add_argument(

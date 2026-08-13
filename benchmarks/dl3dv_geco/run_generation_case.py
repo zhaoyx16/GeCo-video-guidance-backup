@@ -112,6 +112,95 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_lora_checkpoint(
+    checkpoint: Path,
+    expected_receipt_sha256: str,
+    expected_step: int,
+) -> dict:
+    """Validate a model-level Diffusers LoRA checkpoint without trusting paths.
+
+    Full-Graph DPO checkpoints are written by
+    ``WanTransformer3DModel.save_lora_adapter``.  Their keys therefore do not
+    have the pipeline-level ``transformer.`` prefix.  This validator binds the
+    complete checkpoint directory before the loader is allowed to consume it.
+    """
+
+    if (
+        len(expected_receipt_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_receipt_sha256)
+        or isinstance(expected_step, bool)
+        or expected_step <= 0
+    ):
+        raise ValueError("LoRA receipt SHA and expected step are invalid")
+    if checkpoint.is_symlink():
+        raise ValueError("LoRA checkpoint cannot be a symlink")
+    checkpoint = checkpoint.resolve(strict=True)
+    if not checkpoint.is_dir():
+        raise ValueError("LoRA checkpoint must be a directory")
+    receipt_path = checkpoint / "CHECKPOINT_RECEIPT.json"
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise ValueError("LoRA checkpoint receipt must be a regular file")
+    if sha256_file(receipt_path) != expected_receipt_sha256:
+        raise ValueError("LoRA checkpoint receipt SHA mismatch")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != "fullgraph-dpo-adapter-checkpoint-v1"
+        or receipt.get("step") != expected_step
+    ):
+        raise ValueError("LoRA checkpoint receipt contract mismatch")
+    rows = receipt.get("files")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("LoRA checkpoint receipt contains no files")
+    checked = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("LoRA checkpoint file records must be objects")
+        name = row.get("name")
+        digest = row.get("sha256")
+        size = row.get("size")
+        if (
+            not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+            or name in seen
+            or name == receipt_path.name
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+        ):
+            raise ValueError("LoRA checkpoint file record is invalid")
+        artifact = checkpoint / name
+        if artifact.is_symlink() or not artifact.is_file():
+            raise ValueError("LoRA checkpoint artifact must be a regular file")
+        if artifact.stat().st_size != size or sha256_file(artifact) != digest:
+            raise ValueError("LoRA checkpoint artifact content mismatch")
+        seen.add(name)
+        checked.append({"name": name, "sha256": digest, "size": size})
+    actual = {
+        path.name
+        for path in checkpoint.iterdir()
+        if path.name != receipt_path.name
+    }
+    if actual != seen:
+        raise ValueError("LoRA checkpoint has unreceipted or missing artifacts")
+    weight_name = "pytorch_lora_weights.safetensors"
+    if weight_name not in seen:
+        raise ValueError("LoRA checkpoint lacks the expected safetensors weights")
+    return {
+        "checkpoint": str(checkpoint),
+        "checkpoint_receipt": str(receipt_path.resolve()),
+        "checkpoint_receipt_sha256": expected_receipt_sha256,
+        "step": expected_step,
+        "files": checked,
+        "weight_name": weight_name,
+    }
+
+
 def snapshot_commit(model: str) -> str | None:
     parts = Path(model).resolve().parts
     if "snapshots" not in parts:
@@ -421,7 +510,7 @@ def build_pipeline(args: argparse.Namespace):
     if args.backbone == "wan":
         from diffusers import AutoencoderKLWan
 
-        if args.method == "baseline":
+        if args.method in {"baseline", "lora_dpo"}:
             from diffusers import WanImageToVideoPipeline as Pipeline
         else:
             Pipeline = load_class(
@@ -431,9 +520,38 @@ def build_pipeline(args: argparse.Namespace):
         vae = AutoencoderKLWan.from_pretrained(
             args.model, subfolder="vae", torch_dtype=torch.float32
         )
-        pipe = Pipeline.from_pretrained(
-            args.model, vae=vae, torch_dtype=torch.bfloat16
-        ).to(args.pipe_device)
+        if args.method == "lora_dpo":
+            from diffusers import WanTransformer3DModel
+
+            transformer = WanTransformer3DModel.from_pretrained(
+                args.model,
+                subfolder="transformer",
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            )
+            transformer.load_lora_adapter(
+                args.lora_checkpoint,
+                weight_name=args.lora_identity["weight_name"],
+                use_safetensors=True,
+                local_files_only=True,
+                prefix=None,
+                adapter_name="fullgraph_dpo",
+            )
+            if args.lora_mode == "base":
+                transformer.disable_adapters()
+            else:
+                transformer.set_adapters("fullgraph_dpo")
+            pipe = Pipeline.from_pretrained(
+                args.model,
+                transformer=transformer,
+                vae=vae,
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            ).to(args.pipe_device)
+        else:
+            pipe = Pipeline.from_pretrained(
+                args.model, vae=vae, torch_dtype=torch.bfloat16
+            ).to(args.pipe_device)
     else:
         if importlib.util.find_spec("cosmos_guardrail") is None:
             raise RuntimeError(
@@ -492,7 +610,7 @@ def main() -> None:
     parser.add_argument("--backbone", choices=PROFILES, required=True)
     parser.add_argument(
         "--method",
-        choices=("baseline", "adapted_geco", "online_geometry_selection"),
+        choices=("baseline", "adapted_geco", "online_geometry_selection", "lora_dpo"),
         required=True,
     )
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
@@ -546,6 +664,10 @@ def main() -> None:
     parser.add_argument("--allow-split-vae", action="store_true")
     parser.add_argument("--split-vae-smoke-report", type=Path)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--lora-checkpoint", type=Path)
+    parser.add_argument("--expected-lora-checkpoint-receipt-sha256")
+    parser.add_argument("--expected-lora-step", type=int)
+    parser.add_argument("--lora-mode", choices=("base", "adapted"))
     args = parser.parse_args()
 
     for key, value in PROFILES[args.backbone].items():
@@ -553,6 +675,25 @@ def main() -> None:
             setattr(args, key, value)
     if args.method == "adapted_geco" and args.decode_spatial_scale != 1.0:
         parser.error("Formal adapted-GeCo benchmark requires --decode-spatial-scale 1.0")
+    lora_arguments = (
+        args.lora_checkpoint,
+        args.expected_lora_checkpoint_receipt_sha256,
+        args.expected_lora_step,
+        args.lora_mode,
+    )
+    if args.method == "lora_dpo":
+        if args.backbone != "wan" or any(value is None for value in lora_arguments):
+            parser.error("Wan LoRA-DPO requires all explicit LoRA checkpoint arguments")
+        args.lora_identity = validate_lora_checkpoint(
+            args.lora_checkpoint,
+            args.expected_lora_checkpoint_receipt_sha256,
+            args.expected_lora_step,
+        )
+        args.lora_checkpoint = Path(args.lora_identity["checkpoint"])
+    else:
+        if any(value is not None for value in lora_arguments):
+            parser.error("LoRA checkpoint arguments require --method lora_dpo")
+        args.lora_identity = None
 
     is_frozen_protocol = args.protocol_mode == "frozen"
     if is_frozen_protocol and args.method in {"adapted_geco", "online_geometry_selection"}:
@@ -714,7 +855,11 @@ def main() -> None:
             else "external/guidance_cosmos/pipeline_cosmos2_5_predict_guided.py"
         )
     )
-    pipeline_sha256 = sha256_file(pipeline_path) if args.method != "baseline" else None
+    pipeline_sha256 = (
+        sha256_file(pipeline_path)
+        if args.method not in {"baseline", "lora_dpo"}
+        else None
+    )
     split_vae_report = None
     requested_vae_device = args.vae_device or args.pipe_device
     if (
@@ -779,6 +924,11 @@ def main() -> None:
         "implementation_sha256": implementation_sha256,
         "runner_sha256": runner_sha256,
         "pipeline_sha256": pipeline_sha256,
+        "lora_dpo": (
+            {"mode": args.lora_mode, **args.lora_identity}
+            if args.method == "lora_dpo"
+            else None
+        ),
         "vggt_model": model_identity(args.vggt_model)
         if args.method == "adapted_geco"
         else None,
@@ -930,7 +1080,7 @@ def main() -> None:
     if online_selector is not None:
         common["online_selector"] = online_selector
 
-    if args.method in {"baseline", "online_geometry_selection"}:
+    if args.method in {"baseline", "online_geometry_selection", "lora_dpo"}:
         with torch.inference_mode():
             output = pipe(**common)
     else:
@@ -1051,6 +1201,11 @@ def main() -> None:
         "video_probe": video_probe,
         "runner_sha256": runner_sha256,
         "pipeline_sha256": pipeline_sha256,
+        "lora_dpo": (
+            {"mode": args.lora_mode, **args.lora_identity}
+            if args.method == "lora_dpo"
+            else None
+        ),
     }
     temporary_metadata = output_dir / f".metadata.{uuid.uuid4().hex}.tmp.json"
     temporary_metadata.write_text(json.dumps(metadata, indent=2) + "\n")
