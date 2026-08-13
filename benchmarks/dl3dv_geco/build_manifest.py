@@ -214,13 +214,15 @@ def load_frozen_assignments(
         raise ValueError("frozen split reuses a split_order")
     actual_counts = {
         split: sum(item.split == split for item in all_assignments)
-        for split in sorted(valid_splits)
+        for split in sorted(selected_splits)
     }
-    if expected_counts is not None and actual_counts != expected_counts:
-        raise ValueError(
-            f"frozen split counts do not match: actual={actual_counts}, "
-            f"expected={expected_counts}"
-        )
+    if expected_counts is not None:
+        selected_expected = {split: expected_counts[split] for split in sorted(selected_splits)}
+        if actual_counts != selected_expected:
+            raise ValueError(
+                f"selected frozen split counts do not match: actual={actual_counts}, "
+                f"expected={selected_expected}"
+            )
 
     assignments = [
         assignment
@@ -232,7 +234,7 @@ def load_frozen_assignments(
     return sorted(
         assignments,
         key=lambda item: (
-            {"debug": 0, "validation": 1, "test": 2}[item.split],
+            {"debug": 0, "validation": 1, "test": 2, "dev": 3}[item.split],
             item.split_order,
         ),
     )

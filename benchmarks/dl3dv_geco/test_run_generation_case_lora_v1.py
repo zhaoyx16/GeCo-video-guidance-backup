@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -58,17 +57,10 @@ def test_validate_lora_checkpoint_rejects_content_and_step_mismatch(tmp_path: Pa
         MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_action"),
-    (("base", "disabled"), ("adapted", "fullgraph_dpo")),
-)
-def test_build_pipeline_loads_model_level_lora_with_explicit_mode(
-    monkeypatch: pytest.MonkeyPatch,
-    mode: str,
-    expected_action: str,
+@pytest.mark.parametrize(("mode", "expected_action"), (("base", "disabled"), ("adapted", "fullgraph_dpo")))
+def test_load_lora_transformer_has_explicit_model_level_contract(
+    mode: str, expected_action: str
 ) -> None:
-    import diffusers
-
     events: dict[str, object] = {}
 
     class FakeTransformer:
@@ -86,44 +78,21 @@ def test_build_pipeline_loads_model_level_lora_with_explicit_mode(
         def set_adapters(self, name):
             events["action"] = name
 
-    class FakeVae:
-        @classmethod
-        def from_pretrained(cls, *args, **kwargs):
-            return cls()
-
-    class FakePipeline:
-        @classmethod
-        def from_pretrained(cls, *args, **kwargs):
-            events["pipeline_from_pretrained"] = (args, kwargs)
-            return cls()
-
-        def to(self, device):
-            events["device"] = device
-            return self
-
-    monkeypatch.setattr(diffusers, "WanTransformer3DModel", FakeTransformer)
-    monkeypatch.setattr(diffusers, "AutoencoderKLWan", FakeVae)
-    monkeypatch.setattr(diffusers, "WanImageToVideoPipeline", FakePipeline)
-    monkeypatch.setattr(MODULE, "place_vae", lambda *args, **kwargs: "cuda:0")
-    args = Namespace(
-        repo=Path("/tmp/repo"),
-        backbone="wan",
-        method="lora_dpo",
-        model="/model",
-        pipe_device="cuda:0",
-        vae_device="cuda:0",
-        allow_split_vae=False,
-        lora_checkpoint=Path("/checkpoint"),
-        lora_identity={"weight_name": "pytorch_lora_weights.safetensors"},
-        lora_mode=mode,
+    result = MODULE.load_lora_transformer(
+        "/model",
+        Path("/checkpoint"),
+        {"weight_name": "pytorch_lora_weights.safetensors"},
+        mode,
+        transformer_class=FakeTransformer,
     )
-    MODULE.build_pipeline(args)
+    assert isinstance(result, FakeTransformer)
+    from_args, from_kwargs = events["transformer_from_pretrained"]
+    assert from_args == ("/model",)
+    assert from_kwargs["subfolder"] == "transformer"
+    assert from_kwargs["local_files_only"] is True
     load_args, load_kwargs = events["load"]
     assert load_args == (Path("/checkpoint"),)
     assert load_kwargs["prefix"] is None
     assert load_kwargs["local_files_only"] is True
     assert load_kwargs["adapter_name"] == "fullgraph_dpo"
     assert events["action"] == expected_action
-    _, pipeline_kwargs = events["pipeline_from_pretrained"]
-    assert isinstance(pipeline_kwargs["transformer"], FakeTransformer)
-    assert pipeline_kwargs["local_files_only"] is True

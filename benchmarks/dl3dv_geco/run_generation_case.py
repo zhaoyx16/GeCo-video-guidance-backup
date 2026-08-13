@@ -201,6 +201,43 @@ def validate_lora_checkpoint(
     }
 
 
+def load_lora_transformer(
+    model: str,
+    checkpoint: Path,
+    lora_identity: dict,
+    mode: str,
+    *,
+    transformer_class=None,
+):
+    """Load the SHA-validated model-level adapter in one explicit state."""
+
+    if mode not in {"base", "adapted"}:
+        raise ValueError("LoRA mode must be base or adapted")
+    if transformer_class is None:
+        from diffusers import WanTransformer3DModel
+
+        transformer_class = WanTransformer3DModel
+    transformer = transformer_class.from_pretrained(
+        model,
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
+        local_files_only=True,
+    )
+    transformer.load_lora_adapter(
+        checkpoint,
+        weight_name=lora_identity["weight_name"],
+        use_safetensors=True,
+        local_files_only=True,
+        prefix=None,
+        adapter_name="fullgraph_dpo",
+    )
+    if mode == "base":
+        transformer.disable_adapters()
+    else:
+        transformer.set_adapters("fullgraph_dpo")
+    return transformer
+
+
 def snapshot_commit(model: str) -> str | None:
     parts = Path(model).resolve().parts
     if "snapshots" not in parts:
@@ -521,26 +558,12 @@ def build_pipeline(args: argparse.Namespace):
             args.model, subfolder="vae", torch_dtype=torch.float32
         )
         if args.method == "lora_dpo":
-            from diffusers import WanTransformer3DModel
-
-            transformer = WanTransformer3DModel.from_pretrained(
+            transformer = load_lora_transformer(
                 args.model,
-                subfolder="transformer",
-                torch_dtype=torch.bfloat16,
-                local_files_only=True,
-            )
-            transformer.load_lora_adapter(
                 args.lora_checkpoint,
-                weight_name=args.lora_identity["weight_name"],
-                use_safetensors=True,
-                local_files_only=True,
-                prefix=None,
-                adapter_name="fullgraph_dpo",
+                args.lora_identity,
+                args.lora_mode,
             )
-            if args.lora_mode == "base":
-                transformer.disable_adapters()
-            else:
-                transformer.set_adapters("fullgraph_dpo")
             pipe = Pipeline.from_pretrained(
                 args.model,
                 transformer=transformer,
