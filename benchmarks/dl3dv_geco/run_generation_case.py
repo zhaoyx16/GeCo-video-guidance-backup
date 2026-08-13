@@ -17,8 +17,10 @@ import json
 import os
 import platform
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -112,6 +114,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def read_regular_file_bytes_no_follow(path: Path) -> bytes:
+    """Read one regular file from one no-follow descriptor exactly once."""
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("this platform cannot enforce no-follow checkpoint reads")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("checkpoint contract input must be a regular file")
+        blocks = []
+        while True:
+            block = os.read(descriptor, 8 << 20)
+            if not block:
+                break
+            blocks.append(block)
+        return b"".join(blocks)
+    finally:
+        os.close(descriptor)
+
+
 def validate_lora_checkpoint(
     checkpoint: Path,
     expected_receipt_sha256: str,
@@ -140,13 +164,20 @@ def validate_lora_checkpoint(
     receipt_path = checkpoint / "CHECKPOINT_RECEIPT.json"
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise ValueError("LoRA checkpoint receipt must be a regular file")
-    if sha256_file(receipt_path) != expected_receipt_sha256:
+    receipt_payload = read_regular_file_bytes_no_follow(receipt_path)
+    if hashlib.sha256(receipt_payload).hexdigest() != expected_receipt_sha256:
         raise ValueError("LoRA checkpoint receipt SHA mismatch")
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    try:
+        receipt = json.loads(receipt_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("LoRA checkpoint receipt is not valid UTF-8 JSON") from error
+    receipt_step = receipt.get("step") if isinstance(receipt, dict) else None
     if (
         not isinstance(receipt, dict)
         or receipt.get("schema") != "fullgraph-dpo-adapter-checkpoint-v1"
-        or receipt.get("step") != expected_step
+        or isinstance(receipt_step, bool)
+        or not isinstance(receipt_step, int)
+        or receipt_step != expected_step
     ):
         raise ValueError("LoRA checkpoint receipt contract mismatch")
     rows = receipt.get("files")
@@ -195,10 +226,73 @@ def validate_lora_checkpoint(
         "checkpoint": str(checkpoint),
         "checkpoint_receipt": str(receipt_path.resolve()),
         "checkpoint_receipt_sha256": expected_receipt_sha256,
+        # Kept in memory only until the private snapshot is sealed.  The
+        # producer receipt must never be reopened after this authenticated
+        # no-follow read.
+        "_checkpoint_receipt_payload": receipt_payload,
         "step": expected_step,
         "files": checked,
         "weight_name": weight_name,
     }
+
+
+def snapshot_lora_checkpoint(checkpoint: Path, identity: dict) -> tuple[tempfile.TemporaryDirectory, Path]:
+    """Copy already-identified artifacts through no-follow file descriptors.
+
+    Diffusers only sees this private snapshot.  A mutation or replacement of
+    the producer path after validation therefore cannot change loaded bytes.
+    """
+
+    temporary = tempfile.TemporaryDirectory(prefix="fullgraph-dpo-lora-")
+    target = Path(temporary.name) / "checkpoint"
+    target.mkdir(mode=0o700)
+    receipt_payload = identity.get("_checkpoint_receipt_payload")
+    if not isinstance(receipt_payload, bytes):
+        raise ValueError("LoRA identity lacks authenticated receipt bytes")
+    if hashlib.sha256(receipt_payload).hexdigest() != identity["checkpoint_receipt_sha256"]:
+        raise ValueError("authenticated LoRA receipt bytes changed in memory")
+    source_root = checkpoint.resolve(strict=True)
+    try:
+        receipt_destination = target / "CHECKPOINT_RECEIPT.json"
+        with receipt_destination.open("xb") as handle:
+            handle.write(receipt_payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        receipt_destination.chmod(0o400)
+
+        # Artifact bytes are copied and re-hashed from no-follow descriptors.
+        # Unlike the receipt, they are never interpreted before this snapshot.
+        for row in identity["files"]:
+            source = source_root / row["name"]
+            if not hasattr(os, "O_NOFOLLOW"):
+                raise RuntimeError("this platform cannot enforce no-follow checkpoint reads")
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            descriptor = os.open(source, flags)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError("LoRA snapshot source must be a regular file")
+                digest = hashlib.sha256()
+                destination = target / row["name"]
+                with destination.open("xb") as handle:
+                    while True:
+                        block = os.read(descriptor, 8 << 20)
+                        if not block:
+                            break
+                        digest.update(block)
+                        handle.write(block)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                os.close(descriptor)
+            if digest.hexdigest() != row["sha256"]:
+                raise ValueError("LoRA source changed after validation")
+            destination.chmod(0o400)
+        target.chmod(0o500)
+        return temporary, target
+    except BaseException:
+        temporary.cleanup()
+        raise
 
 
 def load_lora_transformer(
@@ -712,7 +806,10 @@ def main() -> None:
             args.expected_lora_checkpoint_receipt_sha256,
             args.expected_lora_step,
         )
-        args.lora_checkpoint = Path(args.lora_identity["checkpoint"])
+        args.lora_snapshot, args.lora_checkpoint = snapshot_lora_checkpoint(
+            Path(args.lora_identity["checkpoint"]), args.lora_identity
+        )
+        del args.lora_identity["_checkpoint_receipt_payload"]
     else:
         if any(value is not None for value in lora_arguments):
             parser.error("LoRA checkpoint arguments require --method lora_dpo")

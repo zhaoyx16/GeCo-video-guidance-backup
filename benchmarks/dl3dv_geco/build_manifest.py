@@ -12,16 +12,18 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import math
+import os
 import re
+import stat
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 import numpy as np
-
-from download_frozen_scenes import validate_scene_files
+from PIL import Image
 
 
 PROMPTS = {
@@ -164,6 +166,10 @@ class SplitAssignment:
     scene_id: str
 
 
+class FrozenSourceError(ValueError):
+    """Identifier-free formal source contract failure."""
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -172,36 +178,228 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def _validate_scene_relative_path(relative: PurePosixPath) -> None:
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError("frozen scene path must remain relative to one allowlisted scene")
+
+
+def _open_scene_regular_file_no_follow(scene_dir: Path, relative: PurePosixPath) -> int:
+    """Open one allowlisted scene file without following any scene-local symlink."""
+
+    _validate_scene_relative_path(relative)
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise RuntimeError("this platform cannot enforce no-follow frozen-scene reads")
+    # Reject the allowlisted scene entry itself before any resolve operation.
+    # O_NOFOLLOW on the directory descriptor closes the check/open race.
+    if scene_dir.is_symlink():
+        raise ValueError("frozen scene content cannot contain symlinks")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    try:
+        current = os.open(scene_dir, directory_flags)
+        descriptors.append(current)
+        if not stat.S_ISDIR(os.fstat(current).st_mode):
+            raise ValueError("frozen scene root must be a regular directory")
+        for part in relative.parts[:-1]:
+            metadata = os.stat(part, dir_fd=current, follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError("frozen scene content cannot contain symlinks")
+            next_directory = os.open(part, directory_flags, dir_fd=current)
+            descriptors.append(next_directory)
+            if not stat.S_ISDIR(os.fstat(next_directory).st_mode):
+                raise ValueError("frozen scene path contains a non-directory component")
+            current = next_directory
+        name = relative.parts[-1]
+        metadata = os.stat(name, dir_fd=current, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("frozen scene content cannot contain symlinks")
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise ValueError("frozen scene contract input must be a regular file")
+        return descriptor
+    finally:
+        for directory in reversed(descriptors):
+            os.close(directory)
+
+
+def read_scene_regular_file_bytes_no_follow(
+    scene_dir: Path, relative: PurePosixPath
+) -> bytes:
+    descriptor = _open_scene_regular_file_no_follow(scene_dir, relative)
+    try:
+        blocks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 8 << 20)
+            if not block:
+                break
+            blocks.append(block)
+        return b"".join(blocks)
+    finally:
+        os.close(descriptor)
+
+
+def _list_scene_directory_no_follow(scene_dir: Path, relative: PurePosixPath) -> set[str]:
+    """List one known directory inside one allowlisted scene, without symlinks."""
+
+    _validate_scene_relative_path(relative)
+    if scene_dir.is_symlink():
+        raise ValueError("frozen scene content cannot contain symlinks")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    try:
+        current = os.open(scene_dir, flags)
+        descriptors.append(current)
+        for part in relative.parts:
+            metadata = os.stat(part, dir_fd=current, follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError("frozen scene content cannot contain symlinks")
+            next_directory = os.open(part, flags, dir_fd=current)
+            descriptors.append(next_directory)
+            current = next_directory
+        return set(os.listdir(current))
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def validate_scene_files_no_follow(scene_dir: Path, transforms_payload: bytes) -> dict:
+    """Recompute the frozen-scene marker without path-following reads."""
+
+    try:
+        transforms = json.loads(transforms_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid transforms.json") from error
+    frames = transforms.get("frames")
+    if not isinstance(frames, list) or len(frames) < 8:
+        raise ValueError("transforms.json contains fewer than eight frames")
+
+    required_names: list[str] = []
+    seen_names: set[str] = set()
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, dict) or not isinstance(frame.get("file_path"), str):
+            raise ValueError(f"frame {index} has no valid file_path")
+        matrix = np.asarray(frame.get("transform_matrix"), dtype=np.float64)
+        if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+            raise ValueError(f"frame {index} has no finite 4x4 transform_matrix")
+        raw_name = frame["file_path"]
+        if "\\" in raw_name:
+            raise ValueError("frame file_path is not POSIX-compatible")
+        relative_frame = PurePosixPath(raw_name)
+        _validate_scene_relative_path(relative_frame)
+        name = relative_frame.name
+        if not name or name in {".", ".."} or name in seen_names:
+            raise ValueError("transforms.json contains an invalid or duplicate frame filename")
+        seen_names.add(name)
+        required_names.append(name)
+
+    digest = hashlib.sha256()
+    image_bytes = 0
+    for name in required_names:
+        payload = read_scene_regular_file_bytes_no_follow(
+            scene_dir, PurePosixPath("images_8") / name
+        )
+        if not payload:
+            raise ValueError("frozen scene contains an empty image")
+        try:
+            with Image.open(io.BytesIO(payload)) as image:
+                if image.format != "PNG":
+                    raise ValueError("frozen scene contains an unexpected image format")
+                image.verify()
+            with Image.open(io.BytesIO(payload)) as image:
+                image.load()
+        except (OSError, SyntaxError) as error:
+            raise ValueError("frozen scene contains a corrupt image") from error
+        file_hash = hashlib.sha256(payload).hexdigest()
+        digest.update(f"{name}\0{len(payload)}\0{file_hash}\n".encode("utf-8"))
+        image_bytes += len(payload)
+
+    actual_names = {
+        name
+        for name in _list_scene_directory_no_follow(scene_dir, PurePosixPath("images_8"))
+        if name.startswith("frame_") and name.lower().endswith(".png")
+    }
+    if actual_names != seen_names:
+        raise ValueError("images_8 frame set differs from transforms.json")
+    return {
+        "transforms_sha256": hashlib.sha256(transforms_payload).hexdigest(),
+        "frame_count": len(required_names),
+        "frames_digest_sha256": digest.hexdigest(),
+        "image_bytes": image_bytes,
+    }
+
+
 def load_frozen_assignments(
     path: Path,
     selected_splits: set[str],
     expected_counts: dict[str, int] | None = None,
+    expected_sha256: str | None = None,
 ) -> list[SplitAssignment]:
     valid_splits = {"debug", "validation", "test", "dev"}
     if not selected_splits or not selected_splits <= valid_splits:
         raise ValueError("invalid selected split")
+    if "dev" in selected_splits and selected_splits != {"dev"}:
+        raise ValueError("dev split cannot be combined with another split")
+    if selected_splits == {"dev"} and expected_sha256 is None:
+        raise ValueError("dev split requires an expected frozen split SHA")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("frozen split CSV must be a regular file")
+    if expected_sha256 is not None and (
+        len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise ValueError("expected frozen split SHA must be lowercase SHA-256")
+    payload = path.read_bytes()
+    if expected_sha256 is not None and hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError("frozen split CSV SHA mismatch")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("frozen split CSV must be UTF-8") from error
     all_assignments: list[SplitAssignment] = []
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        required = {"split", "split_order", "source_order", "hash", "batch", "duration"}
-        if reader.fieldnames is None or set(reader.fieldnames) != required:
-            raise ValueError("frozen split has unexpected columns")
-        for row in reader:
-            split = row["split"]
-            if split not in valid_splits or row["batch"] != "1K":
-                raise ValueError("frozen split contains an invalid split or batch")
-            scene_id = row["hash"]
-            if len(scene_id) != 64 or any(char not in "0123456789abcdef" for char in scene_id):
-                raise ValueError(f"invalid frozen scene id {scene_id!r}")
-            assignment = SplitAssignment(
-                split=split,
-                split_order=int(row["split_order"]),
-                source_order=int(row["source_order"]),
-                scene_id=scene_id,
-            )
-            if assignment.split_order < 0 or assignment.source_order < 1:
-                raise ValueError("frozen split contains an invalid order")
-            all_assignments.append(assignment)
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    required = ("split", "split_order", "source_order", "hash", "batch", "duration")
+    if tuple(reader.fieldnames or ()) != required:
+        raise ValueError("frozen split has unexpected columns")
+    for row in reader:
+        if (
+            None in row
+            or set(row) != set(required)
+            or any(not isinstance(row.get(field), str) for field in required)
+        ):
+            raise ValueError("frozen split contains a malformed row")
+        split = row["split"]
+        if selected_splits == {"dev"} and split != "dev":
+            raise ValueError("dev CSV contains a non-dev row")
+        if split not in valid_splits or row["batch"] != "1K":
+            raise ValueError("frozen split contains an invalid split or batch")
+        scene_id = row["hash"]
+        if len(scene_id) != 64 or any(char not in "0123456789abcdef" for char in scene_id):
+            raise ValueError("frozen split contains an invalid scene identifier")
+        try:
+            split_order = int(row["split_order"])
+            source_order = int(row["source_order"])
+            duration = float(row["duration"])
+        except ValueError as error:
+            raise ValueError("frozen split contains invalid numeric metadata") from error
+        assignment = SplitAssignment(
+            split=split,
+            split_order=split_order,
+            source_order=source_order,
+            scene_id=scene_id,
+        )
+        if (
+            assignment.split_order < 0
+            or not 1 <= assignment.source_order <= 1000
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            raise ValueError("frozen split contains invalid numeric metadata")
+        all_assignments.append(assignment)
 
     scene_ids = [item.scene_id for item in all_assignments]
     source_orders = [item.source_order for item in all_assignments]
@@ -231,6 +429,8 @@ def load_frozen_assignments(
     ]
     if not assignments:
         raise ValueError("selected frozen split contains no scenes")
+    if selected_splits == {"dev"} and [item.split_order for item in assignments] != list(range(100)):
+        raise ValueError("dev split_order must be contiguous from zero")
     return sorted(
         assignments,
         key=lambda item: (
@@ -252,11 +452,11 @@ def load_scene_descriptions(path: Path | None) -> dict[str, str]:
             raise ValueError("scene descriptions must map strings to strings")
         cleaned = " ".join(description.strip().rstrip(".").split())
         if not cleaned:
-            raise ValueError(f"empty scene description for {scene_id}")
+            raise ValueError("scene descriptions contain an empty value")
         forbidden = find_forbidden_description_terms(cleaned)
         if forbidden:
             raise ValueError(
-                f"scene description for {scene_id} contains motion/temporal terms: {forbidden}"
+                f"scene descriptions contain motion/temporal terms: {forbidden}"
             )
         descriptions[scene_id] = cleaned
     return descriptions
@@ -297,34 +497,52 @@ def audit_prompt(prompt: str) -> None:
 
 
 def load_source_scene_provenance(candidate: Candidate, required: bool) -> dict | None:
-    marker_path = candidate.transforms_path.parent / ".dl3dv_complete.json"
-    if not marker_path.is_file():
+    scene_dir = candidate.transforms_path.parent
+    try:
+        marker_payload = read_scene_regular_file_bytes_no_follow(
+            scene_dir, PurePosixPath(".dl3dv_complete.json")
+        )
+    except FileNotFoundError:
         if required:
-            raise ValueError(f"missing frozen scene marker {marker_path}")
+            raise ValueError("missing frozen scene marker")
         return None
-    marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    expected = {
-        "schema": "dl3dv-scene-complete-v1",
-        "scene_hash": candidate.scene_id,
-        "transforms_sha256": sha256_file(candidate.transforms_path),
-    }
-    for key, value in expected.items():
-        if marker.get(key) != value:
-            raise ValueError(f"source marker mismatch for {candidate.scene_id}: {key}")
-    current_scene = validate_scene_files(candidate.transforms_path.parent)
-    for key, value in current_scene.items():
-        if marker.get(key) != value:
-            raise ValueError(
-                f"source scene content differs from frozen marker for "
-                f"{candidate.scene_id}: {key}"
-            )
-    return {
-        "repo_id": marker.get("repo_id"),
-        "dataset_revision": marker.get("dataset_revision"),
-        "archive_sha256": marker.get("archive_sha256"),
-        "transforms_sha256": marker.get("transforms_sha256"),
-        "conditioning_frame_480p_sha256": sha256_file(candidate.image_path),
-    }
+    except Exception:
+        raise ValueError("frozen source scene validation failed") from None
+    try:
+        marker = json.loads(marker_payload.decode("utf-8"))
+        transforms_payload = read_scene_regular_file_bytes_no_follow(
+            scene_dir, PurePosixPath("transforms.json")
+        )
+        expected = {
+            "schema": "dl3dv-scene-complete-v1",
+            "scene_hash": candidate.scene_id,
+            "transforms_sha256": hashlib.sha256(transforms_payload).hexdigest(),
+        }
+        for key, value in expected.items():
+            if marker.get(key) != value:
+                raise ValueError("source marker contract mismatch")
+        current_scene = validate_scene_files_no_follow(scene_dir, transforms_payload)
+        for key, value in current_scene.items():
+            if marker.get(key) != value:
+                raise ValueError("source scene differs from frozen marker")
+        conditioning_relative = PurePosixPath(*candidate.image_path.relative_to(scene_dir).parts)
+        conditioning_payload = read_scene_regular_file_bytes_no_follow(
+            scene_dir, conditioning_relative
+        )
+        result = {
+            "repo_id": marker.get("repo_id"),
+            "dataset_revision": marker.get("dataset_revision"),
+            "archive_sha256": marker.get("archive_sha256"),
+            "transforms_sha256": marker.get("transforms_sha256"),
+            "conditioning_frame_480p_sha256": hashlib.sha256(
+                conditioning_payload
+            ).hexdigest(),
+        }
+    except Exception:
+        # Formal split identifiers are private protocol material.  Keep all
+        # marker/content failure paths identifier- and path-free.
+        raise ValueError("frozen source scene validation failed") from None
+    return result
 
 
 def rotation_angle_deg(rotation: np.ndarray) -> float:
@@ -398,14 +616,46 @@ def yaw_path_metrics(rotations: np.ndarray) -> tuple[float, float, float, float,
     )
 
 
+def _regular_contained_file(scene_dir: Path, relative: PurePosixPath) -> Path | None:
+    """Return a regular, symlink-free file contained in one allowlisted scene."""
+
+    if scene_dir.is_symlink():
+        raise ValueError("frozen scene content cannot contain symlinks")
+    try:
+        descriptor = _open_scene_regular_file_no_follow(scene_dir, relative)
+    except FileNotFoundError:
+        return None
+    else:
+        os.close(descriptor)
+    return scene_dir.joinpath(*relative.parts)
+
+
 def resolve_image(scene_dir: Path, frame_record: dict, image_subdir: str) -> Path | None:
-    file_name = Path(frame_record["file_path"]).name
+    raw_file_path = frame_record.get("file_path")
+    if not isinstance(raw_file_path, str) or not raw_file_path or "\\" in raw_file_path:
+        raise ValueError("frame file_path must be a nonempty POSIX-relative path")
+    relative = PurePosixPath(raw_file_path)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("frame file_path must not be absolute or traverse directories")
+    image_dir = PurePosixPath(image_subdir)
+    if (
+        not image_subdir
+        or image_dir.is_absolute()
+        or len(image_dir.parts) != 1
+        or image_dir.parts[0] in {"", ".", ".."}
+    ):
+        raise ValueError("image_subdir must be one relative directory name")
+    file_name = relative.name
     candidates = [
-        scene_dir / image_subdir / file_name,
-        scene_dir / frame_record["file_path"],
-        scene_dir / "images" / file_name,
+        PurePosixPath(image_subdir) / file_name,
+        relative,
+        PurePosixPath("images") / file_name,
     ]
-    return next((path for path in candidates if path.is_file()), None)
+    for candidate in candidates:
+        resolved = _regular_contained_file(scene_dir, candidate)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 def iter_transforms(roots: Iterable[Path]) -> Iterable[Path]:
@@ -422,13 +672,67 @@ def iter_transforms(roots: Iterable[Path]) -> Iterable[Path]:
                 yield resolved
 
 
+def resolve_frozen_transforms(
+    roots: Iterable[Path], assignments: list[SplitAssignment]
+) -> list[Path]:
+    """Resolve only allowlisted frozen scenes without enumerating a root.
+
+    Formal roots may contain other protocol splits.  Never use ``rglob`` or
+    inspect directory entry names in this path: derive each candidate solely
+    from an already SHA-verified assignment.
+    """
+
+    checked_roots: list[Path] = []
+    for root in roots:
+        if root.is_symlink() or not root.is_dir():
+            raise FrozenSourceError("frozen source root must be a regular directory")
+        checked_roots.append(root.resolve(strict=True))
+    if not checked_roots:
+        raise FrozenSourceError("frozen source requires at least one root")
+
+    resolved: list[Path] = []
+    missing = 0
+    duplicate = 0
+    for assignment in assignments:
+        matches: list[Path] = []
+        for root in checked_roots:
+            scene_directory = root / assignment.scene_id
+            transforms = scene_directory / "transforms.json"
+            try:
+                descriptor = _open_scene_regular_file_no_follow(
+                    scene_directory, PurePosixPath("transforms.json")
+                )
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                raise FrozenSourceError("frozen source paths cannot be symlinks") from None
+            else:
+                os.close(descriptor)
+                matches.append(transforms)
+        if not matches:
+            missing += 1
+        elif len(matches) > 1:
+            duplicate += 1
+        else:
+            resolved.append(matches[0])
+    if missing:
+        raise FrozenSourceError(f"missing downloaded data for {missing} frozen scene(s)")
+    if duplicate:
+        raise FrozenSourceError(f"multiple roots contain {duplicate} frozen scene(s)")
+    return resolved
+
+
 def scene_candidates(
     transforms_path: Path,
     pose_window: int,
     start_stride: int,
     image_subdir: str,
 ) -> list[Candidate]:
-    data = json.loads(transforms_path.read_text())
+    scene_dir = transforms_path.parent
+    transforms_payload = read_scene_regular_file_bytes_no_follow(
+        scene_dir, PurePosixPath("transforms.json")
+    )
+    data = json.loads(transforms_payload.decode("utf-8"))
     frames = data.get("frames", [])
     if len(frames) < pose_window:
         return []
@@ -576,7 +880,7 @@ def select_best_per_scene(
     missing = [item.scene_id for item in assignments if not by_scene.get(item.scene_id)]
     if missing:
         raise RuntimeError(
-            f"no eligible large-motion trajectory for {len(missing)} frozen scene(s): {missing[:5]}"
+            f"no eligible large-motion trajectory for {len(missing)} frozen scene(s)"
         )
     return [
         max(by_scene[item.scene_id], key=lambda candidate: candidate.score)
@@ -594,6 +898,7 @@ def main() -> None:
     parser.add_argument("--max-per-scene", type=int, default=1)
     parser.add_argument("--image-subdir", default="images_8")
     parser.add_argument("--frozen-split-csv", type=Path)
+    parser.add_argument("--expected-frozen-split-sha256")
     parser.add_argument(
         "--splits",
         nargs="+",
@@ -631,38 +936,66 @@ def main() -> None:
     if args.pose_window < 2 or args.start_stride < 1:
         parser.error("--pose-window must be >= 2 and --start-stride must be positive")
 
+    selected_splits = set(args.splits)
+    if "dev" in selected_splits and selected_splits != {"dev"}:
+        parser.error("dev split cannot be combined with another split")
+    if selected_splits == {"dev"} and args.scene_descriptions_json is not None:
+        parser.error("dev manifest forbids --scene-descriptions-json")
+    if selected_splits == {"dev"} and (
+        args.frozen_split_csv is None or args.expected_frozen_split_sha256 is None
+    ):
+        parser.error(
+            "dev manifest requires --frozen-split-csv and "
+            "--expected-frozen-split-sha256"
+        )
     assignments = (
         load_frozen_assignments(
             args.frozen_split_csv,
-            set(args.splits),
+            selected_splits,
             FORMAL_SPLIT_COUNTS,
+            args.expected_frozen_split_sha256,
         )
         if args.frozen_split_csv
         else []
     )
+    # For the dev contract, load_frozen_assignments has already verified the
+    # exact bytes against this digest.  Carry that verified identity forward
+    # instead of reopening the path later when writing provenance metadata.
+    validated_frozen_split_sha256 = (
+        args.expected_frozen_split_sha256
+        if args.frozen_split_csv and args.expected_frozen_split_sha256
+        else sha256_file(args.frozen_split_csv)
+        if args.frozen_split_csv
+        else None
+    )
     assignment_by_scene = {item.scene_id: item for item in assignments}
-    descriptions = load_scene_descriptions(args.scene_descriptions_json)
+    descriptions = (
+        {}
+        if selected_splits == {"dev"}
+        else load_scene_descriptions(args.scene_descriptions_json)
+    )
 
     all_candidates: list[Candidate] = []
-    paths = sorted(iter_transforms(args.roots))
     if assignments:
-        paths_by_scene: dict[str, Path] = {}
-        for path in paths:
-            scene_id = path.parent.name
-            if scene_id in paths_by_scene:
-                raise RuntimeError(f"multiple transforms.json files found for scene {scene_id}")
-            paths_by_scene[scene_id] = path
-        missing_paths = [item.scene_id for item in assignments if item.scene_id not in paths_by_scene]
-        if missing_paths:
-            raise RuntimeError(
-                f"missing downloaded data for {len(missing_paths)} frozen scene(s): "
-                f"{missing_paths[:5]}"
-            )
-        paths = [paths_by_scene[item.scene_id] for item in assignments]
+        try:
+            paths = resolve_frozen_transforms(args.roots, assignments)
+        except FrozenSourceError:
+            raise
+        except Exception:
+            # Keep all formal source resolution failures private even when the
+            # filesystem itself includes identifiers in an exception message.
+            raise ValueError("frozen source path resolution failed") from None
+    else:
+        paths = sorted(iter_transforms(args.roots))
     for path in paths:
-        all_candidates.extend(
-            scene_candidates(path, args.pose_window, args.start_stride, args.image_subdir)
-        )
+        try:
+            all_candidates.extend(
+                scene_candidates(path, args.pose_window, args.start_stride, args.image_subdir)
+            )
+        except Exception:
+            if assignments:
+                raise ValueError("frozen source transforms validation failed") from None
+            raise
     threshold_filtered = [
         item
         for item in all_candidates
@@ -693,6 +1026,8 @@ def main() -> None:
     for item in selected:
         case_id = f"dl3dv_{item.scene_id}_s{item.start_index:05d}_{item.motion_class}"
         if case_id in cases:
+            if assignments:
+                raise RuntimeError("duplicate frozen benchmark case")
             raise RuntimeError(f"Duplicate benchmark case id: {case_id}")
         assignment = assignment_by_scene.get(item.scene_id)
         text_prompt = render_prompt(item.motion_class, descriptions.get(item.scene_id))
@@ -760,9 +1095,7 @@ def main() -> None:
             "large_motion_quantile": args.large_motion_quantile,
             "global_motion_score_cutoff": score_cutoff,
             "frozen_split_csv": str(args.frozen_split_csv) if args.frozen_split_csv else None,
-            "frozen_split_sha256": (
-                sha256_file(args.frozen_split_csv) if args.frozen_split_csv else None
-            ),
+            "frozen_split_sha256": validated_frozen_split_sha256,
             "scene_descriptions_json": (
                 str(args.scene_descriptions_json) if args.scene_descriptions_json else None
             ),

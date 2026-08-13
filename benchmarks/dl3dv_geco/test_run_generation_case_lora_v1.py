@@ -57,6 +57,113 @@ def test_validate_lora_checkpoint_rejects_content_and_step_mismatch(tmp_path: Pa
         MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
 
 
+@pytest.mark.parametrize("invalid_step", (True, 64.0))
+def test_validate_lora_checkpoint_requires_exact_integer_receipt_step(
+    tmp_path: Path, invalid_step: object
+) -> None:
+    checkpoint, _ = _write_checkpoint(tmp_path)
+    receipt_path = checkpoint / "CHECKPOINT_RECEIPT.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["step"] = invalid_step
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="contract mismatch"):
+        MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+
+
+def test_private_snapshot_is_bound_to_validated_bytes(tmp_path: Path) -> None:
+    checkpoint, receipt_sha = _write_checkpoint(tmp_path)
+    identity = MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+    temporary, snapshot = MODULE.snapshot_lora_checkpoint(checkpoint, identity)
+    try:
+        source = checkpoint / "pytorch_lora_weights.safetensors"
+        source.write_bytes(b"same-path-mutated-after-snapshot")
+        snap = snapshot / "pytorch_lora_weights.safetensors"
+        assert snap.read_bytes() == b"model-level-lora"
+        assert hashlib.sha256(snap.read_bytes()).hexdigest() == identity["files"][0]["sha256"]
+    finally:
+        temporary.cleanup()
+
+
+def test_snapshot_never_reopens_authenticated_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint, receipt_sha = _write_checkpoint(tmp_path)
+    identity = MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+    original_open = MODULE.os.open
+
+    def reject_receipt_open(path, flags, *args, **kwargs):
+        if Path(path).name == "CHECKPOINT_RECEIPT.json":
+            raise AssertionError("authenticated receipt was reopened")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(MODULE.os, "open", reject_receipt_open)
+    temporary, snapshot = MODULE.snapshot_lora_checkpoint(checkpoint, identity)
+    try:
+        assert (snapshot / "CHECKPOINT_RECEIPT.json").read_bytes() == identity[
+            "_checkpoint_receipt_payload"
+        ]
+    finally:
+        temporary.cleanup()
+
+
+def test_snapshot_rejects_post_validation_mutation(tmp_path: Path) -> None:
+    checkpoint, receipt_sha = _write_checkpoint(tmp_path)
+    identity = MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+    (checkpoint / "pytorch_lora_weights.safetensors").write_bytes(b"mutated")
+    with pytest.raises(ValueError, match="changed after validation"):
+        MODULE.snapshot_lora_checkpoint(checkpoint, identity)
+
+
+def test_receipt_is_hashed_and_parsed_from_one_no_follow_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint, receipt_sha = _write_checkpoint(tmp_path)
+    original_reader = MODULE.read_regular_file_bytes_no_follow
+    calls = []
+
+    def one_read(path: Path) -> bytes:
+        calls.append(path)
+        return original_reader(path)
+
+    monkeypatch.setattr(MODULE, "read_regular_file_bytes_no_follow", one_read)
+    # Any receipt Path.read_text call would re-open a mutable producer path.
+    original_read_text = Path.read_text
+
+    def reject_receipt_reopen(path: Path, *args, **kwargs):
+        if path.name == "CHECKPOINT_RECEIPT.json":
+            raise AssertionError("receipt path was reopened")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_receipt_reopen)
+    identity = MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+    assert identity["checkpoint_receipt_sha256"] == receipt_sha
+    assert calls == [checkpoint / "CHECKPOINT_RECEIPT.json"]
+
+
+def test_snapshot_ignores_receipt_swap_after_validation(tmp_path: Path) -> None:
+    checkpoint, receipt_sha = _write_checkpoint(tmp_path)
+    identity = MODULE.validate_lora_checkpoint(checkpoint, receipt_sha, 64)
+    receipt_path = checkpoint / "CHECKPOINT_RECEIPT.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema": "fullgraph-dpo-adapter-checkpoint-v1",
+                "step": 64,
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    temporary, snapshot = MODULE.snapshot_lora_checkpoint(checkpoint, identity)
+    try:
+        assert hashlib.sha256(
+            (snapshot / "CHECKPOINT_RECEIPT.json").read_bytes()
+        ).hexdigest() == receipt_sha
+    finally:
+        temporary.cleanup()
+
+
 @pytest.mark.parametrize(("mode", "expected_action"), (("base", "disabled"), ("adapted", "fullgraph_dpo")))
 def test_load_lora_transformer_has_explicit_model_level_contract(
     mode: str, expected_action: str
