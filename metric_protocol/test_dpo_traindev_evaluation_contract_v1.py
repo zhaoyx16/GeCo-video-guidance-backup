@@ -274,6 +274,27 @@ def synthetic_sealed_bundle(root: Path) -> tuple[Path, dict[str, str], str, str]
 
 
 class TrainDevEvaluationContractTest(unittest.TestCase):
+    def test_external_manifest_and_generation_commitments_are_full_sha256(self) -> None:
+        for value in (
+            bundle.EXPECTED_MANIFEST_SHA256,
+            bundle.EXPECTED_FORMAL_MANIFEST_SHA256,
+            bundle.EXPECTED_FORMAL_SOURCE_MANIFEST_SHA256,
+            provenance.EXPECTED_MANIFEST_SHA256,
+            provenance.EXPECTED_REFERENCE_MANIFEST_SHA256,
+            provenance.EXPECTED_REFERENCE_SOURCE_MANIFEST_SHA256,
+            bundle.PARENT_PROTOCOL_SHA256,
+            bundle.PARENT_SCHEDULE_SHA256,
+        ):
+            self.assertTrue(bundle.is_sha256(value))
+        self.assertEqual(
+            provenance.EXPECTED_REFERENCE_MANIFEST_SHA256,
+            bundle.EXPECTED_FORMAL_MANIFEST_SHA256,
+        )
+        self.assertEqual(
+            provenance.EXPECTED_REFERENCE_SOURCE_MANIFEST_SHA256,
+            bundle.EXPECTED_FORMAL_SOURCE_MANIFEST_SHA256,
+        )
+
     def test_exact_helper_loaders_reject_replacement_symlink_and_one_byte_change(self) -> None:
         modules = (
             eligibility,

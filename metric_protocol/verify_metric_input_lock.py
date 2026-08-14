@@ -58,7 +58,7 @@ def load_exact_sibling(path: Path, expected_sha256: str, module_name: str) -> ty
 
 _provenance_module = load_exact_sibling(
     Path(__file__).resolve(strict=True).with_name("traindev_provenance_v1.py"),
-    "6ea3d57b76a9db9afdb84980849ffa2e1f03c7bcc094cf015e83b25906df9464",
+    "89283249fba8e4176574b7bf0bf1cbe0cdfe94792a8433e51edb2d331b7fa7a1",
     "locked_traindev_provenance_v1",
 )
 verify_train_dev_provenance = _provenance_module.verify_train_dev_provenance
