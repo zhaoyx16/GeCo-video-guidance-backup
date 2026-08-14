@@ -60,7 +60,7 @@ verify_environment_fingerprint_payload = _package_runtime_module.verify_environm
 _TRAINDEV_PROVENANCE_HELPER = _BASE / "traindev_provenance_v1.py"
 _traindev_provenance_module = load_exact_sibling(
     _TRAINDEV_PROVENANCE_HELPER,
-    "04a7be90f612b15be4521aed8379446569fb5bce28299c8e13b237ed7e04b6ab",
+    "3475e5c35b52e4d685b5ec496d6b4e9aedfe32db309ed2cab4455edd08a8d6c3",
     "locked_traindev_provenance_v1",
 )
 verify_train_dev_provenance = _traindev_provenance_module.verify_train_dev_provenance
@@ -782,6 +782,10 @@ def main() -> None:
         traindev_provenance = verify_train_dev_provenance(
             input_payload=input_payload,
             input_binding=input_binding,
+            source_bundle_reference=descriptor.get("source_bundle_reference"),
+            expected_bundle_reference_sha256=descriptor.get(
+                "expected_bundle_reference_sha256"
+            ),
             source_bundle_ready=descriptor.get("source_bundle_ready"),
             expected_generation_receipt_sha256=descriptor.get(
                 "expected_generation_receipt_sha256"
@@ -898,6 +902,7 @@ def main() -> None:
             Path(binding["path"])
             for key, binding in traindev_provenance.items()
             if key in {
+                "source_bundle_reference",
                 "source_bundle_ready",
                 "generation_receipt",
                 "manifest",

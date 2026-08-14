@@ -592,6 +592,8 @@ def main() -> None:
         )
         or not isinstance(input_lock.get("traindev_reference_isolation_receipt_sha256"), str)
         or len(input_lock["traindev_reference_isolation_receipt_sha256"]) != 64
+        or not isinstance(input_lock.get("bundle_reference_path"), str)
+        or not Path(input_lock["bundle_reference_path"]).is_absolute()
     ):
         raise ValueError("train-dev input lock identity/isolation mismatch")
     if evaluator_lock.get("schema") != "geometry-selection-evaluator-lock-v2" or evaluator_lock.get("site") != "Hippasus" or evaluator_lock.get("input_manifest") != input_binding:
@@ -606,6 +608,10 @@ def main() -> None:
         or traindev_provenance.get("status") != "verified"
         or traindev_provenance.get("case_count") != 100
         or traindev_provenance.get("record_count") != 800
+        or traindev_provenance.get("expected_bundle_reference_sha256")
+        != traindev_provenance.get("source_bundle_reference", {}).get("sha256")
+        or traindev_provenance.get("source_bundle_reference", {}).get("path")
+        != input_lock.get("bundle_reference_path")
         or traindev_provenance.get("expected_generation_receipt_sha256")
         != input_lock.get("source_generation_receipt_sha256")
         or traindev_provenance.get("generation_receipt", {}).get("sha256")

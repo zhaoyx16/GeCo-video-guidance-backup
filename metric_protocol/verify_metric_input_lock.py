@@ -58,7 +58,7 @@ def load_exact_sibling(path: Path, expected_sha256: str, module_name: str) -> ty
 
 _provenance_module = load_exact_sibling(
     Path(__file__).resolve(strict=True).with_name("traindev_provenance_v1.py"),
-    "04a7be90f612b15be4521aed8379446569fb5bce28299c8e13b237ed7e04b6ab",
+    "3475e5c35b52e4d685b5ec496d6b4e9aedfe32db309ed2cab4455edd08a8d6c3",
     "locked_traindev_provenance_v1",
 )
 verify_train_dev_provenance = _provenance_module.verify_train_dev_provenance
@@ -168,6 +168,8 @@ def main() -> None:
         or lock.get("method_id") not in TRAINDEV_METHOD_IDS
         or not isinstance(lock.get("traindev_reference_isolation_receipt_sha256"), str)
         or len(lock["traindev_reference_isolation_receipt_sha256"]) != 64
+        or not isinstance(lock.get("bundle_reference_path"), str)
+        or not Path(lock["bundle_reference_path"]).is_absolute()
     ):
         raise ValueError("unexpected train-dev input-lock identity")
     evaluator_binding = None
@@ -189,6 +191,12 @@ def main() -> None:
         traindev_provenance = verify_train_dev_provenance(
             input_payload=lock,
             input_binding=binding(args.input_lock),
+            source_bundle_reference=locked_provenance.get(
+                "source_bundle_reference"
+            ),
+            expected_bundle_reference_sha256=locked_provenance.get(
+                "expected_bundle_reference_sha256"
+            ),
             source_bundle_ready=locked_provenance.get("source_bundle_ready"),
             expected_generation_receipt_sha256=locked_provenance.get(
                 "expected_generation_receipt_sha256"

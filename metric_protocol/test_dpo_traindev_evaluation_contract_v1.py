@@ -108,9 +108,12 @@ def synthetic_generation_receipt(source_root: Path) -> tuple[dict, list[tuple[st
     return receipt, cases
 
 
-def synthetic_sealed_bundle(root: Path) -> tuple[Path, dict[str, str], str, str]:
+def synthetic_sealed_bundle(
+    root: Path,
+) -> tuple[Path, dict[str, str], dict[str, str], str, str]:
     """Build a tiny-byte, full 100-pair/800-record provenance closure."""
     root.mkdir(parents=True)
+    reference_path = root.parent / f"{root.name}-bundle-reference.json"
     receipt, cases = synthetic_generation_receipt(root)
     entries_by_mode = {"base": [], "adapted": []}
     records = []
@@ -238,6 +241,7 @@ def synthetic_sealed_bundle(root: Path) -> tuple[Path, dict[str, str], str, str]
         "source_generation_receipt_sha256": generation_binding["sha256"],
         "mirror_index_sha256": mirror_index_binding["sha256"],
         "mirror_root": str(root.resolve()),
+        "bundle_reference_path": str(reference_path.resolve()),
         "entries": entries_by_mode["base"],
     }
     base_binding = dump_readonly(root / "BASE_INPUT_LOCK.json", base_input)
@@ -245,6 +249,7 @@ def synthetic_sealed_bundle(root: Path) -> tuple[Path, dict[str, str], str, str]
         "schema": provenance.ADAPTED_ENTRIES_SCHEMA,
         "site": "Hippasus",
         "scope": "train_dev_evaluation",
+        "bundle_reference_path": str(reference_path.resolve()),
         "entries": entries_by_mode["adapted"],
     }
     adapted_binding = dump_readonly(root / "ADAPTED_INPUT_ENTRIES.json", adapted_entries)
@@ -264,10 +269,51 @@ def synthetic_sealed_bundle(root: Path) -> tuple[Path, dict[str, str], str, str]
         "mirror_index": mirror_index_binding,
         "base_input_lock": base_binding,
         "adapted_input_entries": adapted_binding,
+        "bundle_reference_path": str(reference_path.resolve()),
     }
     ready_binding = dump_readonly(root / "BUNDLE_READY.json", ready)
+    root_stat = root.stat()
+    reference = {
+        "schema": provenance.BUNDLE_REFERENCE_SCHEMA,
+        "status": "READY",
+        "site": "Hippasus",
+        "split": "dev",
+        "reserved_ids_disclosed": False,
+        "case_count": 100,
+        "task_count": 200,
+        "pair_count": 100,
+        "mirror_file_count": 800,
+        "bundle_root": str(root.resolve()),
+        "bundle_root_identity": {
+            "st_dev": root_stat.st_dev,
+            "st_ino": root_stat.st_ino,
+            "mode": 0o555,
+        },
+        "bundle_ready": ready_binding,
+        "generation_receipt_sha256": generation_binding["sha256"],
+        "manifest_sha256": manifest_sha,
+        "derivation_tool_sha256": "d" * 64,
+        "publication": {
+            "primitive": "linkat_at_empty_path_noreplace",
+            "reference_path": str(reference_path.resolve()),
+        },
+    }
+    reference_source_binding = dump_readonly(
+        root / "BUNDLE_REFERENCE_SOURCE.json", reference
+    )
     bundle.seal_tree(root)
-    return root / "BASE_INPUT_LOCK.json", ready_binding, generation_binding["sha256"], manifest_sha
+    os.link(reference_source_binding["path"], reference_path)
+    reference_binding = {
+        "path": str(reference_path.resolve()),
+        "sha256": reference_source_binding["sha256"],
+    }
+    return (
+        root / "BASE_INPUT_LOCK.json",
+        reference_binding,
+        ready_binding,
+        generation_binding["sha256"],
+        manifest_sha,
+    )
 
 
 class TrainDevEvaluationContractTest(unittest.TestCase):
@@ -415,9 +461,13 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
     def test_relabelled_or_self_declared_base_input_fails_bundle_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            input_path, ready_binding, generation_sha, manifest_sha = synthetic_sealed_bundle(
-                root / "bundle"
-            )
+            (
+                input_path,
+                reference_binding,
+                ready_binding,
+                generation_sha,
+                manifest_sha,
+            ) = synthetic_sealed_bundle(root / "bundle")
             input_payload = json.loads(input_path.read_text())
             input_binding = {
                 "path": str(input_path.resolve()),
@@ -427,10 +477,22 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
                 verified = provenance.verify_train_dev_provenance(
                     input_payload=input_payload,
                     input_binding=input_binding,
+                    source_bundle_reference=reference_binding,
+                    expected_bundle_reference_sha256=reference_binding["sha256"],
                     source_bundle_ready=ready_binding,
                     expected_generation_receipt_sha256=generation_sha,
                 )
             self.assertEqual(verified["status"], "verified")
+            with mock.patch.object(provenance, "EXPECTED_MANIFEST_SHA256", manifest_sha):
+                with self.assertRaises(ValueError):
+                    provenance.verify_train_dev_provenance(
+                        input_payload=input_payload,
+                        input_binding=input_binding,
+                        source_bundle_reference=reference_binding,
+                        expected_bundle_reference_sha256=None,
+                        source_bundle_ready=ready_binding,
+                        expected_generation_receipt_sha256=generation_sha,
+                    )
             forged = copy.deepcopy(input_payload)
             forged["traindev_reference_isolation_receipt_sha256"] = "b" * 64
             forged_path = root / "forged-input.json"
@@ -440,6 +502,8 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
                     provenance.verify_train_dev_provenance(
                         input_payload=forged,
                         input_binding=forged_binding,
+                        source_bundle_reference=reference_binding,
+                        expected_bundle_reference_sha256=reference_binding["sha256"],
                         source_bundle_ready=ready_binding,
                         expected_generation_receipt_sha256=generation_sha,
                     )
@@ -454,6 +518,8 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
                         provenance.verify_train_dev_provenance(
                             input_payload=relabelled,
                             input_binding=relabelled_binding,
+                            source_bundle_reference=reference_binding,
+                            expected_bundle_reference_sha256=reference_binding["sha256"],
                             source_bundle_ready=ready_binding,
                             expected_generation_receipt_sha256=generation_sha,
                         )
@@ -617,6 +683,242 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
                     directory_fd, descriptor, identity, "generation lock"
                 )
             os.close(directory_fd)
+
+    @unittest.skipUnless(os.uname().sysname == "Linux", "Linux linkat AT_EMPTY_PATH semantics")
+    def test_bundle_reference_publication_is_descriptor_pinned_and_no_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "bundle-reference.json"
+            sealed = root / ".bundle-reference.json.sealed-bundle.synthetic"
+            sealed.mkdir()
+            source = sealed / "BUNDLE_REFERENCE_SOURCE.json"
+            source.write_bytes(b'{"status":"READY"}\n')
+            os.chmod(source, 0o444)
+            os.chmod(sealed, 0o555)
+            target_directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            source_directory_fd = os.open(sealed, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                real_link = bundle.linkat_empty_path_noreplace
+
+                def replace_source_name_before_link(
+                    descriptor: int, target_name: str, *, directory_fd: int
+                ) -> None:
+                    os.chmod(sealed, 0o755)
+                    source.rename(sealed / "held-original-reference")
+                    source.write_bytes(b"attacker replacement\n")
+                    real_link(
+                        descriptor,
+                        target_name,
+                        directory_fd=directory_fd,
+                    )
+
+                with mock.patch.object(
+                    bundle,
+                    "linkat_empty_path_noreplace",
+                    side_effect=replace_source_name_before_link,
+                ):
+                    reference_sha = bundle.publish_readonly_reference_noreplace(
+                        target,
+                        "BUNDLE_REFERENCE_SOURCE.json",
+                        b'{"status":"READY"}\n',
+                        source_directory_fd=source_directory_fd,
+                        target_directory_fd=target_directory_fd,
+                    )
+                self.assertEqual(
+                    reference_sha,
+                    hashlib.sha256(b'{"status":"READY"}\n').hexdigest(),
+                )
+                self.assertEqual(target.read_bytes(), b'{"status":"READY"}\n')
+                self.assertEqual(target.stat().st_mode & 0o222, 0)
+
+                second_source = sealed / "SECOND_REFERENCE_SOURCE.json"
+                second_source.write_bytes(b'{"status":"DIFFERENT"}\n')
+                os.chmod(second_source, 0o444)
+                with self.assertRaises(FileExistsError):
+                    bundle.publish_readonly_reference_noreplace(
+                        target,
+                        "SECOND_REFERENCE_SOURCE.json",
+                        b'{"status":"DIFFERENT"}\n',
+                        source_directory_fd=source_directory_fd,
+                        target_directory_fd=target_directory_fd,
+                    )
+                self.assertEqual(target.read_bytes(), b'{"status":"READY"}\n')
+            finally:
+                os.close(source_directory_fd)
+                os.close(target_directory_fd)
+
+    @unittest.skipUnless(os.uname().sysname == "Linux", "Linux linkat AT_EMPTY_PATH semantics")
+    def test_bundle_reference_publication_fault_exposes_no_final_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "bundle-reference.json"
+            sealed = root / ".bundle-reference.json.sealed-bundle.synthetic"
+            sealed.mkdir()
+            source = sealed / "BUNDLE_REFERENCE_SOURCE.json"
+            source.write_bytes(b'{"status":"READY"}\n')
+            os.chmod(source, 0o444)
+            os.chmod(sealed, 0o555)
+            target_directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            source_directory_fd = os.open(sealed, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with mock.patch.object(
+                    bundle,
+                    "linkat_empty_path_noreplace",
+                    side_effect=RuntimeError("fault before atomic publication"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        bundle.publish_readonly_reference_noreplace(
+                            target,
+                            "BUNDLE_REFERENCE_SOURCE.json",
+                            b'{"status":"READY"}\n',
+                            source_directory_fd=source_directory_fd,
+                            target_directory_fd=target_directory_fd,
+                        )
+                self.assertFalse(target.exists())
+                self.assertEqual(source.stat().st_mode & 0o222, 0)
+            finally:
+                os.close(source_directory_fd)
+                os.close(target_directory_fd)
+
+    def test_bundle_reference_payload_binds_sealed_hidden_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            reference = parent / "bundle-reference.json"
+            sealed = parent / ".bundle-reference.json.sealed-bundle.synthetic"
+            sealed.mkdir(mode=0o700)
+            ready_bytes = b'{"schema":"ready","status":"READY"}\n'
+            ready_sha = bundle.write_readonly(sealed / "BUNDLE_READY.json", ready_bytes)
+            os.chmod(sealed, 0o555)
+            root_stat = sealed.stat()
+            payload = {
+                "schema": bundle.BUNDLE_REFERENCE_SCHEMA,
+                "status": "READY",
+                "site": "Hippasus",
+                "split": "dev",
+                "reserved_ids_disclosed": False,
+                "case_count": 100,
+                "task_count": 200,
+                "pair_count": 100,
+                "mirror_file_count": 800,
+                "bundle_root": str(sealed),
+                "bundle_root_identity": {
+                    "st_dev": root_stat.st_dev,
+                    "st_ino": root_stat.st_ino,
+                    "mode": 0o555,
+                },
+                "bundle_ready": {
+                    "path": str(sealed / "BUNDLE_READY.json"),
+                    "sha256": ready_sha,
+                },
+                "generation_receipt_sha256": "a" * 64,
+                "manifest_sha256": "b" * 64,
+                "derivation_tool_sha256": "c" * 64,
+                "publication": {
+                    "primitive": "linkat_at_empty_path_noreplace",
+                    "reference_path": str(reference),
+                },
+            }
+            bundle.validate_bundle_reference_payload(payload, reference)
+            bad = copy.deepcopy(payload)
+            bad["bundle_ready"]["sha256"] = "d" * 64
+            with self.assertRaises(bundle.ContractError):
+                bundle.validate_bundle_reference_payload(bad, reference)
+            os.chmod(sealed, 0o755)
+            source = sealed / "BUNDLE_REFERENCE_SOURCE.json"
+            reference_bytes = bundle.canonical_bytes(payload)
+            source.write_bytes(reference_bytes)
+            os.chmod(source, 0o444)
+            os.chmod(sealed, 0o555)
+            os.link(source, reference)
+            validated = bundle.validate_bundle_reference_file(
+                reference,
+                hashlib.sha256(reference_bytes).hexdigest(),
+            )
+            self.assertEqual(validated, payload)
+            real_validate_payload = bundle.validate_bundle_reference_payload
+            for replacement_mode in (0o644, 0o444):
+                with self.subTest(replacement_mode=oct(replacement_mode)):
+                    reference.unlink(missing_ok=True)
+                    os.link(source, reference)
+                    replacement = parent / f"replacement-{replacement_mode}.json"
+                    replacement.write_bytes(reference_bytes)
+                    os.chmod(replacement, replacement_mode)
+
+                    def replace_public_path(
+                        candidate: dict[str, object], candidate_path: Path
+                    ) -> None:
+                        real_validate_payload(candidate, candidate_path)
+                        os.replace(replacement, reference)
+
+                    with mock.patch.object(
+                        bundle,
+                        "validate_bundle_reference_payload",
+                        side_effect=replace_public_path,
+                    ):
+                        with self.assertRaises(bundle.ContractError):
+                            bundle.validate_bundle_reference_file(
+                                reference,
+                                hashlib.sha256(reference_bytes).hexdigest(),
+                            )
+            reference.unlink(missing_ok=True)
+            os.link(source, reference)
+
+            def make_held_inode_writable(
+                candidate: dict[str, object], candidate_path: Path
+            ) -> None:
+                real_validate_payload(candidate, candidate_path)
+                os.chmod(reference, 0o644)
+
+            with mock.patch.object(
+                bundle,
+                "validate_bundle_reference_payload",
+                side_effect=make_held_inode_writable,
+            ):
+                with self.assertRaises(bundle.ContractError):
+                    bundle.validate_bundle_reference_file(
+                        reference,
+                        hashlib.sha256(reference_bytes).hexdigest(),
+                    )
+            os.chmod(source, 0o444)
+            original_stat = bundle.os.stat
+            mutated = False
+
+            def overwrite_then_restore_readonly(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ) -> os.stat_result:
+                nonlocal mutated
+                if (
+                    not mutated
+                    and Path(path) == parent
+                    and kwargs.get("follow_symlinks") is False
+                    and "dir_fd" not in kwargs
+                ):
+                    mutated = True
+                    changed = bytearray(reference_bytes)
+                    changed[0] = ord("[")
+                    os.chmod(reference, 0o644)
+                    descriptor = os.open(reference, os.O_WRONLY | os.O_TRUNC)
+                    try:
+                        os.write(descriptor, changed)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    os.chmod(reference, 0o444)
+                return original_stat(path, *args, **kwargs)
+
+            with mock.patch.object(
+                bundle.os,
+                "stat",
+                side_effect=overwrite_then_restore_readonly,
+            ):
+                with self.assertRaises(bundle.ContractError):
+                    bundle.validate_bundle_reference_file(
+                        reference,
+                        hashlib.sha256(reference_bytes).hexdigest(),
+                    )
+            self.assertTrue(mutated)
 
     def test_externally_supplied_receipt_sha_is_mandatory(self) -> None:
         payload = b'{"status":"COMPLETE"}\n'
@@ -968,9 +1270,13 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
             receipts = derived / "receipts"
             for path in (derived / "mirrors", lock_dir, receipts):
                 path.mkdir(parents=True, exist_ok=True)
-            input_path, ready_binding, generation_sha, manifest_sha = synthetic_sealed_bundle(
-                derived / "mirrors" / "bundle"
-            )
+            (
+                input_path,
+                reference_binding,
+                ready_binding,
+                generation_sha,
+                manifest_sha,
+            ) = synthetic_sealed_bundle(derived / "mirrors" / "bundle")
             input_payload = json.loads(input_path.read_text())
             input_binding = {
                 "path": str(input_path.resolve()),
@@ -984,6 +1290,8 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
                 verified_provenance = preflight.verify_train_dev_provenance(
                     input_payload=input_payload,
                     input_binding=input_binding,
+                    source_bundle_reference=reference_binding,
+                    expected_bundle_reference_sha256=reference_binding["sha256"],
                     source_bundle_ready=ready_binding,
                     expected_generation_receipt_sha256=generation_sha,
                 )

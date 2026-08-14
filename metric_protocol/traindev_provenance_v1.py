@@ -12,6 +12,7 @@ from typing import Any
 
 
 BUNDLE_SCHEMA = "wan-lora-dpo-traindev-evaluator-bundle-v1"
+BUNDLE_REFERENCE_SCHEMA = "wan-lora-dpo-traindev-evaluator-bundle-reference-v1"
 INPUT_SCHEMA = "geometry-selection-five-metric-traindev-input-lock-v1"
 ISOLATION_SCHEMA = "wan-lora-dpo-traindev-reference-isolation-receipt-v1"
 MIRROR_INDEX_SCHEMA = "wan-lora-dpo-traindev-evaluator-mirror-index-v1"
@@ -325,6 +326,8 @@ def verify_train_dev_provenance(
     *,
     input_payload: dict[str, Any],
     input_binding: dict[str, str],
+    source_bundle_reference: Any,
+    expected_bundle_reference_sha256: Any,
     source_bundle_ready: Any,
     expected_generation_receipt_sha256: Any,
     expected_baseline_eligibility_sha256: Any = None,
@@ -345,12 +348,43 @@ def verify_train_dev_provenance(
     expected_generation_sha = require_sha(
         expected_generation_receipt_sha256, "external generation receipt SHA"
     )
+    expected_reference_sha = require_sha(
+        expected_bundle_reference_sha256, "external bundle reference SHA"
+    )
     root = Path(input_payload.get("mirror_root", ""))
     if not root.is_absolute() or root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
         raise ValueError("train-dev mirror root must be an absolute sealed directory")
     root = root.resolve(strict=True)
     ready, ready_binding = read_bound_json(source_bundle_ready, "source bundle READY")
     require_exact_path(ready_binding, root / "BUNDLE_READY.json", "source bundle READY", root)
+    reference, reference_binding = read_bound_json(
+        source_bundle_reference, "source bundle reference"
+    )
+    reference_path = Path(reference_binding["path"])
+    if (
+        reference_binding["sha256"] != expected_reference_sha
+        or reference.get("schema") != BUNDLE_REFERENCE_SCHEMA
+        or reference.get("status") != "READY"
+        or reference.get("site") != "Hippasus"
+        or reference.get("split") != "dev"
+        or reference.get("reserved_ids_disclosed") is not False
+        or reference.get("case_count") != 100
+        or reference.get("task_count") != 200
+        or reference.get("pair_count") != 100
+        or reference.get("mirror_file_count") != 800
+        or reference.get("bundle_root") != str(root)
+        or reference.get("bundle_ready") != ready_binding
+        or not reference_path.is_absolute()
+        or reference_path.parent != root.parent
+        or reference.get("publication")
+        != {
+            "primitive": "linkat_at_empty_path_noreplace",
+            "reference_path": str(reference_path),
+        }
+        or ready.get("bundle_reference_path") != str(reference_path)
+        or input_payload.get("bundle_reference_path") != str(reference_path)
+    ):
+        raise ValueError("train-dev scoring lacks the exact externally pinned bundle reference")
     if (
         ready.get("schema") != BUNDLE_SCHEMA
         or ready.get("status") != "READY"
@@ -451,6 +485,7 @@ def verify_train_dev_provenance(
     return {
         "schema": "geometry-selection-traindev-provenance-verification-v1",
         "status": "verified",
+        "source_bundle_reference": reference_binding,
         "source_bundle_ready": ready_binding,
         "generation_receipt": generation_binding,
         "manifest": manifest_binding,
@@ -459,6 +494,7 @@ def verify_train_dev_provenance(
         "base_input_lock": base_binding,
         "adapted_entries": adapted_binding,
         "expected_generation_receipt_sha256": expected_generation_sha,
+        "expected_bundle_reference_sha256": expected_reference_sha,
         "expected_baseline_eligibility_sha256": (
             expected_eligibility_sha if mode == "adapted" else None
         ),

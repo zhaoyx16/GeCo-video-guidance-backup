@@ -4,7 +4,8 @@
 The generation tree is intentionally treated as mutable.  This builder accepts
 only the controller's final 200-task receipt, opens every source artifact with
 ``O_NOFOLLOW``, copies from the held inode, rechecks pathname/inode metadata,
-and publishes one fresh read-only bundle by atomic directory rename.
+seals one private bundle directory, and publishes an immutable reference to it
+with descriptor-pinned ``linkat(AT_EMPTY_PATH)`` no-replace semantics.
 
 The bundle contains both video methods, but only the base input lock.  The
 adapted input lock is published later, after base scoring freezes the shared
@@ -30,6 +31,7 @@ from typing import Any
 GENERATION_RECEIPT_SCHEMA = "wan-lora-dpo-traindev-paired-generation-receipt-v1"
 INPUT_LOCK_SCHEMA = "geometry-selection-five-metric-traindev-input-lock-v1"
 BUNDLE_SCHEMA = "wan-lora-dpo-traindev-evaluator-bundle-v1"
+BUNDLE_REFERENCE_SCHEMA = "wan-lora-dpo-traindev-evaluator-bundle-reference-v1"
 PARENT_PROTOCOL_SCHEMA = "geometry-selection-five-metric-protocol-v2"
 PARENT_SCHEDULE_SCHEMA = "geometry-selection-metric-schedule-v2"
 TRAINDEV_PROTOCOL_SCHEMA = "geometry-selection-five-metric-traindev-protocol-v1"
@@ -699,38 +701,325 @@ def write_readonly(path: Path, payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def rename_noreplace(source: Path, target: Path, *, directory_fd: int | None = None) -> None:
-    """Atomically publish a directory without replacement on Linux."""
+def linkat_empty_path_noreplace(
+    source_fd: int,
+    target_name: str,
+    *,
+    directory_fd: int,
+) -> None:
+    """Atomically hard-link the descriptor-pinned inode at a fresh name."""
     if os.uname().sysname != "Linux":
-        raise ContractError("atomic RENAME_NOREPLACE publication requires Linux")
+        raise ContractError("descriptor-pinned reference publication requires Linux")
+    if not target_name or "/" in target_name or target_name in {".", ".."}:
+        raise ContractError("reference publication target must be one filename")
     libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise ContractError("libc lacks renameat2 for no-replace publication")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    at_fdcwd = -100
-    if directory_fd is not None:
-        if source.parent.absolute() != target.parent.absolute():
-            raise ContractError("descriptor-pinned publication requires one shared parent")
-        source_argument = os.fsencode(source.name)
-        target_argument = os.fsencode(target.name)
-        source_directory_fd = target_directory_fd = directory_fd
-    else:
-        source_argument = os.fsencode(source)
-        target_argument = os.fsencode(target)
-        source_directory_fd = target_directory_fd = at_fdcwd
-    rename_noreplace_flag = 1
-    result = renameat2(
-        source_directory_fd,
-        source_argument,
-        target_directory_fd,
-        target_argument,
-        rename_noreplace_flag,
-    )
+    linkat = getattr(libc, "linkat", None)
+    if linkat is None:
+        raise ContractError("libc lacks linkat for descriptor-pinned publication")
+    linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    linkat.restype = ctypes.c_int
+    at_empty_path = 0x1000
+    result = linkat(source_fd, b"", directory_fd, os.fsencode(target_name), at_empty_path)
     if result != 0:
         error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), str(target))
+        raise OSError(error, os.strerror(error), target_name)
+
+
+def publish_readonly_reference_noreplace(
+    target: Path,
+    source_name: str,
+    expected_payload: bytes,
+    *,
+    source_directory_fd: int,
+    target_directory_fd: int,
+) -> str:
+    """Publish a complete immutable reference without a writable final pathname.
+
+    The source file already lives inside the sealed private bundle.
+    ``linkat(AT_EMPTY_PATH)`` links its held descriptor at the public name with
+    atomic no-replace semantics, so replacing the private pathname cannot
+    redirect publication and no temporary reference is exposed in the public
+    directory.
+    """
+    if os.uname().sysname != "Linux":
+        raise ContractError("descriptor-pinned reference publication requires Linux")
+    named_parent = os.stat(target.parent, follow_symlinks=False)
+    held_parent = os.fstat(target_directory_fd)
+    if (
+        not stat.S_ISDIR(named_parent.st_mode)
+        or (named_parent.st_dev, named_parent.st_ino)
+        != (held_parent.st_dev, held_parent.st_ino)
+    ):
+        raise ContractError("reference publication directory descriptor mismatch")
+    if not source_name or "/" in source_name or source_name in {".", ".."}:
+        raise ContractError("bundle reference source must be one filename")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(source_name, flags, dir_fd=source_directory_fd)
+    try:
+        held = os.fstat(descriptor)
+        if not stat.S_ISREG(held.st_mode) or held.st_mode & 0o222:
+            raise ContractError("bundle reference source is not an immutable regular file")
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        payload = b"".join(chunks)
+        if payload != expected_payload:
+            raise ContractError("sealed bundle reference source bytes differ")
+        linkat_empty_path_noreplace(
+            descriptor,
+            target.name,
+            directory_fd=target_directory_fd,
+        )
+        published = os.stat(
+            target.name, dir_fd=target_directory_fd, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or published.st_mode & 0o222
+            or (published.st_dev, published.st_ino) != (held.st_dev, held.st_ino)
+        ):
+            raise ContractError("published bundle reference differs from its held immutable inode")
+        named_parent = os.stat(target.parent, follow_symlinks=False)
+        if (named_parent.st_dev, named_parent.st_ino) != (
+            held_parent.st_dev,
+            held_parent.st_ino,
+        ):
+            raise ContractError("reference publication parent changed during publication")
+        os.fsync(target_directory_fd)
+    finally:
+        os.close(descriptor)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def validate_bundle_reference_payload(payload: Any, reference_path: Path) -> None:
+    """Validate the public reference before its one-way atomic publication."""
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "status",
+        "site",
+        "split",
+        "reserved_ids_disclosed",
+        "case_count",
+        "task_count",
+        "pair_count",
+        "mirror_file_count",
+        "bundle_root",
+        "bundle_root_identity",
+        "bundle_ready",
+        "generation_receipt_sha256",
+        "manifest_sha256",
+        "derivation_tool_sha256",
+        "publication",
+    }:
+        raise ContractError("bundle reference schema fields differ")
+    if (
+        payload["schema"] != BUNDLE_REFERENCE_SCHEMA
+        or payload["status"] != "READY"
+        or payload["site"] != "Hippasus"
+        or payload["split"] != "dev"
+        or payload["reserved_ids_disclosed"] is not False
+        or payload["case_count"] != 100
+        or payload["task_count"] != 200
+        or payload["pair_count"] != 100
+        or payload["mirror_file_count"] != 800
+    ):
+        raise ContractError("bundle reference semantic identity differs")
+    for key in (
+        "generation_receipt_sha256",
+        "manifest_sha256",
+        "derivation_tool_sha256",
+    ):
+        require_sha256(payload[key], f"bundle reference {key}")
+    bundle_root_value = payload["bundle_root"]
+    if not isinstance(bundle_root_value, str):
+        raise ContractError("bundle reference root path is missing")
+    bundle_root = Path(bundle_root_value)
+    expected_prefix = f".{reference_path.name}.sealed-bundle."
+    if (
+        not bundle_root.is_absolute()
+        or bundle_root.parent != reference_path.parent.absolute()
+        or not bundle_root.name.startswith(expected_prefix)
+        or bundle_root.is_symlink()
+        or not bundle_root.is_dir()
+    ):
+        raise ContractError("bundle reference root is outside its private sealed namespace")
+    root_stat = os.stat(bundle_root, follow_symlinks=False)
+    identity = payload["bundle_root_identity"]
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"st_dev", "st_ino", "mode"}
+        or identity
+        != {
+            "st_dev": root_stat.st_dev,
+            "st_ino": root_stat.st_ino,
+            "mode": stat.S_IMODE(root_stat.st_mode),
+        }
+        or identity["mode"] != 0o555
+    ):
+        raise ContractError("bundle reference root identity or immutability differs")
+    ready = payload["bundle_ready"]
+    expected_ready = bundle_root / "BUNDLE_READY.json"
+    if (
+        not isinstance(ready, dict)
+        or set(ready) != {"path", "sha256"}
+        or ready.get("path") != str(expected_ready)
+        or not is_sha256(ready.get("sha256"))
+    ):
+        raise ContractError("bundle reference READY binding is malformed")
+    ready_bytes, ready_stat = read_regular_no_follow(expected_ready, "bundle READY")
+    if ready_stat.st_mode & 0o222 or hashlib.sha256(ready_bytes).hexdigest() != ready["sha256"]:
+        raise ContractError("bundle reference READY artifact differs")
+    publication = payload["publication"]
+    if publication != {
+        "primitive": "linkat_at_empty_path_noreplace",
+        "reference_path": str(reference_path),
+    }:
+        raise ContractError("bundle reference publication contract differs")
+
+
+def validate_bundle_reference_file(
+    reference_path: Path,
+    expected_sha256: str,
+) -> dict[str, Any]:
+    """Verify the public reference while all names and source inodes stay pinned."""
+    expected_sha256 = require_sha256(
+        expected_sha256, "expected bundle reference SHA"
+    )
+    if not reference_path.is_absolute():
+        raise ContractError("bundle reference path must be absolute")
+    parent_fd = open_absolute_directory_no_follow(
+        reference_path.parent, "bundle reference parent"
+    )
+    reference_fd: int | None = None
+    root_fd: int | None = None
+    source_fd: int | None = None
+    ready_fd: int | None = None
+    try:
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        directory_flags = file_flags | os.O_DIRECTORY
+        reference_fd = os.open(reference_path.name, file_flags, dir_fd=parent_fd)
+        reference_stat = os.fstat(reference_fd)
+        if not stat.S_ISREG(reference_stat.st_mode) or reference_stat.st_mode & 0o222:
+            raise ContractError("bundle reference is not an immutable regular file")
+        reference_chunks: list[bytes] = []
+        while True:
+            block = os.read(reference_fd, 1024 * 1024)
+            if not block:
+                break
+            reference_chunks.append(block)
+        reference_bytes = b"".join(reference_chunks)
+        reference_sha = hashlib.sha256(reference_bytes).hexdigest()
+        if reference_sha != expected_sha256 or len(reference_bytes) != reference_stat.st_size:
+            raise ContractError("bundle reference differs from its external SHA/size")
+        payload = read_json_bytes(reference_bytes, "bundle reference")
+        validate_bundle_reference_payload(payload, reference_path)
+
+        bundle_root = Path(payload["bundle_root"])
+        if bundle_root.parent != reference_path.parent:
+            raise ContractError("sealed bundle and public reference do not share one parent")
+        root_fd = os.open(bundle_root.name, directory_flags, dir_fd=parent_fd)
+        root_stat = os.fstat(root_fd)
+        identity = payload["bundle_root_identity"]
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o555
+            or (root_stat.st_dev, root_stat.st_ino)
+            != (identity["st_dev"], identity["st_ino"])
+        ):
+            raise ContractError("descriptor-pinned sealed bundle root identity differs")
+
+        source_fd = os.open(
+            "BUNDLE_REFERENCE_SOURCE.json", file_flags, dir_fd=root_fd
+        )
+        source_stat = os.fstat(source_fd)
+        source_chunks: list[bytes] = []
+        while True:
+            block = os.read(source_fd, 1024 * 1024)
+            if not block:
+                break
+            source_chunks.append(block)
+        source_bytes = b"".join(source_chunks)
+        if (
+            not stat.S_ISREG(source_stat.st_mode)
+            or source_stat.st_mode & 0o222
+            or source_bytes != reference_bytes
+            or len(source_bytes) != source_stat.st_size
+            or (source_stat.st_dev, source_stat.st_ino)
+            != (reference_stat.st_dev, reference_stat.st_ino)
+        ):
+            raise ContractError("public bundle reference is not the sealed source inode")
+
+        ready_binding = payload["bundle_ready"]
+        ready_fd = os.open("BUNDLE_READY.json", file_flags, dir_fd=root_fd)
+        ready_stat = os.fstat(ready_fd)
+        ready_chunks: list[bytes] = []
+        while True:
+            block = os.read(ready_fd, 1024 * 1024)
+            if not block:
+                break
+            ready_chunks.append(block)
+        ready_bytes = b"".join(ready_chunks)
+        if (
+            not stat.S_ISREG(ready_stat.st_mode)
+            or ready_stat.st_mode & 0o222
+            or len(ready_bytes) != ready_stat.st_size
+            or hashlib.sha256(ready_bytes).hexdigest()
+            != ready_binding["sha256"]
+        ):
+            raise ContractError("descriptor-pinned bundle READY artifact differs")
+
+        reference_now = os.fstat(reference_fd)
+        root_now = os.fstat(root_fd)
+        source_now = os.fstat(source_fd)
+        ready_now = os.fstat(ready_fd)
+        stable = lambda value: (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+        if (
+            stable(reference_now) != stable(reference_stat)
+            or stable(root_now) != stable(root_stat)
+            or stable(source_now) != stable(source_stat)
+            or stable(ready_now) != stable(ready_stat)
+        ):
+            raise ContractError("bundle reference inode metadata changed during validation")
+        named_parent = os.stat(reference_path.parent, follow_symlinks=False)
+        named_reference = os.stat(
+            reference_path.name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        named_root = os.stat(bundle_root.name, dir_fd=parent_fd, follow_symlinks=False)
+        named_source = os.stat(
+            "BUNDLE_REFERENCE_SOURCE.json", dir_fd=root_fd, follow_symlinks=False
+        )
+        named_ready = os.stat(
+            "BUNDLE_READY.json", dir_fd=root_fd, follow_symlinks=False
+        )
+        held_parent = os.fstat(parent_fd)
+        if (
+            stable(named_parent) != stable(held_parent)
+            or stable(named_reference) != stable(reference_now)
+            or stable(named_root) != stable(root_now)
+            or stable(named_source) != stable(source_now)
+            or stable(named_ready) != stable(ready_now)
+        ):
+            raise ContractError("bundle reference namespace changed during validation")
+        return payload
+    finally:
+        for descriptor in (ready_fd, source_fd, root_fd, reference_fd, parent_fd):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def safe_relative_source(path_value: Any, source_root: Path, label: str) -> Path:
@@ -1171,7 +1460,9 @@ def build_bundle(
         derivation_tool_sha,
     )
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}.", dir=output_root.parent))
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output_root.name}.sealed-bundle.", dir=output_root.parent)
+    ).absolute()
     output_parent_fd = open_absolute_directory_no_follow(
         output_root.parent, "bundle output parent"
     )
@@ -1329,11 +1620,11 @@ def build_bundle(
                 "split_order": case_index,
                 "seed": 0,
                 "run_id": run_id,
-                "metric_video_path": str(output_root / "mirror" / mode / destination.name / "video.mp4"),
-                "metric_metadata_path": str(output_root / "mirror" / mode / destination.name / "metadata.json"),
-                "metric_complete_path": str(output_root / "mirror" / mode / destination.name / "COMPLETE"),
+                "metric_video_path": str(staging / "mirror" / mode / destination.name / "video.mp4"),
+                "metric_metadata_path": str(staging / "mirror" / mode / destination.name / "metadata.json"),
+                "metric_complete_path": str(staging / "mirror" / mode / destination.name / "COMPLETE"),
                 "metric_generation_lock_path": str(
-                    output_root / "mirror" / mode / destination.name / ".generation.lock"
+                    staging / "mirror" / mode / destination.name / ".generation.lock"
                 ),
                 "video_sha256": video_sha,
                 "metadata_sha256": copied_metadata_sha,
@@ -1366,7 +1657,7 @@ def build_bundle(
             if pairs[case_index]["pair_identity_sha256"] != base["pair_identity_sha256"]:
                 raise ContractError(f"copied pair differs from final receipt at case {case_index}")
 
-        validate_mirror_closure(staging, output_root, mirror_records)
+        validate_mirror_closure(staging, staging, mirror_records)
 
         provenance = staging / "provenance"
         provenance.mkdir(mode=0o700)
@@ -1406,8 +1697,9 @@ def build_bundle(
             "source_generation_receipt_sha256": receipt_sha,
             "metric_protocol_sha256": protocol_sha,
             "metric_schedule_sha256": schedule_sha,
-            "mirror_root": str(output_root),
+            "mirror_root": str(staging),
             "mirror_index_sha256": mirror_index_sha,
+            "bundle_reference_path": str(output_root),
             "entries": entries_by_mode["adapted"],
         }
         adapted_entries_sha = write_readonly(
@@ -1428,8 +1720,9 @@ def build_bundle(
             "metric_protocol_sha256": protocol_sha,
             "metric_schedule_sha256": schedule_sha,
             "video_contract": EXPECTED_VIDEO_PROBE,
-            "mirror_root": str(output_root),
+            "mirror_root": str(staging),
             "mirror_index_sha256": mirror_index_sha,
+            "bundle_reference_path": str(output_root),
             "selection_policy": "paired base mode; one seed-0 video per frozen train-dev scene",
             "entries": entries_by_mode["base"],
         }
@@ -1444,21 +1737,22 @@ def build_bundle(
             "task_count": 200,
             "pair_count": 100,
             "mirror_file_count": len(mirror_records),
-            "generation_receipt": {"path": str(output_root / "provenance" / "PAIRED_GENERATION_RECEIPT.json"), "sha256": copied_receipt_sha},
-            "manifest": {"path": str(output_root / "provenance" / "dev100_manifest_960p_v2.json"), "sha256": copied_manifest_sha},
+            "generation_receipt": {"path": str(staging / "provenance" / "PAIRED_GENERATION_RECEIPT.json"), "sha256": copied_receipt_sha},
+            "manifest": {"path": str(staging / "provenance" / "dev100_manifest_960p_v2.json"), "sha256": copied_manifest_sha},
             "traindev_reference_isolation_receipt": {
-                "path": str(output_root / "TRAINDEV_REFERENCE_ISOLATION_RECEIPT.json"),
+                "path": str(staging / "TRAINDEV_REFERENCE_ISOLATION_RECEIPT.json"),
                 "sha256": isolation_sha,
             },
-            "metric_protocol": {"path": str(output_root / "five_metric_protocol_traindev_v1.json"), "sha256": protocol_sha},
-            "metric_schedule": {"path": str(output_root / "metric_schedule_traindev_v1.json"), "sha256": schedule_sha},
-            "mirror_index": {"path": str(output_root / "MIRROR_INDEX.json"), "sha256": mirror_index_sha},
-            "base_input_lock": {"path": str(output_root / "BASE_INPUT_LOCK.json"), "sha256": base_lock_sha},
+            "metric_protocol": {"path": str(staging / "five_metric_protocol_traindev_v1.json"), "sha256": protocol_sha},
+            "metric_schedule": {"path": str(staging / "metric_schedule_traindev_v1.json"), "sha256": schedule_sha},
+            "mirror_index": {"path": str(staging / "MIRROR_INDEX.json"), "sha256": mirror_index_sha},
+            "base_input_lock": {"path": str(staging / "BASE_INPUT_LOCK.json"), "sha256": base_lock_sha},
             "adapted_input_entries": {
-                "path": str(output_root / "ADAPTED_INPUT_ENTRIES.json"),
+                "path": str(staging / "ADAPTED_INPUT_ENTRIES.json"),
                 "sha256": adapted_entries_sha,
             },
             "adapted_input_lock_status": "blocked_until_base_eligibility_lock",
+            "bundle_reference_path": str(output_root),
             "destination_decoder": {
                 "path": str(ffmpeg_path.absolute()),
                 "sha256": expected_ffmpeg_sha256,
@@ -1466,6 +1760,41 @@ def build_bundle(
             },
         }
         ready_sha = write_readonly(staging / "BUNDLE_READY.json", canonical_bytes(ready))
+        pinned_staging = os.fstat(staging_fd)
+        reference = {
+            "schema": BUNDLE_REFERENCE_SCHEMA,
+            "status": "READY",
+            "site": "Hippasus",
+            "split": "dev",
+            "reserved_ids_disclosed": False,
+            "case_count": 100,
+            "task_count": 200,
+            "pair_count": 100,
+            "mirror_file_count": len(mirror_records),
+            "bundle_root": str(staging),
+            "bundle_root_identity": {
+                "st_dev": pinned_staging.st_dev,
+                "st_ino": pinned_staging.st_ino,
+                "mode": 0o555,
+            },
+            "bundle_ready": {
+                "path": str(staging / "BUNDLE_READY.json"),
+                "sha256": ready_sha,
+            },
+            "generation_receipt_sha256": copied_receipt_sha,
+            "manifest_sha256": copied_manifest_sha,
+            "derivation_tool_sha256": derivation_tool_sha,
+            "publication": {
+                "primitive": "linkat_at_empty_path_noreplace",
+                "reference_path": str(output_root),
+            },
+        }
+        reference_bytes = canonical_bytes(reference)
+        reference_source_name = "BUNDLE_REFERENCE_SOURCE.json"
+        reference_source_sha = write_readonly(
+            staging / reference_source_name,
+            reference_bytes,
+        )
         seal_tree(staging)
         named_staging = os.stat(
             staging.name, dir_fd=output_parent_fd, follow_symlinks=False
@@ -1476,17 +1805,32 @@ def build_bundle(
             pinned_staging.st_ino,
         ):
             raise ContractError("bundle staging directory changed before publication")
-        rename_noreplace(staging, output_root, directory_fd=output_parent_fd)
-        published = os.stat(
-            output_root.name, dir_fd=output_parent_fd, follow_symlinks=False
+        validate_bundle_reference_payload(reference, output_root)
+        reference_sha = publish_readonly_reference_noreplace(
+            output_root,
+            reference_source_name,
+            reference_bytes,
+            source_directory_fd=staging_fd,
+            target_directory_fd=output_parent_fd,
         )
-        if (published.st_dev, published.st_ino) != (
-            pinned_staging.st_dev,
-            pinned_staging.st_ino,
-        ):
-            raise ContractError("published bundle identity differs from the sealed staging inode")
-        os.fsync(output_parent_fd)
-        return {"output": str(output_root), "ready_sha256": ready_sha, "base_input_lock_sha256": base_lock_sha, "mirror_file_count": len(mirror_records)}
+        if reference_sha != reference_source_sha:
+            raise ContractError("published reference SHA differs from its sealed source")
+        validated_reference = validate_bundle_reference_file(
+            output_root,
+            reference_sha,
+        )
+        if validated_reference != reference:
+            raise ContractError("mandatory published bundle reference validation differs")
+        return {
+            "output_reference": str(output_root),
+            "output_reference_sha256": reference_sha,
+            "reference_source": str(staging / reference_source_name),
+            "bundle_root": str(staging),
+            "bundle_ready": str(staging / "BUNDLE_READY.json"),
+            "ready_sha256": ready_sha,
+            "base_input_lock_sha256": base_lock_sha,
+            "mirror_file_count": len(mirror_records),
+        }
     except Exception:
         preserve_failed_staging(staging)
         raise
@@ -1501,9 +1845,11 @@ def validate_cli_output(output_root: Path, derived_root: Path) -> None:
     derived = derived_root.resolve(strict=True)
     if tuple(derived.parts[-3:]) != ("outputs", "geometry-selection", "hippasus_evaluation"):
         raise ContractError("derived root is not the approved Hippasus evaluator root")
+    if not output_root.is_absolute() or output_root.suffix != ".json":
+        raise ContractError("train-dev bundle output must be an absolute JSON reference path")
     target = output_root.parent.resolve(strict=True) / output_root.name
     if derived not in target.parents or target.relative_to(derived).parts[0] != "mirrors":
-        raise ContractError("train-dev bundle must publish below the evaluator mirrors root")
+        raise ContractError("train-dev bundle reference must publish below the evaluator mirrors root")
 
 
 def main() -> None:

@@ -222,6 +222,7 @@ def build_lock(
         or base.get("metric_protocol_sha256") != protocol_binding["sha256"]
         or base.get("metric_schedule_sha256") != schedule_binding["sha256"]
         or base.get("traindev_reference_isolation_receipt_sha256") != isolation_binding["sha256"]
+        or base.get("bundle_reference_path") != ready.get("bundle_reference_path")
     ):
         raise ValueError("base input lock identity/isolation mismatch")
     if (
@@ -271,6 +272,7 @@ def build_lock(
         or adapted.get("metric_schedule_sha256") != schedule_binding["sha256"]
         or adapted.get("mirror_root") != base.get("mirror_root")
         or adapted.get("mirror_index_sha256") != base.get("mirror_index_sha256")
+        or adapted.get("bundle_reference_path") != base.get("bundle_reference_path")
     ):
         raise ValueError("adapted entry set differs from the sealed paired bundle")
     if (
@@ -347,6 +349,7 @@ def build_lock(
         "video_contract": base["video_contract"],
         "mirror_root": str(mirror_root.resolve(strict=True)),
         "mirror_index_sha256": base["mirror_index_sha256"],
+        "bundle_reference_path": base["bundle_reference_path"],
         "source_bundle_ready": ready_binding,
         "source_adapted_entries": adapted_binding,
         "baseline_input_lock_sha256": base_binding["sha256"],
