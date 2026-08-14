@@ -33,6 +33,20 @@ EXPECTED_CONTROLLER_SHA256 = "402c6e8ac720c9166d4c6d82d982d416189470a3061442f27d
 EXPECTED_CONTROLLER_TESTS_SHA256 = "87461746097bc7ef56d38c80d8ca1c667bb6016b935f4bdde2657b71381c3ef6"
 EXPECTED_APPROVAL_SHA256 = "cb078d3299ff0526340d893f849e5a1c1fd1f68cfc5539bc6f64b739ab947a18"
 EXPECTED_MODEL_IDENTITY_SHA256 = "f0235d0491e5911382b65055775c859ecc5f2a3b4301a68f985f47eb7092a569"
+EXPECTED_STORED_VIDEO_PROBE = {
+    "width": 1280,
+    "height": 704,
+    "avg_frame_rate": "24.0",
+    "nb_frames": 121,
+    "backend": "imageio-ffmpeg-full-decode",
+}
+EXPECTED_INDEPENDENT_VIDEO_PROBE = {
+    "width": 1280,
+    "height": 704,
+    "avg_frame_rate": "24/1",
+    "nb_frames": 121,
+    "backend": "ffmpeg-full-decode",
+}
 EXPECTED_LORA_RECEIPT_SHA256 = "5d9509e36d5d9d9861df254bc64bdc3342eba79980d39316375b6795e8773ef0"
 EXPECTED_LORA_WEIGHT_SHA256 = "043331e8c9cc67cbc168d60256aed7cfa3f6f65a0b19ee6fb4bafd374d5a5ee3"
 MODES = ("base", "adapted")
@@ -223,22 +237,8 @@ def validate_generation(payload: dict[str, Any], input_payload: dict[str, Any]) 
             or task.get("mode") != MODES[mode_index]
             or not isinstance(task.get("run_id"), str)
             or not task["run_id"]
-            or task.get("stored_video_probe")
-            != {
-                "width": 1280,
-                "height": 704,
-                "avg_frame_rate": "24.0",
-                "nb_frames": 121,
-                "backend": "imageio-ffmpeg-full-decode",
-            }
-            or task.get("independent_video_probe")
-            != {
-                "width": 1280,
-                "height": 704,
-                "avg_frame_rate": "24.0",
-                "nb_frames": 121,
-                "backend": "ffmpeg-full-decode",
-            }
+            or task.get("stored_video_probe") != EXPECTED_STORED_VIDEO_PROBE
+            or task.get("independent_video_probe") != EXPECTED_INDEPENDENT_VIDEO_PROBE
         ):
             raise ValueError(f"paired generation task order differs at index {index}")
         for key in ("video_sha256", "metadata_sha256", "pair_identity_sha256"):

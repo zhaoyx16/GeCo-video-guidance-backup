@@ -59,6 +59,13 @@ EXPECTED_STORED_VIDEO_PROBE = {
     "nb_frames": 121,
     "backend": "imageio-ffmpeg-full-decode",
 }
+EXPECTED_INDEPENDENT_VIDEO_PROBE = {
+    "width": 1280,
+    "height": 704,
+    "avg_frame_rate": "24/1",
+    "nb_frames": 121,
+    "backend": "ffmpeg-full-decode",
+}
 EXPECTED_GENERATION_PROFILE = {
     "steps": 50,
     "frames": 121,
@@ -861,8 +868,7 @@ def validate_generation_receipt(
             or not is_sha256(task.get("video_sha256"))
             or not is_sha256(task.get("pair_identity_sha256"))
             or task.get("stored_video_probe") != EXPECTED_STORED_VIDEO_PROBE
-            or task.get("independent_video_probe")
-            != {**EXPECTED_STORED_VIDEO_PROBE, "backend": "ffmpeg-full-decode"}
+            or task.get("independent_video_probe") != EXPECTED_INDEPENDENT_VIDEO_PROBE
         ):
             raise ContractError(f"generation task receipt mismatch at index {index}")
     for index, pair in enumerate(pairs):

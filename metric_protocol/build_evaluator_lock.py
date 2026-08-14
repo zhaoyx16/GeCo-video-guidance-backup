@@ -60,7 +60,7 @@ verify_environment_fingerprint_payload = _package_runtime_module.verify_environm
 _TRAINDEV_PROVENANCE_HELPER = _BASE / "traindev_provenance_v1.py"
 _traindev_provenance_module = load_exact_sibling(
     _TRAINDEV_PROVENANCE_HELPER,
-    "89283249fba8e4176574b7bf0bf1cbe0cdfe94792a8433e51edb2d331b7fa7a1",
+    "04a7be90f612b15be4521aed8379446569fb5bce28299c8e13b237ed7e04b6ab",
     "locked_traindev_provenance_v1",
 )
 verify_train_dev_provenance = _traindev_provenance_module.verify_train_dev_provenance

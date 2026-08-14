@@ -54,10 +54,7 @@ def synthetic_generation_receipt(source_root: Path) -> tuple[dict, list[tuple[st
                 "video_sha256": video_sha,
                 "pair_identity_sha256": pair_sha,
                 "stored_video_probe": bundle.EXPECTED_STORED_VIDEO_PROBE,
-                "independent_video_probe": {
-                    **bundle.EXPECTED_STORED_VIDEO_PROBE,
-                    "backend": "ffmpeg-full-decode",
-                },
+                "independent_video_probe": bundle.EXPECTED_INDEPENDENT_VIDEO_PROBE,
             })
         pairs.append({
             "case_index": case_index,
@@ -294,6 +291,16 @@ class TrainDevEvaluationContractTest(unittest.TestCase):
             provenance.EXPECTED_REFERENCE_SOURCE_MANIFEST_SHA256,
             bundle.EXPECTED_FORMAL_SOURCE_MANIFEST_SHA256,
         )
+        self.assertEqual(
+            provenance.EXPECTED_STORED_VIDEO_PROBE,
+            bundle.EXPECTED_STORED_VIDEO_PROBE,
+        )
+        self.assertEqual(
+            provenance.EXPECTED_INDEPENDENT_VIDEO_PROBE,
+            bundle.EXPECTED_INDEPENDENT_VIDEO_PROBE,
+        )
+        self.assertEqual(bundle.EXPECTED_STORED_VIDEO_PROBE["avg_frame_rate"], "24.0")
+        self.assertEqual(bundle.EXPECTED_INDEPENDENT_VIDEO_PROBE["avg_frame_rate"], "24/1")
 
     def test_exact_helper_loaders_reject_replacement_symlink_and_one_byte_change(self) -> None:
         modules = (
