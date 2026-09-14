@@ -1,0 +1,1332 @@
+{
+  "_meta": {
+    "schema": "wan-c2f-dev25-manifest-v1",
+    "source_manifest": "/vol/dissolve/yz10325/outputs/geometry-selection/fullgraph_dpo_posttrain_v1/pilot32_manifest_960p_v1.json",
+    "source_manifest_sha256": "d44bac0d241445e4fe0fb553d0ea8746673a3b06d1a9782ab2232803c18c740a",
+    "selection_config": "/vol/dissolve/yz10325/repos/GeCo-worktrees/c2f-validation-0914/benchmarks/c2f_validation/frozen_c2f_k3_a0025.json",
+    "selection_config_sha256": "6f34f574306233b927ac13a69a23c536ccf86089c92dd0d97747f993cc775aca",
+    "reserved_split_csv": "/vol/dissolve/yz10325/repos/GeCo-worktrees/c2f-validation-0914/benchmarks/c2f_validation/frozen_scene_split_3_100_100.csv",
+    "reserved_split_sha256": "d1eed2400547d755e265149185515c3e6fdf981f63635bbbfa152d33fa53205c",
+    "reserved_split_counts": {
+      "test": 100,
+      "validation": 100,
+      "debug": 3
+    },
+    "reserved_overlap_counts": {
+      "test": 0,
+      "validation": 0,
+      "debug": 0
+    },
+    "selection_uses_generated_outputs": false,
+    "selection_uses_metrics": false,
+    "strata": [
+      "forward",
+      "forward_left",
+      "forward_right",
+      "lateral_left",
+      "lateral_right"
+    ],
+    "cases_per_stratum": 5,
+    "case_count": 25
+  },
+  "dl3dv_052e3e6371272bb633487276b4e7aebad6ca8886a547bf04775a0e6b6b56a7b0_s00160_forward": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance along the visible route, producing strong parallax and a large viewpoint change. Nearby surfaces grow in scale, sweep toward the frame edges, and pass out of view as new parts of the same environment are revealed. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/052e3e6371272bb633487276b4e7aebad6ca8886a547bf04775a0e6b6b56a7b0/frame_00161.png",
+    "source": "DL3DV",
+    "scene_id": "052e3e6371272bb633487276b4e7aebad6ca8886a547bf04775a0e6b6b56a7b0",
+    "motion_instruction": "forward",
+    "pose_window": [
+      160,
+      240
+    ],
+    "pose_stats": {
+      "path_length": 15.205762209094154,
+      "displacement": 8.875568108043081,
+      "rotation_deg": 148.10701670004764,
+      "signed_yaw_deg": -143.03585197770684,
+      "forward": 8.157236146274835,
+      "lateral": 2.4699995065155735,
+      "straightness": 0.5836976789453439,
+      "normalized_path": 0.9746017049754404,
+      "normalized_displacement": 0.5688727530903394,
+      "turn_consistency": 0.5731069711268931,
+      "turn_monotonicity": 0.75,
+      "turn_smoothness": 0.9512762273258213,
+      "turn_spread": 0.5547383325631985,
+      "selection_score": 0.9233480176211455
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/052e3e6371272bb633487276b4e7aebad6ca8886a547bf04775a0e6b6b56a7b0/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "a2b5346d207daa9af2a57507a9ee2b50d5839aa570e161599ec85d1fb68d1d0d",
+      "transforms_sha256": "c095e0f50b49cbf5e53f2fcd6b8058c1a94fa0ce21501944d17e8ec6bbbca73e",
+      "conditioning_frame_480p_sha256": "ce665209621279f12bf5746dc8f97567b771e7f603b904e55094dbedad43140e"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "91a2fe6021e173a3554deea17323adde96d2cfced2ab75bf70eb7fe6e39d5ff2",
+      "source_member": "052e3e6371272bb633487276b4e7aebad6ca8886a547bf04775a0e6b6b56a7b0/images_4/frame_00161.png",
+      "image_sha256": "2bda5ac7fb9d797799e0c59e50a5b13dba0d7ecc8bc3378ed6394c5f4559e99a",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "c095e0f50b49cbf5e53f2fcd6b8058c1a94fa0ce21501944d17e8ec6bbbca73e"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 0,
+      "stratum": "forward",
+      "stratum_quantile_rank": 0,
+      "stratum_sorted_position": 0
+    }
+  },
+  "dl3dv_6749f7d7ff873d14c647b49982fd3a33e85e03b14d9672a8c713d9d42d306ec1_s00224_forward": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance along the visible route, producing strong parallax and a large viewpoint change. Nearby surfaces grow in scale, sweep toward the frame edges, and pass out of view as new parts of the same environment are revealed. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/6749f7d7ff873d14c647b49982fd3a33e85e03b14d9672a8c713d9d42d306ec1/frame_00225.png",
+    "source": "DL3DV",
+    "scene_id": "6749f7d7ff873d14c647b49982fd3a33e85e03b14d9672a8c713d9d42d306ec1",
+    "motion_instruction": "forward",
+    "pose_window": [
+      224,
+      304
+    ],
+    "pose_stats": {
+      "path_length": 10.524273355891037,
+      "displacement": 8.669673755229832,
+      "rotation_deg": 71.40998024754278,
+      "signed_yaw_deg": 70.42707799570694,
+      "forward": 4.574155335560429,
+      "lateral": 7.356615398774763,
+      "straightness": 0.8237788455368199,
+      "normalized_path": 1.5646774327223247,
+      "normalized_displacement": 1.288948169165512,
+      "turn_consistency": 0.635773531831845,
+      "turn_monotonicity": 0.8375,
+      "turn_smoothness": 0.9587770221431924,
+      "turn_spread": 0.5815505962105086,
+      "selection_score": 0.7691629955947137
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/6749f7d7ff873d14c647b49982fd3a33e85e03b14d9672a8c713d9d42d306ec1/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "fb64c28245d08f04d51506f63158b309e443e24692ce090e345239503c8240ed",
+      "transforms_sha256": "ddb6001de97ca9008c3c4b51aa541152bd4f0c1a1ec10530c3cb73c17548fce5",
+      "conditioning_frame_480p_sha256": "1c4c08c9efca3a6174aa2a3256f93f267a4b04d21d128cbf57d4c1ba2feab09c"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "08bf57ad371ba5b19c9cb483202f0b094ec10826a6c0c221151a3d72ede5ff15",
+      "source_member": "6749f7d7ff873d14c647b49982fd3a33e85e03b14d9672a8c713d9d42d306ec1/images_4/frame_00225.png",
+      "image_sha256": "97e781afa959e8d9002db6ce39dba933547ac373563b1a603a3c07f6467f02cb",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "ddb6001de97ca9008c3c4b51aa541152bd4f0c1a1ec10530c3cb73c17548fce5"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 1,
+      "stratum": "forward",
+      "stratum_quantile_rank": 1,
+      "stratum_sorted_position": 2
+    }
+  },
+  "dl3dv_8d0ab7f3208926072631d9f83238311817d736f87e7ed500049e75bf7c96f558_s00128_forward": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance along the visible route, producing strong parallax and a large viewpoint change. Nearby surfaces grow in scale, sweep toward the frame edges, and pass out of view as new parts of the same environment are revealed. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/8d0ab7f3208926072631d9f83238311817d736f87e7ed500049e75bf7c96f558/frame_00129.png",
+    "source": "DL3DV",
+    "scene_id": "8d0ab7f3208926072631d9f83238311817d736f87e7ed500049e75bf7c96f558",
+    "motion_instruction": "forward",
+    "pose_window": [
+      128,
+      208
+    ],
+    "pose_stats": {
+      "path_length": 11.205272221866267,
+      "displacement": 6.351170168521552,
+      "rotation_deg": 110.8899006546077,
+      "signed_yaw_deg": -110.6780913751477,
+      "forward": 3.4118656214480962,
+      "lateral": -4.876873886523704,
+      "straightness": 0.5668019520425135,
+      "normalized_path": 1.0747562832245474,
+      "normalized_displacement": 0.60917395930163,
+      "turn_consistency": 0.533646209622139,
+      "turn_monotonicity": 0.725,
+      "turn_smoothness": 0.9517869245420346,
+      "turn_spread": 0.5629087906700998,
+      "selection_score": 0.6821585903083701
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/8d0ab7f3208926072631d9f83238311817d736f87e7ed500049e75bf7c96f558/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "b888910dbb5c3e766f66e22d4a97680d5d43839909b83db70ed8cacfa3cada27",
+      "transforms_sha256": "969ef989e7fdecc26eb14d23b6a9a028d32d48cd0774472e86f1bd9e78437203",
+      "conditioning_frame_480p_sha256": "65536aa61564e5526bf54a734c36b698b2ccf1fc149b1be14ae9cec7a3e4d4bc"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "26dc9852bda87372f806e4540b01459e1f6179e47853707182beeb0395292517",
+      "source_member": "8d0ab7f3208926072631d9f83238311817d736f87e7ed500049e75bf7c96f558/images_4/frame_00129.png",
+      "image_sha256": "d56d2db27a77d8cab208542beaddd36e4e14d53ce170d2befb6b3df6e6092112",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "969ef989e7fdecc26eb14d23b6a9a028d32d48cd0774472e86f1bd9e78437203"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 2,
+      "stratum": "forward",
+      "stratum_quantile_rank": 2,
+      "stratum_sorted_position": 3
+    }
+  },
+  "dl3dv_8800c4269543a98c1151b0443d4dbd8cd1626b97ff73b7995c866a578b48e451_s00176_forward": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance along the visible route, producing strong parallax and a large viewpoint change. Nearby surfaces grow in scale, sweep toward the frame edges, and pass out of view as new parts of the same environment are revealed. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/8800c4269543a98c1151b0443d4dbd8cd1626b97ff73b7995c866a578b48e451/frame_00177.png",
+    "source": "DL3DV",
+    "scene_id": "8800c4269543a98c1151b0443d4dbd8cd1626b97ff73b7995c866a578b48e451",
+    "motion_instruction": "forward",
+    "pose_window": [
+      176,
+      256
+    ],
+    "pose_stats": {
+      "path_length": 7.8999907074271425,
+      "displacement": 7.319095352850017,
+      "rotation_deg": 26.87672185982449,
+      "signed_yaw_deg": 26.806840227093257,
+      "forward": 3.9386927634652116,
+      "lateral": 6.168800243017011,
+      "straightness": 0.9264688559657419,
+      "normalized_path": 1.1962655847563333,
+      "normalized_displacement": 1.1083028077403894,
+      "turn_consistency": 0.584058102956865,
+      "turn_monotonicity": 0.9125,
+      "turn_smoothness": 0.9665548086931317,
+      "turn_spread": 0.6507648030950675,
+      "selection_score": 0.6013215859030837
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/8800c4269543a98c1151b0443d4dbd8cd1626b97ff73b7995c866a578b48e451/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "8e27d4269d33fb27a0d6bd08a289c25cdfe9db19d5734b19d2fc915c3f52c4b1",
+      "transforms_sha256": "bf8a726084b464bc100e3fff8e118f2e57f70ebbf8514367dd5ad54a40bb1900",
+      "conditioning_frame_480p_sha256": "c5c46b4bd2c0246dc8ec479e5fcb83d15bf2fa9437b75e869262fb6bbe218e51"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "955f2eeb226b9d6b1aa95d60dbed97abc5f2598aad15872183a4d3a8f6842050",
+      "source_member": "8800c4269543a98c1151b0443d4dbd8cd1626b97ff73b7995c866a578b48e451/images_4/frame_00177.png",
+      "image_sha256": "3e3a4626449a88d604c67e3f2f178eb35bca873026f82a99cd7569efded8c6c2",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "bf8a726084b464bc100e3fff8e118f2e57f70ebbf8514367dd5ad54a40bb1900"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 3,
+      "stratum": "forward",
+      "stratum_quantile_rank": 3,
+      "stratum_sorted_position": 4
+    }
+  },
+  "dl3dv_9990f7830c2ed7f8d14d418702ed2ef725bef037d9f4fa3b90d724e467944abc_s00272_forward": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance along the visible route, producing strong parallax and a large viewpoint change. Nearby surfaces grow in scale, sweep toward the frame edges, and pass out of view as new parts of the same environment are revealed. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/9990f7830c2ed7f8d14d418702ed2ef725bef037d9f4fa3b90d724e467944abc/frame_00273.png",
+    "source": "DL3DV",
+    "scene_id": "9990f7830c2ed7f8d14d418702ed2ef725bef037d9f4fa3b90d724e467944abc",
+    "motion_instruction": "forward",
+    "pose_window": [
+      272,
+      352
+    ],
+    "pose_stats": {
+      "path_length": 5.462940449670834,
+      "displacement": 5.4125101987673245,
+      "rotation_deg": 51.12763897998258,
+      "signed_yaw_deg": -51.02432273748956,
+      "forward": 3.017675153657404,
+      "lateral": -4.490708167128369,
+      "straightness": 0.9907686617915544,
+      "normalized_path": 1.109744512664802,
+      "normalized_displacement": 1.0995000857434267,
+      "turn_consistency": 0.6227036790592945,
+      "turn_monotonicity": 0.8625,
+      "turn_smoothness": 0.9115534153860525,
+      "turn_spread": 0.4369085767493089,
+      "selection_score": 0.26762114537444937
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/9990f7830c2ed7f8d14d418702ed2ef725bef037d9f4fa3b90d724e467944abc/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "3413a47daffc7875d7a38bc332dd0e5d80c5f674a20d20b98c990e6d8ce676ef",
+      "transforms_sha256": "58eeba87594089c252ddbca934a96cf7088606d80551fea1b74ab34fca6c63d3",
+      "conditioning_frame_480p_sha256": "0f738d82db0b2b4794ade0ea59335eaa0991fe10d6f79f62581207f61dd51357"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "e774b95c7ab5947000c6cb64f22891fa2fd2a40728ceb1ae88d0dda7c1f5dcf7",
+      "source_member": "9990f7830c2ed7f8d14d418702ed2ef725bef037d9f4fa3b90d724e467944abc/images_4/frame_00273.png",
+      "image_sha256": "a139fb760a52babc97bfc73b90ce862a15a4af093312814de0d6759390ff6499",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "58eeba87594089c252ddbca934a96cf7088606d80551fea1b74ab34fca6c63d3"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 4,
+      "stratum": "forward",
+      "stratum_quantile_rank": 4,
+      "stratum_sorted_position": 6
+    }
+  },
+  "dl3dv_a62c330f5403e2e41a82a74c4e865b705c5706843b992fae2fe2e538b122d984_s00120_forward_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth leftward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly left into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/a62c330f5403e2e41a82a74c4e865b705c5706843b992fae2fe2e538b122d984/frame_00121.png",
+    "source": "DL3DV",
+    "scene_id": "a62c330f5403e2e41a82a74c4e865b705c5706843b992fae2fe2e538b122d984",
+    "motion_instruction": "forward_left",
+    "pose_window": [
+      120,
+      200
+    ],
+    "pose_stats": {
+      "path_length": 17.34540962660722,
+      "displacement": 8.241633949018794,
+      "rotation_deg": 175.45372979517694,
+      "signed_yaw_deg": 185.5096860732698,
+      "forward": 8.111662696622021,
+      "lateral": -1.1683908854702574,
+      "straightness": 0.47514784178843666,
+      "normalized_path": 0.9782674392060029,
+      "normalized_displacement": 0.464821662430633,
+      "turn_consistency": 0.8033787848823677,
+      "turn_monotonicity": 0.8375,
+      "turn_smoothness": 0.9340338160696834,
+      "turn_spread": 0.5036073137162259,
+      "selection_score": 0.9581497797356829
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/a62c330f5403e2e41a82a74c4e865b705c5706843b992fae2fe2e538b122d984/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "4f9425d476df03d03256699347b58507fcf129568786421d8b64be102769d890",
+      "transforms_sha256": "f093e248afdb5ac93d5bcd6645e0a1fa9f260057a3efa385239db5244598fb24",
+      "conditioning_frame_480p_sha256": "9ec0d68a509d2de5b1f2a7b6bb36426c90aa6abcb137a9016805a2a43f73ffe9"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "57e56ceb3d28abceba2f2cf849e309621a1b55e77deecad4353c5c82db03521f",
+      "source_member": "a62c330f5403e2e41a82a74c4e865b705c5706843b992fae2fe2e538b122d984/images_4/frame_00121.png",
+      "image_sha256": "8068756903294a30677521daea8ee4335673c6bad065c95b4b2a0a4ffa506b99",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "f093e248afdb5ac93d5bcd6645e0a1fa9f260057a3efa385239db5244598fb24"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 5,
+      "stratum": "forward_left",
+      "stratum_quantile_rank": 0,
+      "stratum_sorted_position": 0
+    }
+  },
+  "dl3dv_2e191aad828e05843352ec306e02362c9bc49e93f88de940cfb61bc4b736af90_s00032_forward_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth leftward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly left into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/2e191aad828e05843352ec306e02362c9bc49e93f88de940cfb61bc4b736af90/frame_00033.png",
+    "source": "DL3DV",
+    "scene_id": "2e191aad828e05843352ec306e02362c9bc49e93f88de940cfb61bc4b736af90",
+    "motion_instruction": "forward_left",
+    "pose_window": [
+      32,
+      112
+    ],
+    "pose_stats": {
+      "path_length": 8.652617414526166,
+      "displacement": 7.156536162341245,
+      "rotation_deg": 114.61927476539245,
+      "signed_yaw_deg": 105.3741524794817,
+      "forward": 5.824424818100066,
+      "lateral": 3.664814592560531,
+      "straightness": 0.8270949493648855,
+      "normalized_path": 1.1471429926053378,
+      "normalized_displacement": 0.9487961753831952,
+      "turn_consistency": 0.9515151351452359,
+      "turn_monotonicity": 0.975,
+      "turn_smoothness": 0.9662766892251559,
+      "turn_spread": 0.7221644755212646,
+      "selection_score": 0.7110132158590309
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/2e191aad828e05843352ec306e02362c9bc49e93f88de940cfb61bc4b736af90/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "57483b2c9009f9bc195bd392e89845672a608d39e2089e9e192399e22ef7989c",
+      "transforms_sha256": "810b1d6963eb432945b386063ae6cee1eaa1d40968515ba6947a6e60f82fa2e4",
+      "conditioning_frame_480p_sha256": "b683fff2ccd31786f18f08c50a87487380af2f603c3072b4ec2b4e3c1ff77e60"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "31c34e9af94830e576aa5f4bd72d5c50946f8ec51b38b07394465edbb1a2a03c",
+      "source_member": "2e191aad828e05843352ec306e02362c9bc49e93f88de940cfb61bc4b736af90/images_4/frame_00033.png",
+      "image_sha256": "f2cf42d26e52e4251ebc906fe77e896c5747d488cfc57171eceb148bbb203cd1",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "810b1d6963eb432945b386063ae6cee1eaa1d40968515ba6947a6e60f82fa2e4"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 6,
+      "stratum": "forward_left",
+      "stratum_quantile_rank": 1,
+      "stratum_sorted_position": 2
+    }
+  },
+  "dl3dv_72e5992c10c53b0368eaf022daa392dd3e8b01024f8f81a5120b0d8017ceac85_s00160_forward_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth leftward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly left into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/72e5992c10c53b0368eaf022daa392dd3e8b01024f8f81a5120b0d8017ceac85/frame_00161.png",
+    "source": "DL3DV",
+    "scene_id": "72e5992c10c53b0368eaf022daa392dd3e8b01024f8f81a5120b0d8017ceac85",
+    "motion_instruction": "forward_left",
+    "pose_window": [
+      160,
+      240
+    ],
+    "pose_stats": {
+      "path_length": 7.19595410268626,
+      "displacement": 6.990188779206121,
+      "rotation_deg": 66.47359140634646,
+      "signed_yaw_deg": 65.83106317448397,
+      "forward": 6.021751752942488,
+      "lateral": 3.5496233753679793,
+      "straightness": 0.9714054146894396,
+      "normalized_path": 1.1198657301341337,
+      "normalized_displacement": 1.0878436339774404,
+      "turn_consistency": 0.654979956111767,
+      "turn_monotonicity": 0.8625,
+      "turn_smoothness": 0.953561753249594,
+      "turn_spread": 0.5778660067096912,
+      "selection_score": 0.5966960352422908
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/72e5992c10c53b0368eaf022daa392dd3e8b01024f8f81a5120b0d8017ceac85/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "9512655abd535584a9b74af90efc8fae1908055000fda65728a7b65220f9456c",
+      "transforms_sha256": "07e1bda2418101e856d3ef251590011d881400d3c360c19dc6fd198457395e5a",
+      "conditioning_frame_480p_sha256": "c96e4d7c6873d675c2ab3c304232fc2576067616ed125462ebb95de9d2b82424"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "4e1290bc1e378be914b31329d4f77eea0994b025e81c830ee8b04097ba6808e6",
+      "source_member": "72e5992c10c53b0368eaf022daa392dd3e8b01024f8f81a5120b0d8017ceac85/images_4/frame_00161.png",
+      "image_sha256": "61c63533c81e6389131ae8cc06edb6a3d6b7dcf28c1d37868e77add7c21e662e",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "07e1bda2418101e856d3ef251590011d881400d3c360c19dc6fd198457395e5a"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 7,
+      "stratum": "forward_left",
+      "stratum_quantile_rank": 2,
+      "stratum_sorted_position": 3
+    }
+  },
+  "dl3dv_662db792f0bd9ff971be2df467da5d090d6d1878eea3f9ad4ae28820f06a69e8_s00216_forward_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth leftward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly left into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/662db792f0bd9ff971be2df467da5d090d6d1878eea3f9ad4ae28820f06a69e8/frame_00217.png",
+    "source": "DL3DV",
+    "scene_id": "662db792f0bd9ff971be2df467da5d090d6d1878eea3f9ad4ae28820f06a69e8",
+    "motion_instruction": "forward_left",
+    "pose_window": [
+      216,
+      296
+    ],
+    "pose_stats": {
+      "path_length": 7.312725182843526,
+      "displacement": 7.2190597591162735,
+      "rotation_deg": 38.18902617111381,
+      "signed_yaw_deg": 38.180273889424036,
+      "forward": 4.129725854977812,
+      "lateral": 5.920909261233722,
+      "straightness": 0.9871914475950769,
+      "normalized_path": 1.1877494997780325,
+      "normalized_displacement": 1.1725361480662044,
+      "turn_consistency": 0.7693863546712526,
+      "turn_monotonicity": 0.9125,
+      "turn_smoothness": 0.9659858659533611,
+      "turn_spread": 0.747141363930128,
+      "selection_score": 0.5903083700440529
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/662db792f0bd9ff971be2df467da5d090d6d1878eea3f9ad4ae28820f06a69e8/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "9cba304811ed468dbc3045d8f639090c52a24de69078155548d816ef6769b7ce",
+      "transforms_sha256": "e0c8c79b2bc02fdb439bdde2f08f538154ff279a58890d8d0baeaad1b382e564",
+      "conditioning_frame_480p_sha256": "fe433435535f8c279918d8a958b51efee4b9b62542f25d3728387aca4560ba6c"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "5400dd5b0b53c1332a4fc2b1594f25d1e16cb7beae3a6a1585d580e6cc98aff3",
+      "source_member": "662db792f0bd9ff971be2df467da5d090d6d1878eea3f9ad4ae28820f06a69e8/images_4/frame_00217.png",
+      "image_sha256": "d7bedb1089f95abe0b1024a8388c2ca84270172a2b2c30275c5cce2b096c6608",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "e0c8c79b2bc02fdb439bdde2f08f538154ff279a58890d8d0baeaad1b382e564"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 8,
+      "stratum": "forward_left",
+      "stratum_quantile_rank": 3,
+      "stratum_sorted_position": 4
+    }
+  },
+  "dl3dv_c560320ffa5e4b05ea48de0e0876229813aae7a12ecbcb8e95586d6a1791cb0c_s00192_forward_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth leftward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly left into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c560320ffa5e4b05ea48de0e0876229813aae7a12ecbcb8e95586d6a1791cb0c/frame_00193.png",
+    "source": "DL3DV",
+    "scene_id": "c560320ffa5e4b05ea48de0e0876229813aae7a12ecbcb8e95586d6a1791cb0c",
+    "motion_instruction": "forward_left",
+    "pose_window": [
+      192,
+      272
+    ],
+    "pose_stats": {
+      "path_length": 6.376889219635261,
+      "displacement": 5.604319596012568,
+      "rotation_deg": 95.24846610003434,
+      "signed_yaw_deg": 94.9703170446621,
+      "forward": 5.040481745639245,
+      "lateral": 2.446900972509423,
+      "straightness": 0.8788485110821977,
+      "normalized_path": 1.1091199831171297,
+      "normalized_displacement": 0.9747484457740017,
+      "turn_consistency": 0.9971333004346331,
+      "turn_monotonicity": 1.0,
+      "turn_smoothness": 0.9719036761865909,
+      "turn_spread": 0.8332472025196085,
+      "selection_score": 0.40044052863436125
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c560320ffa5e4b05ea48de0e0876229813aae7a12ecbcb8e95586d6a1791cb0c/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "12803fdd37705f9d0fabadb54259b9a489277ceeafc0c268e11f6d02729f9fa7",
+      "transforms_sha256": "5fcea9357d3f2ff7da984414d2a88d77212e11852106ff2e9c6631e478ba8320",
+      "conditioning_frame_480p_sha256": "855cc7ff5757ea1cf41412d767980c91afec0c9dd9c586523b7c5b45ae1f9932"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "1d929582cc3e76f819c455e60d27bef368425cefa66a4b4e4f083374bcd6cfea",
+      "source_member": "c560320ffa5e4b05ea48de0e0876229813aae7a12ecbcb8e95586d6a1791cb0c/images_4/frame_00193.png",
+      "image_sha256": "2c8c01d22257bc4c49715d1e161c93fe06c2ae2c3afc73d1950271125d96fa3d",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "5fcea9357d3f2ff7da984414d2a88d77212e11852106ff2e9c6631e478ba8320"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 9,
+      "stratum": "forward_left",
+      "stratum_quantile_rank": 4,
+      "stratum_sorted_position": 6
+    }
+  },
+  "dl3dv_c514977bb2c61006e7872c36d82216764758f5dbca7d053c3daa52f6662214ad_s00152_forward_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth rightward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly right into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c514977bb2c61006e7872c36d82216764758f5dbca7d053c3daa52f6662214ad/frame_00153.png",
+    "source": "DL3DV",
+    "scene_id": "c514977bb2c61006e7872c36d82216764758f5dbca7d053c3daa52f6662214ad",
+    "motion_instruction": "forward_right",
+    "pose_window": [
+      152,
+      232
+    ],
+    "pose_stats": {
+      "path_length": 12.479985256066104,
+      "displacement": 10.090979607802705,
+      "rotation_deg": 175.13600950697295,
+      "signed_yaw_deg": -189.3473758185669,
+      "forward": 7.042682666878624,
+      "lateral": 7.211487402823403,
+      "straightness": 0.8085730392107487,
+      "normalized_path": 1.0136227836226877,
+      "normalized_displacement": 0.8195880547670557,
+      "turn_consistency": 0.9600238110928047,
+      "turn_monotonicity": 0.9625,
+      "turn_smoothness": 0.9370998622762811,
+      "turn_spread": 0.48563887042528564,
+      "selection_score": 0.9420704845814978
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c514977bb2c61006e7872c36d82216764758f5dbca7d053c3daa52f6662214ad/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "100fc7fe4b8fee269eb22c785df6f53545576433517ce706a25722578b975642",
+      "transforms_sha256": "d490b19afa57f7256c4df365c49253ecff6b2bc6547cdfd618f56fb2f7f4b753",
+      "conditioning_frame_480p_sha256": "b4ddc09613a09ffae493a473f6d152768fa1133c5d0f32040a5814262a51c71b"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "447508438a2b5fa7f16c30e2669254e36d520d5507063a594be4dbb83c17fe70",
+      "source_member": "c514977bb2c61006e7872c36d82216764758f5dbca7d053c3daa52f6662214ad/images_4/frame_00153.png",
+      "image_sha256": "37c849068a881d67bf965e578a2f0b0a5e9243bbd8919692f28fb7ae44ce8622",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "d490b19afa57f7256c4df365c49253ecff6b2bc6547cdfd618f56fb2f7f4b753"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 10,
+      "stratum": "forward_right",
+      "stratum_quantile_rank": 0,
+      "stratum_sorted_position": 0
+    }
+  },
+  "dl3dv_f3048e7081e5362217cee68cb9f0197100f52060c083889651f12de2151d05ce_s00232_forward_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth rightward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly right into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/f3048e7081e5362217cee68cb9f0197100f52060c083889651f12de2151d05ce/frame_00233.png",
+    "source": "DL3DV",
+    "scene_id": "f3048e7081e5362217cee68cb9f0197100f52060c083889651f12de2151d05ce",
+    "motion_instruction": "forward_right",
+    "pose_window": [
+      232,
+      312
+    ],
+    "pose_stats": {
+      "path_length": 13.920181568600398,
+      "displacement": 7.324305193759861,
+      "rotation_deg": 174.28497749876402,
+      "signed_yaw_deg": -186.69237197115265,
+      "forward": 7.132907594156096,
+      "lateral": -0.07059653589963999,
+      "straightness": 0.5261644869835044,
+      "normalized_path": 1.054399107095801,
+      "normalized_displacement": 0.5547873652609271,
+      "turn_consistency": 0.9856381634159654,
+      "turn_monotonicity": 1.0,
+      "turn_smoothness": 0.9755953754139943,
+      "turn_spread": 0.720373075204435,
+      "selection_score": 0.9008810572687225
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/f3048e7081e5362217cee68cb9f0197100f52060c083889651f12de2151d05ce/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "cc1ba7fda753b92e6fe0ecb8e65e55c0d15461a81338f7b3cc139db89928c90d",
+      "transforms_sha256": "32cb59ff454b30fa47e4b60cb80d5d1a8384a1fcf5b612852b63e241edddfd43",
+      "conditioning_frame_480p_sha256": "606e7e2ba0e2cf903feab48a4178c1c474d381882c67dfee7436cc3f8cf5db31"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "5f937eb7e9edb48e520d3ccdc7225b185f80e63fdf43b2483439c7b9c8650c53",
+      "source_member": "f3048e7081e5362217cee68cb9f0197100f52060c083889651f12de2151d05ce/images_4/frame_00233.png",
+      "image_sha256": "574ddf3761c02a16161431520aae33614977894f4e237e2e075ccd321a8a31ce",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "32cb59ff454b30fa47e4b60cb80d5d1a8384a1fcf5b612852b63e241edddfd43"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 11,
+      "stratum": "forward_right",
+      "stratum_quantile_rank": 1,
+      "stratum_sorted_position": 1
+    }
+  },
+  "dl3dv_206b1c9b510103fbad3f4c7481a621da597e31f82f1fb63dab17eebe91da6e25_s00120_forward_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth rightward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly right into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/206b1c9b510103fbad3f4c7481a621da597e31f82f1fb63dab17eebe91da6e25/frame_00121.png",
+    "source": "DL3DV",
+    "scene_id": "206b1c9b510103fbad3f4c7481a621da597e31f82f1fb63dab17eebe91da6e25",
+    "motion_instruction": "forward_right",
+    "pose_window": [
+      120,
+      200
+    ],
+    "pose_stats": {
+      "path_length": 11.28030347905348,
+      "displacement": 7.946242394840543,
+      "rotation_deg": 175.65891603318528,
+      "signed_yaw_deg": -184.69683428102442,
+      "forward": 7.8138248314448004,
+      "lateral": 0.8389468316594391,
+      "straightness": 0.7044351607734676,
+      "normalized_path": 1.0028836582981007,
+      "normalized_displacement": 0.7064665110703058,
+      "turn_consistency": 1.0,
+      "turn_monotonicity": 1.0,
+      "turn_smoothness": 0.9733449746928308,
+      "turn_spread": 0.8710887653779434,
+      "selection_score": 0.8786343612334803
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/206b1c9b510103fbad3f4c7481a621da597e31f82f1fb63dab17eebe91da6e25/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "af885c625d6c6144193fa2b46e114e6f20228490d62dda90f8f8fb8d57cf250d",
+      "transforms_sha256": "48f4645017d5bcb2f305eb541fab01b22c03cac460ca969a85d321dc7bcd20bb",
+      "conditioning_frame_480p_sha256": "1041f66c763d6ac0eb6403cd3e39cafde41d851683c42f918d0a584bd0df7408"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "7f93755db81a38bdd57670aec6563a34dc934a75d04d7517b93c40b51646d2e2",
+      "source_member": "206b1c9b510103fbad3f4c7481a621da597e31f82f1fb63dab17eebe91da6e25/images_4/frame_00121.png",
+      "image_sha256": "5830cdc8e5682191379b5ab6afff8abb1bdefd1a45771a2137dff439a036f756",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "48f4645017d5bcb2f305eb541fab01b22c03cac460ca969a85d321dc7bcd20bb"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 12,
+      "stratum": "forward_right",
+      "stratum_quantile_rank": 2,
+      "stratum_sorted_position": 2
+    }
+  },
+  "dl3dv_9032fa7784995bfbbde8820077f81020120e0d261a362d4404e8b91e0d262b55_s00096_forward_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth rightward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly right into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/9032fa7784995bfbbde8820077f81020120e0d261a362d4404e8b91e0d262b55/frame_00097.png",
+    "source": "DL3DV",
+    "scene_id": "9032fa7784995bfbbde8820077f81020120e0d261a362d4404e8b91e0d262b55",
+    "motion_instruction": "forward_right",
+    "pose_window": [
+      96,
+      176
+    ],
+    "pose_stats": {
+      "path_length": 7.245304748799986,
+      "displacement": 6.883521647523338,
+      "rotation_deg": 76.54952335887123,
+      "signed_yaw_deg": -76.52262244430682,
+      "forward": 6.686509691362071,
+      "lateral": -1.6345964072222454,
+      "straightness": 0.9500665446354662,
+      "normalized_path": 1.2644077001349339,
+      "normalized_displacement": 1.2012714546776733,
+      "turn_consistency": 0.8903688313620776,
+      "turn_monotonicity": 0.9375,
+      "turn_smoothness": 0.9625515138583778,
+      "turn_spread": 0.6520500549686881,
+      "selection_score": 0.5975770925110132
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/9032fa7784995bfbbde8820077f81020120e0d261a362d4404e8b91e0d262b55/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "d957cfb1a711dfe3f9c2ca45dfd41dcc00a07db45e2464cf7a7b5f476639ae03",
+      "transforms_sha256": "4fba96ff1291442320adc0bb42dfa9a62149c21c0d5db82d5028af942e1430ae",
+      "conditioning_frame_480p_sha256": "124acd1d659cc25f7955f49833d641df21523c70c35447efc5145c97ab177393"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "a376e938af099e644d75e91f485184b15e668743b2bd5d4d1766a015c329a1d6",
+      "source_member": "9032fa7784995bfbbde8820077f81020120e0d261a362d4404e8b91e0d262b55/images_4/frame_00097.png",
+      "image_sha256": "40987377ab558aa8182f704f2e6e6bbe14d1ac2696ff811b6bd54c2ab391e92d",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "4fba96ff1291442320adc0bb42dfa9a62149c21c0d5db82d5028af942e1430ae"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 13,
+      "stratum": "forward_right",
+      "stratum_quantile_rank": 3,
+      "stratum_sorted_position": 4
+    }
+  },
+  "dl3dv_b60b7dc760862cc1307118673a4d01dd556a3b598cc034e00c68f72fa7cac9c0_s00208_forward_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera rapidly advances a long distance and follows one broad smooth rightward curve, producing strong parallax and a large viewpoint change. Nearby surfaces pass beside the camera and leave the frame; the final viewpoint faces clearly right into newly revealed space. One uninterrupted fixed-focal-length shot with continuous physical camera translation; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/b60b7dc760862cc1307118673a4d01dd556a3b598cc034e00c68f72fa7cac9c0/frame_00209.png",
+    "source": "DL3DV",
+    "scene_id": "b60b7dc760862cc1307118673a4d01dd556a3b598cc034e00c68f72fa7cac9c0",
+    "motion_instruction": "forward_right",
+    "pose_window": [
+      208,
+      288
+    ],
+    "pose_stats": {
+      "path_length": 7.071531376985922,
+      "displacement": 6.992774586962805,
+      "rotation_deg": 43.70964320408047,
+      "signed_yaw_deg": -43.52085407646499,
+      "forward": 3.695067720431921,
+      "lateral": -5.826527689138962,
+      "straightness": 0.988862838072185,
+      "normalized_path": 1.1584552888776736,
+      "normalized_displacement": 1.1455533847393091,
+      "turn_consistency": 0.8628881018297191,
+      "turn_monotonicity": 0.95,
+      "turn_smoothness": 0.9472371400233247,
+      "turn_spread": 0.6108908397234087,
+      "selection_score": 0.5561674008810573
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/b60b7dc760862cc1307118673a4d01dd556a3b598cc034e00c68f72fa7cac9c0/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "5a4bb866abd9ade27da32e04dec978714319b44d7fb87f59ab6abb82e4556574",
+      "transforms_sha256": "c8d848d8f2dacd93b8762569403709ae2ae81f489378a149bce51ba59b3dd48b",
+      "conditioning_frame_480p_sha256": "cd3bd27967b54a78923db015122882ec2f09454c008b0d0a31a0266a519b7c7a"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "ae5b56fc0fd9dbc277f935498f8111541169e9f0a153b883e8543ad0766ad1f3",
+      "source_member": "b60b7dc760862cc1307118673a4d01dd556a3b598cc034e00c68f72fa7cac9c0/images_4/frame_00209.png",
+      "image_sha256": "cbb31207f8f04c3f630010b7a44df480d59b29d206082d0de879335d4f1c1587",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "c8d848d8f2dacd93b8762569403709ae2ae81f489378a149bce51ba59b3dd48b"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 14,
+      "stratum": "forward_right",
+      "stratum_quantile_rank": 4,
+      "stratum_sorted_position": 5
+    }
+  },
+  "dl3dv_995e46c25aed71bc541e874ea88d398de27786c3f4b5d7dca877c2c767e99bcf_s00224_lateral_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the left while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/995e46c25aed71bc541e874ea88d398de27786c3f4b5d7dca877c2c767e99bcf/frame_00225.png",
+    "source": "DL3DV",
+    "scene_id": "995e46c25aed71bc541e874ea88d398de27786c3f4b5d7dca877c2c767e99bcf",
+    "motion_instruction": "lateral_left",
+    "pose_window": [
+      224,
+      304
+    ],
+    "pose_stats": {
+      "path_length": 13.3267351262101,
+      "displacement": 6.97787489410726,
+      "rotation_deg": 83.69131331480463,
+      "signed_yaw_deg": 277.7483582205802,
+      "forward": 3.1600662334737804,
+      "lateral": -6.211602209838068,
+      "straightness": 0.5235997285174265,
+      "normalized_path": 1.122336875853899,
+      "normalized_displacement": 0.5876552835021981,
+      "turn_consistency": 1.0,
+      "turn_monotonicity": 1.0,
+      "turn_smoothness": 0.9775562053437877,
+      "turn_spread": 0.9064374139411241,
+      "selection_score": 0.7773127753303966
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/995e46c25aed71bc541e874ea88d398de27786c3f4b5d7dca877c2c767e99bcf/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "4939f45d6cf95ebdd8898c5d1970bacc14c535b89145119433f4d406eb25d902",
+      "transforms_sha256": "635385f61a3b9fb911d9c7ef3c0fe7d9373043baf694bbdf32743b78c37d7eab",
+      "conditioning_frame_480p_sha256": "66140b1647a0174eb061f0b9158bde0d5c4f6512077e54e942dbd36d4b6aca9c"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "b25ba7a81067bcf2e2ef7263afeab71e7d7aef766565dd6c3b82ba67625ce011",
+      "source_member": "995e46c25aed71bc541e874ea88d398de27786c3f4b5d7dca877c2c767e99bcf/images_4/frame_00225.png",
+      "image_sha256": "9c6a21335f119342cf7c815548da45c03d712db3f8b282592c9388b1beb522cc",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "635385f61a3b9fb911d9c7ef3c0fe7d9373043baf694bbdf32743b78c37d7eab"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 15,
+      "stratum": "lateral_left",
+      "stratum_quantile_rank": 0,
+      "stratum_sorted_position": 0
+    }
+  },
+  "dl3dv_d8213196c62ec350908e68d151adaaaac44065fd67c07c9a2a0e2488049c9749_s00200_lateral_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the left while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/d8213196c62ec350908e68d151adaaaac44065fd67c07c9a2a0e2488049c9749/frame_00201.png",
+    "source": "DL3DV",
+    "scene_id": "d8213196c62ec350908e68d151adaaaac44065fd67c07c9a2a0e2488049c9749",
+    "motion_instruction": "lateral_left",
+    "pose_window": [
+      200,
+      280
+    ],
+    "pose_stats": {
+      "path_length": 7.7032464497978985,
+      "displacement": 7.475291376609039,
+      "rotation_deg": 106.8886587446671,
+      "signed_yaw_deg": -102.75284211352323,
+      "forward": 2.6132637491087736,
+      "lateral": -6.983621476632514,
+      "straightness": 0.9704079215595083,
+      "normalized_path": 1.075484712308226,
+      "normalized_displacement": 1.0436588843400514,
+      "turn_consistency": 0.9502670598619615,
+      "turn_monotonicity": 0.9875,
+      "turn_smoothness": 0.9491961517956302,
+      "turn_spread": 0.5990743762673839,
+      "selection_score": 0.7028634361233481
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/d8213196c62ec350908e68d151adaaaac44065fd67c07c9a2a0e2488049c9749/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "cff4386f9a3960b735d042f4b9d9f9c393bf2beaba40cfdd6ff1107c74d1e731",
+      "transforms_sha256": "5e9fcf8a8358a77794874b68cf90a7569ca2090e22df1c302027717509b2778b",
+      "conditioning_frame_480p_sha256": "6f5c0cb190400b395b459e611eabe8686a7db57bfd2cb26c141a13cefe7997fb"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "f140198ed2bce0264ee8501cfa62ab5b8d0eeb76db9f33aedeec7be0cba6543a",
+      "source_member": "d8213196c62ec350908e68d151adaaaac44065fd67c07c9a2a0e2488049c9749/images_4/frame_00201.png",
+      "image_sha256": "ee882386c81dfe4546c6654790dd3e54407344390f7e1cf869cfad521513eac7",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "5e9fcf8a8358a77794874b68cf90a7569ca2090e22df1c302027717509b2778b"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 16,
+      "stratum": "lateral_left",
+      "stratum_quantile_rank": 1,
+      "stratum_sorted_position": 1
+    }
+  },
+  "dl3dv_3170ff30ef5ba8fec7af06f896162bee41bf5fe38559dfea4ed670af340561b5_s00224_lateral_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the left while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/3170ff30ef5ba8fec7af06f896162bee41bf5fe38559dfea4ed670af340561b5/frame_00225.png",
+    "source": "DL3DV",
+    "scene_id": "3170ff30ef5ba8fec7af06f896162bee41bf5fe38559dfea4ed670af340561b5",
+    "motion_instruction": "lateral_left",
+    "pose_window": [
+      224,
+      304
+    ],
+    "pose_stats": {
+      "path_length": 9.317169673771247,
+      "displacement": 7.111225018589148,
+      "rotation_deg": 81.94539486058488,
+      "signed_yaw_deg": -81.94450862013133,
+      "forward": 1.0599285089015809,
+      "lateral": -7.0151356101779,
+      "straightness": 0.7632387589342662,
+      "normalized_path": 1.0495577820982718,
+      "normalized_displacement": 0.801063179038486,
+      "turn_consistency": 0.7581752175585988,
+      "turn_monotonicity": 0.9125,
+      "turn_smoothness": 0.8621961509953256,
+      "turn_spread": 0.21717387080026854,
+      "selection_score": 0.6918502202643172
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/3170ff30ef5ba8fec7af06f896162bee41bf5fe38559dfea4ed670af340561b5/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "e8dab108df53c0ce39a4be467de8bc0d23713e4078726af7216307b35bffed8f",
+      "transforms_sha256": "3e7648ac5e4f3da9728969cfb01f044e75de59aa7d8d671e4d7b9f0a3c6540e6",
+      "conditioning_frame_480p_sha256": "ea6363952b6a117ead706765a9adde554f66dfcb177f3fe41539256598b031d4"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "c75bb6a0456fa623e85308a1326871c6e58368b8faf070596f5326cdcf94c9df",
+      "source_member": "3170ff30ef5ba8fec7af06f896162bee41bf5fe38559dfea4ed670af340561b5/images_4/frame_00225.png",
+      "image_sha256": "001a115bf62566b49dff6b7e801a43a105f0bdd192b3c3353521b116c60eff6d",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "3e7648ac5e4f3da9728969cfb01f044e75de59aa7d8d671e4d7b9f0a3c6540e6"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 17,
+      "stratum": "lateral_left",
+      "stratum_quantile_rank": 2,
+      "stratum_sorted_position": 2
+    }
+  },
+  "dl3dv_e8b2ac795e2b06f0e26696b4cbc00e342109ae7a37ab3fa62104434139d5153a_s00200_lateral_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the left while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/e8b2ac795e2b06f0e26696b4cbc00e342109ae7a37ab3fa62104434139d5153a/frame_00201.png",
+    "source": "DL3DV",
+    "scene_id": "e8b2ac795e2b06f0e26696b4cbc00e342109ae7a37ab3fa62104434139d5153a",
+    "motion_instruction": "lateral_left",
+    "pose_window": [
+      200,
+      280
+    ],
+    "pose_stats": {
+      "path_length": 7.0932406814746125,
+      "displacement": 6.911580547306108,
+      "rotation_deg": 61.5824419246013,
+      "signed_yaw_deg": -61.26915156090251,
+      "forward": 3.5272542206597945,
+      "lateral": -5.9135908418494765,
+      "straightness": 0.9743896841618604,
+      "normalized_path": 1.1678191828394435,
+      "normalized_displacement": 1.1379109647250876,
+      "turn_consistency": 0.836352697304223,
+      "turn_monotonicity": 0.95,
+      "turn_smoothness": 0.9668730788021349,
+      "turn_spread": 0.7235362986361292,
+      "selection_score": 0.574229074889868
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/e8b2ac795e2b06f0e26696b4cbc00e342109ae7a37ab3fa62104434139d5153a/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "1e2c641462c14a137ab6e8abe4c0b3ca1ee74cecb0aacd1a6b59366b0cab80a6",
+      "transforms_sha256": "7c0f04c09cacda13a3cebed748ea1e03477b2105570426e9712251c65a577e3a",
+      "conditioning_frame_480p_sha256": "47c8d041499a52db61eb361d6dfeae4b69cb6263be0be7fb4d67e373a9cba555"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "430fc475628e07deefac4e0e807d3f9de20101fd5e0fb3bcd3ac5a1d903ba97e",
+      "source_member": "e8b2ac795e2b06f0e26696b4cbc00e342109ae7a37ab3fa62104434139d5153a/images_4/frame_00201.png",
+      "image_sha256": "c610c412adbda9ecc743fa1b4b86e17d4e379178dfeb189396935e30d9d62cc9",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "7c0f04c09cacda13a3cebed748ea1e03477b2105570426e9712251c65a577e3a"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 18,
+      "stratum": "lateral_left",
+      "stratum_quantile_rank": 3,
+      "stratum_sorted_position": 4
+    }
+  },
+  "dl3dv_c98bb4b107738f58117ad635244e06e3052144bd33d48d52b4cd38ab77510d61_s00072_lateral_left": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the left while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c98bb4b107738f58117ad635244e06e3052144bd33d48d52b4cd38ab77510d61/frame_00073.png",
+    "source": "DL3DV",
+    "scene_id": "c98bb4b107738f58117ad635244e06e3052144bd33d48d52b4cd38ab77510d61",
+    "motion_instruction": "lateral_left",
+    "pose_window": [
+      72,
+      152
+    ],
+    "pose_stats": {
+      "path_length": 6.828294461254741,
+      "displacement": 6.6142062504702075,
+      "rotation_deg": 41.972358548310474,
+      "signed_yaw_deg": -41.60023854007861,
+      "forward": 2.4761452193834863,
+      "lateral": -6.130425439758798,
+      "straightness": 0.9686468982848767,
+      "normalized_path": 1.0837338285416631,
+      "normalized_displacement": 1.0497554115832763,
+      "turn_consistency": 0.9519271830572941,
+      "turn_monotonicity": 1.0,
+      "turn_smoothness": 0.9633120632364871,
+      "turn_spread": 0.6873249683211516,
+      "selection_score": 0.48590308370044055
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/c98bb4b107738f58117ad635244e06e3052144bd33d48d52b4cd38ab77510d61/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "74d941c1640a510e304c1144a771e106eb32cf6d85fcb49f557482b1d511e62e",
+      "transforms_sha256": "83bc873725e8c5bcf4ad0785eac32af8620d744a6e998a71a8d5f97bdd3597a5",
+      "conditioning_frame_480p_sha256": "90a38775e67bd56f5d6df751a786cab4c25f92e46c5488a545bfce99412868a8"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "6d31e6c4cfb5d821c231bdad2b153eca07db426ce8e2d248266aedc78f84571c",
+      "source_member": "c98bb4b107738f58117ad635244e06e3052144bd33d48d52b4cd38ab77510d61/images_4/frame_00073.png",
+      "image_sha256": "ae144b429860b64cd1771761fc9645f2c2db9bcf52b029a58be63f95297e88fb",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "83bc873725e8c5bcf4ad0785eac32af8620d744a6e998a71a8d5f97bdd3597a5"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 19,
+      "stratum": "lateral_left",
+      "stratum_quantile_rank": 4,
+      "stratum_sorted_position": 5
+    }
+  },
+  "dl3dv_49ade972cfcfdd02d740b7992c0714b2faca373bd1c4448ff648be5c284a0342_s00168_lateral_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the right while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/49ade972cfcfdd02d740b7992c0714b2faca373bd1c4448ff648be5c284a0342/frame_00169.png",
+    "source": "DL3DV",
+    "scene_id": "49ade972cfcfdd02d740b7992c0714b2faca373bd1c4448ff648be5c284a0342",
+    "motion_instruction": "lateral_right",
+    "pose_window": [
+      168,
+      248
+    ],
+    "pose_stats": {
+      "path_length": 10.96039824821284,
+      "displacement": 7.856145162994274,
+      "rotation_deg": 96.45792902717648,
+      "signed_yaw_deg": 95.99237167844271,
+      "forward": 3.5918945226514425,
+      "lateral": 6.981768122618355,
+      "straightness": 0.7167755208416141,
+      "normalized_path": 1.3554163997924276,
+      "normalized_displacement": 0.9715292959184828,
+      "turn_consistency": 0.9399019321066001,
+      "turn_monotonicity": 0.975,
+      "turn_smoothness": 0.9541211155908806,
+      "turn_spread": 0.6343067255173646,
+      "selection_score": 0.7876651982378856
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/49ade972cfcfdd02d740b7992c0714b2faca373bd1c4448ff648be5c284a0342/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "b8813a5cc7010a5f7e0b1fb0d188bb4bdd03b8f4b939968a506bc33ef1523874",
+      "transforms_sha256": "ed92b4a83f6a61aa79c2ffd846b11f6c87b72dd2b72e65ae5c4b03ebe5de8e83",
+      "conditioning_frame_480p_sha256": "0932eacc25bf3918690e60f0d1888a7a763ae2b37a19ba4b0230fa8af25f6e5f"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "eef36718be11005ad3d2ab0789a73f2f8f65ae4dcf3b0ec9059fb9d6b01f6f10",
+      "source_member": "49ade972cfcfdd02d740b7992c0714b2faca373bd1c4448ff648be5c284a0342/images_4/frame_00169.png",
+      "image_sha256": "ecdcd1ee42ffc96bd30fcc8b6abfd3312029273a1b427f2bd7900f4f11cfd989",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "ed92b4a83f6a61aa79c2ffd846b11f6c87b72dd2b72e65ae5c4b03ebe5de8e83"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 20,
+      "stratum": "lateral_right",
+      "stratum_quantile_rank": 0,
+      "stratum_sorted_position": 0
+    }
+  },
+  "dl3dv_a5104b6b1c976b61b9e2725d174dac2e8ecc203716f2b1ad5a304e59c65324ee_s00208_lateral_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the right while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/a5104b6b1c976b61b9e2725d174dac2e8ecc203716f2b1ad5a304e59c65324ee/frame_00209.png",
+    "source": "DL3DV",
+    "scene_id": "a5104b6b1c976b61b9e2725d174dac2e8ecc203716f2b1ad5a304e59c65324ee",
+    "motion_instruction": "lateral_right",
+    "pose_window": [
+      208,
+      288
+    ],
+    "pose_stats": {
+      "path_length": 7.926028754688173,
+      "displacement": 7.747854189828461,
+      "rotation_deg": 63.38494158550242,
+      "signed_yaw_deg": 62.95556488890681,
+      "forward": 2.1583261029547756,
+      "lateral": 7.427816755144853,
+      "straightness": 0.9775203231814767,
+      "normalized_path": 1.374798483130118,
+      "normalized_displacement": 1.343893457538757,
+      "turn_consistency": 0.9318373722969283,
+      "turn_monotonicity": 0.9875,
+      "turn_smoothness": 0.9668136174682935,
+      "turn_spread": 0.708199448676964,
+      "selection_score": 0.6821585903083701
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/a5104b6b1c976b61b9e2725d174dac2e8ecc203716f2b1ad5a304e59c65324ee/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "7165edb4f6274cfa2c2cc6c3f6824e1962c9b77bf256c0fd8e3ed50783307d43",
+      "transforms_sha256": "fb8450bbaff6d674cba0dfd9a4d738388b217f56cc99b35f2849c2a36e4290d8",
+      "conditioning_frame_480p_sha256": "8f2bf334df6df93573ec769c1d86fe603c08064eb7dc1c11394aacdae1dc8e54"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "795b772074c286b41d2e928b849c5daefc0ba110408262e6f3fe6b91c706bca9",
+      "source_member": "a5104b6b1c976b61b9e2725d174dac2e8ecc203716f2b1ad5a304e59c65324ee/images_4/frame_00209.png",
+      "image_sha256": "2d7ee172dd008520c75ceb2be4807d1d40118bbc067451dfc0249a887bd01115",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "fb8450bbaff6d674cba0dfd9a4d738388b217f56cc99b35f2849c2a36e4290d8"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 21,
+      "stratum": "lateral_right",
+      "stratum_quantile_rank": 1,
+      "stratum_sorted_position": 1
+    }
+  },
+  "dl3dv_2ccda28db4bd8013dffe044ab0173ec39aca027aa92bf0344504c57fb93bbf93_s00256_lateral_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the right while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/2ccda28db4bd8013dffe044ab0173ec39aca027aa92bf0344504c57fb93bbf93/frame_00257.png",
+    "source": "DL3DV",
+    "scene_id": "2ccda28db4bd8013dffe044ab0173ec39aca027aa92bf0344504c57fb93bbf93",
+    "motion_instruction": "lateral_right",
+    "pose_window": [
+      256,
+      336
+    ],
+    "pose_stats": {
+      "path_length": 7.7279978320663245,
+      "displacement": 7.4266652421148205,
+      "rotation_deg": 72.65548948967489,
+      "signed_yaw_deg": 72.46362119285577,
+      "forward": -3.410413853652034,
+      "lateral": 6.582309116097032,
+      "straightness": 0.9610076766971694,
+      "normalized_path": 1.2659523563471564,
+      "normalized_displacement": 1.2165899327824878,
+      "turn_consistency": 0.6995652662397713,
+      "turn_monotonicity": 0.875,
+      "turn_smoothness": 0.9556513669920663,
+      "turn_spread": 0.5683943381028282,
+      "selection_score": 0.670704845814978
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/2ccda28db4bd8013dffe044ab0173ec39aca027aa92bf0344504c57fb93bbf93/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "f2dea5622c81db18ec6d3f08776788c1a9ca0d57700bb5db25f4f04ee7a0a933",
+      "transforms_sha256": "e85e8052e61a184e2f242f023258aac876b06078fd0f6b0345bfe6f828207a73",
+      "conditioning_frame_480p_sha256": "bf69cb74cb2cd7ba8499d75951e670aa71bdc574fcc0622003b5da99809df174"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "41f8904d845f5b63b9d47a26458fff7170c32b1642f8ce674901c985d9c7d1e1",
+      "source_member": "2ccda28db4bd8013dffe044ab0173ec39aca027aa92bf0344504c57fb93bbf93/images_4/frame_00257.png",
+      "image_sha256": "6e675f76d0f5e496c61e3bd08fe2fd372037465e6271bd1f16c51c185b511409",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "e85e8052e61a184e2f242f023258aac876b06078fd0f6b0345bfe6f828207a73"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 22,
+      "stratum": "lateral_right",
+      "stratum_quantile_rank": 2,
+      "stratum_sorted_position": 2
+    }
+  },
+  "dl3dv_859b94bad457147f75c93b67a2822ddcec21932b7c92d96f232d5685c80484c8_s00200_lateral_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the right while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/859b94bad457147f75c93b67a2822ddcec21932b7c92d96f232d5685c80484c8/frame_00201.png",
+    "source": "DL3DV",
+    "scene_id": "859b94bad457147f75c93b67a2822ddcec21932b7c92d96f232d5685c80484c8",
+    "motion_instruction": "lateral_right",
+    "pose_window": [
+      200,
+      280
+    ],
+    "pose_stats": {
+      "path_length": 7.407844847517374,
+      "displacement": 7.068842210198285,
+      "rotation_deg": 62.10047762084557,
+      "signed_yaw_deg": 61.72304328488021,
+      "forward": 1.8778919183394922,
+      "lateral": 6.812592422726313,
+      "straightness": 0.9542373464486501,
+      "normalized_path": 1.13633688454125,
+      "normalized_displacement": 1.0843350933763687,
+      "turn_consistency": 0.881905788202532,
+      "turn_monotonicity": 0.95,
+      "turn_smoothness": 0.9667875231319291,
+      "turn_spread": 0.7179519885188608,
+      "selection_score": 0.6151982378854627
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/859b94bad457147f75c93b67a2822ddcec21932b7c92d96f232d5685c80484c8/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "fd77e876739933eb3e4dcb862ad08216fe2e5e1212ff23337c3d1774416d354b",
+      "transforms_sha256": "dd57ec59bd61cd5b3dc8830096237e8258a4b89fd4f3244972a4daa804caa7fe",
+      "conditioning_frame_480p_sha256": "0055127a097b077a6f75edf79bdc4f2ae7434aa90d1fbea5dc94123411647086"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "5cf335ecf3ac9029753642e3d1691da5e070fa253063da9dea4b4bd1a31353d9",
+      "source_member": "859b94bad457147f75c93b67a2822ddcec21932b7c92d96f232d5685c80484c8/images_4/frame_00201.png",
+      "image_sha256": "87ac388390bc5115c73ba817666eba41637c68f58693e9b05159abdb15c58d5a",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "dd57ec59bd61cd5b3dc8830096237e8258a4b89fd4f3244972a4daa804caa7fe"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 23,
+      "stratum": "lateral_right",
+      "stratum_quantile_rank": 3,
+      "stratum_sorted_position": 4
+    }
+  },
+  "dl3dv_abce31da0eff9835537445270d262d1803c723f63629492e5a4c39201b5dfd0c_s00272_lateral_right": {
+    "text_prompt": "A realistic continuous first-person navigation video beginning from the supplied first frame and continuing through the visible environment. The camera physically travels a long distance toward the right while continuing through the visible environment, producing strong parallax and a large viewpoint change. Nearby surfaces sweep rapidly across and out of the frame. One uninterrupted fixed-focal-length shot; no zoom, cuts, or teleportation.",
+    "scene_description": null,
+    "image_prompt": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/abce31da0eff9835537445270d262d1803c723f63629492e5a4c39201b5dfd0c/frame_00273.png",
+    "source": "DL3DV",
+    "scene_id": "abce31da0eff9835537445270d262d1803c723f63629492e5a4c39201b5dfd0c",
+    "motion_instruction": "lateral_right",
+    "pose_window": [
+      272,
+      352
+    ],
+    "pose_stats": {
+      "path_length": 6.269861606729514,
+      "displacement": 6.2016227583813475,
+      "rotation_deg": 19.68305667585248,
+      "signed_yaw_deg": 18.997385247760914,
+      "forward": 0.35248044119800215,
+      "lateral": 6.171261615271618,
+      "straightness": 0.989116370882106,
+      "normalized_path": 1.1722629935841615,
+      "normalized_displacement": 1.1595045179333594,
+      "turn_consistency": 0.39202643281511107,
+      "turn_monotonicity": 0.8375,
+      "turn_smoothness": 0.9465102626513066,
+      "turn_spread": 0.6444910658923503,
+      "selection_score": 0.3480176211453745
+    },
+    "transforms_path": "/vol/dissolve/yz10325/datasets/dl3dv-fullgraph-dpo-v1/conditioning_960p/1K/abce31da0eff9835537445270d262d1803c723f63629492e5a4c39201b5dfd0c/transforms.json",
+    "source_scene_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-480P",
+      "dataset_revision": "5902ed6d707cc13a7779907c1e096676f7707971",
+      "archive_sha256": "81c8a2aa9fb20059b9a9e6bfe9f52a5adbcd956ba7278f299d9b295203314f44",
+      "transforms_sha256": "f0bc67562a48ce0e2eb3171d24e69a807d4d27dd50b533b1947700eb327e394e",
+      "conditioning_frame_480p_sha256": "a29a808c84b1a92f0d0edba8ce828765bce2fb3725dc6515e827fffe0fffa52d"
+    },
+    "conditioning_image_provenance": {
+      "repo_id": "DL3DV/DL3DV-ALL-960P",
+      "dataset_revision": "abb4dab0d4b6d93c32e6d901c06c35bad03210fb",
+      "archive_sha256": "3fa9f4fc304ca0eb0b20da39491892ea982fdee834cdd500acc315c4e75b467b",
+      "source_member": "abce31da0eff9835537445270d262d1803c723f63629492e5a4c39201b5dfd0c/images_4/frame_00273.png",
+      "image_sha256": "6840984d97f996297599adcbeca50454e9f6cde2f64a053f34cb59233f2fb7d9",
+      "width": 960,
+      "height": 540,
+      "transforms_sha256": "f0bc67562a48ce0e2eb3171d24e69a807d4d27dd50b533b1947700eb327e394e"
+    },
+    "c2f_dev_selection": {
+      "selection_order": 24,
+      "stratum": "lateral_right",
+      "stratum_quantile_rank": 4,
+      "stratum_sorted_position": 5
+    }
+  }
+}

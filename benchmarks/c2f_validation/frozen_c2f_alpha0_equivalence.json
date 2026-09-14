@@ -1,0 +1,47 @@
+{
+  "schema": "wan-c2f-dev-validation-v1",
+  "method_id": "c2f_alpha0_equivalence",
+  "source_manifest": "/vol/dissolve/yz10325/outputs/geometry-selection/fullgraph_dpo_posttrain_v1/pilot32_manifest_960p_v1.json",
+  "source_manifest_sha256": "d44bac0d241445e4fe0fb553d0ea8746673a3b06d1a9782ab2232803c18c740a",
+  "selection_manifest": "benchmarks/c2f_validation/dev25_manifest.json",
+  "reserved_split_csv": "benchmarks/c2f_validation/frozen_scene_split_3_100_100.csv",
+  "reserved_split_sha256": "d1eed2400547d755e265149185515c3e6fdf981f63635bbbfa152d33fa53205c",
+  "required_zero_overlap_splits": ["test", "validation", "debug"],
+  "baseline_root": "/vol/dissolve/yz10325/outputs/geometry-selection/fullgraph_dpo_posttrain_v1/pilot32_candidates_v1",
+  "model_path": "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers",
+  "pipeline_path": "external/guidance_wan/pipeline_wan_i2v_c2f_memory_value.py",
+  "seed": 0,
+  "generation": {
+    "steps": 50,
+    "frames": 121,
+    "height": 704,
+    "width": 1280,
+    "fps": 24,
+    "guidance_scale": 5.0,
+    "negative_prompt": null
+  },
+  "method": {
+    "attn_avg_alpha": 0.0,
+    "attn_avg_layers": [10, 15, 20],
+    "attn_avg_mode": "c2f_value_residual_memory",
+    "attn_avg_start": 20,
+    "attn_avg_end": 29,
+    "attn_avg_temporal_radius": 1,
+    "attn_avg_match_radius": 2,
+    "attn_avg_match_confidence": 0.4,
+    "attn_avg_match_mutual": true,
+    "attn_avg_descriptor_dim": 64,
+    "attn_avg_coarse_factor": 2,
+    "attn_avg_memory_lookback": 3,
+    "attn_avg_cond_only": true,
+    "attn_avg_preserve_first_frame": true,
+    "attn_avg_debug": false
+  },
+  "selection": {
+    "strata": ["forward", "forward_left", "forward_right", "lateral_left", "lateral_right"],
+    "cases_per_stratum": 5,
+    "sort_key": "pose_stats.selection_score",
+    "sort_direction": "descending",
+    "quantile_rule": "round(i * (n - 1) / (k - 1)), i=0..k-1"
+  }
+}
