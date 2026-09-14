@@ -1,0 +1,31 @@
+{
+  "schema": "wan-c2f-dev-validation-v1",
+  "method_id": "official_same_host_reference",
+  "pipeline_kind": "official",
+  "source_manifest": "/vol/dissolve/yz10325/outputs/geometry-selection/fullgraph_dpo_posttrain_v1/pilot32_manifest_960p_v1.json",
+  "source_manifest_sha256": "d44bac0d241445e4fe0fb553d0ea8746673a3b06d1a9782ab2232803c18c740a",
+  "selection_manifest": "benchmarks/c2f_validation/dev25_manifest.json",
+  "reserved_split_csv": "benchmarks/c2f_validation/frozen_scene_split_3_100_100.csv",
+  "reserved_split_sha256": "d1eed2400547d755e265149185515c3e6fdf981f63635bbbfa152d33fa53205c",
+  "required_zero_overlap_splits": ["test", "validation", "debug"],
+  "baseline_root": "/vol/dissolve/yz10325/outputs/geometry-selection/fullgraph_dpo_posttrain_v1/pilot32_candidates_v1",
+  "model_path": "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers",
+  "seed": 0,
+  "generation": {
+    "steps": 50,
+    "frames": 121,
+    "height": 704,
+    "width": 1280,
+    "fps": 24,
+    "guidance_scale": 5.0,
+    "negative_prompt": null
+  },
+  "method": {},
+  "selection": {
+    "strata": ["forward", "forward_left", "forward_right", "lateral_left", "lateral_right"],
+    "cases_per_stratum": 5,
+    "sort_key": "pose_stats.selection_score",
+    "sort_direction": "descending",
+    "quantile_rule": "round(i * (n - 1) / (k - 1)), i=0..k-1"
+  }
+}

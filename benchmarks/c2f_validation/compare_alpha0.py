@@ -64,10 +64,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--reference-video",
+        type=Path,
+        help="Explicit same-host official reference. Defaults to baseline_video from metadata.",
+    )
     args = parser.parse_args()
     metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
     generated = args.metadata.parent / "video.mp4"
-    baseline = Path(metadata["baseline_video"])
+    baseline = args.reference_video or Path(metadata["baseline_video"])
     comparison = compare_videos(generated, baseline)
     report = {
         "schema": "wan-c2f-alpha0-equivalence-v1",

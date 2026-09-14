@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import torch
 from diffusers import AutoencoderKLWan
+from diffusers import WanImageToVideoPipeline as OfficialWanImageToVideoPipeline
 from diffusers.utils import export_to_video
 from PIL import Image
 
@@ -167,9 +169,19 @@ def main() -> None:
             raise RuntimeError(f"missing existing seed-{config['seed']} baseline for {case_id}")
         validate_baseline(case_id, case, baseline_index[case_id], config)
 
-    pipeline_path = Path(config["pipeline_path"])
-    if not pipeline_path.is_absolute():
-        pipeline_path = REPO_ROOT / pipeline_path
+    pipeline_kind = config.get("pipeline_kind", "custom")
+    if pipeline_kind not in {"custom", "official"}:
+        raise ValueError("pipeline_kind must be 'custom' or 'official'")
+    if pipeline_kind == "official":
+        if config.get("method"):
+            raise ValueError("official pipeline reference requires an empty method configuration")
+        pipeline_path = Path(inspect.getfile(OfficialWanImageToVideoPipeline)).resolve()
+        PipelineClass = OfficialWanImageToVideoPipeline
+    else:
+        pipeline_path = Path(config["pipeline_path"])
+        if not pipeline_path.is_absolute():
+            pipeline_path = REPO_ROOT / pipeline_path
+        PipelineClass = load_pipeline_class(pipeline_path)
     pipeline_sha = sha256_file(pipeline_path)
     identity = git_identity()
     print("repo:", REPO_ROOT)
@@ -183,7 +195,6 @@ def main() -> None:
         return
 
     model_path = config["model_path"]
-    PipelineClass = load_pipeline_class(pipeline_path)
     vae = AutoencoderKLWan.from_pretrained(model_path, subfolder="vae", torch_dtype=torch.float32)
     pipe = PipelineClass.from_pretrained(model_path, vae=vae, torch_dtype=torch.bfloat16).to(args.device)
     pipe.vae.enable_tiling()
@@ -252,6 +263,7 @@ def main() -> None:
             "case_id": case_id,
             "case": case,
             "method_id": config["method_id"],
+            "pipeline_kind": pipeline_kind,
             "seed": config["seed"],
             "prompt": case["text_prompt"],
             "image_path": str(image_path),
