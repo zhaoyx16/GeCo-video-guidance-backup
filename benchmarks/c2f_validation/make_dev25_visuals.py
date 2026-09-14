@@ -81,7 +81,15 @@ def main() -> None:
         candidate_meta = verify_generated(
             candidate_video, candidate_dir / "metadata.json", candidate_dir / "COMPLETE.json", case_id
         )
-        for key in ("prompt", "image_sha256", "seed", "generation"):
+        for key in (
+            "prompt",
+            "image_sha256",
+            "seed",
+            "generation",
+            "hostname",
+            "cuda_visible_devices",
+            "torch_version",
+        ):
             if baseline_meta.get(key) != candidate_meta.get(key):
                 raise RuntimeError(f"paired {key} mismatch for {case_id}")
 
@@ -124,6 +132,9 @@ def main() -> None:
                 "selection_score": case["pose_stats"]["selection_score"],
                 "status": status,
                 "mean_absolute_pixel_difference": report["mean_absolute_pixel_difference"],
+                "hostname": candidate_meta["hostname"],
+                "physical_gpu": candidate_meta["cuda_visible_devices"],
+                "torch_version": candidate_meta["torch_version"],
                 "contact_sheet": report["contact_sheet"],
                 "side_by_side": report["side_by_side"],
                 "visual_review": str(report_path.resolve()),
