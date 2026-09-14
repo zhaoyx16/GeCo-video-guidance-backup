@@ -65,8 +65,12 @@ def main() -> None:
     if manifest.get("_meta", {}).get("reserved_overlap_counts") != expected_overlap:
         raise RuntimeError("selection manifest does not certify zero reserved-split overlap")
 
+    cases = ordered_cases(manifest)
+    if len(cases) != 25:
+        raise RuntimeError(f"expected exactly 25 development cases, found {len(cases)}")
+
     index_records = []
-    for ordinal, (case_id, case) in enumerate(ordered_cases(manifest)):
+    for ordinal, (case_id, case) in enumerate(cases):
         baseline_dir = args.generation_root / args.baseline_method / case_id / f"seed_{args.seed}"
         candidate_dir = args.generation_root / args.candidate_method / case_id / f"seed_{args.seed}"
         baseline_video = baseline_dir / "video.mp4"
@@ -116,8 +120,8 @@ def main() -> None:
             {
                 "ordinal": ordinal,
                 "case_id": case_id,
-                "motion_stratum": case["c2f_dev_selection"]["motion_stratum"],
-                "selection_score": case["c2f_dev_selection"]["selection_score"],
+                "motion_stratum": case["c2f_dev_selection"]["stratum"],
+                "selection_score": case["pose_stats"]["selection_score"],
                 "status": status,
                 "mean_absolute_pixel_difference": report["mean_absolute_pixel_difference"],
                 "contact_sheet": report["contact_sheet"],

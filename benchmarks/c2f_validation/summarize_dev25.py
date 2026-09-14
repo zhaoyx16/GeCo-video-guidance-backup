@@ -337,7 +337,7 @@ def main() -> None:
         decision = "borderline"
 
     per_case_rows = []
-    strata = {case_id: case["c2f_dev_selection"]["motion_stratum"] for case_id, case in cases}
+    strata = {case_id: case["c2f_dev_selection"]["stratum"] for case_id, case in cases}
     for case_id in case_ids:
         row = {"case_id": case_id, "motion_stratum": strata[case_id]}
         for name, values in scene_values.items():
