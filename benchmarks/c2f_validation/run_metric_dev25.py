@@ -46,6 +46,12 @@ def main() -> None:
         "roles": list(base.METRICS["met3r"]["roles"]),
         "records_per_entry": 16,
     }
+    metrics["relative_total_motion_raw"] = {
+        "adapter": "relative_motion_raw_adapter.py",
+        "core": str(base.RELATIVE_MOTION_CORE),
+        "roles": ["relative_motion_raft_large_checkpoint"],
+        "records_per_entry": 1,
+    }
     parser = argparse.ArgumentParser()
     parser.add_argument("metric", choices=sorted(metrics))
     parser.add_argument("--device", required=True, help="one physical Hippasus GPU index")
@@ -90,11 +96,15 @@ def main() -> None:
     metric_spec = metrics[metric]
     adapter_dir = base.SOURCE / "protocol/metric_adapters"
     adapter_source = None
-    if metric == "met3r_multiscale":
-        adapter_source = HERE / "met3r_multiscale_adapter.py"
+    custom_adapter_names = {
+        "met3r_multiscale": "met3r_multiscale_adapter.py",
+        "relative_total_motion_raw": "relative_motion_raw_adapter.py",
+    }
+    if metric in custom_adapter_names:
+        adapter_source = HERE / custom_adapter_names[metric]
         if adapter_source.is_symlink() or not adapter_source.is_file():
-            raise ValueError("multiscale MEt3R adapter source must be a regular file")
-        adapter_copy = contracts / "met3r_multiscale_adapter.py"
+            raise ValueError("custom metric adapter source must be a regular file")
+        adapter_copy = contracts / custom_adapter_names[metric]
         descriptor = os.open(adapter_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
         try:
             with os.fdopen(descriptor, "wb") as handle:
@@ -112,7 +122,7 @@ def main() -> None:
     core_value = Path(metric_spec["core"])
     core = base.require_readonly(core_value if core_value.is_absolute() else base.SOURCE / core_value)
     core_source_receipt = None
-    if metric == "relative_total_motion_percent":
+    if metric in {"relative_total_motion_percent", "relative_total_motion_raw"}:
         if core != base.RELATIVE_MOTION_CORE or base.sha256_file(core) != base.RELATIVE_MOTION_CORE_SHA:
             raise RuntimeError("relative-motion core differs from the frozen source")
         source_receipt = base.require_readonly(
@@ -162,7 +172,7 @@ def main() -> None:
 
     env = base.base_environment(args.device)
     runtime_identities = {}
-    if metric == "relative_total_motion_percent":
+    if metric in {"relative_total_motion_percent", "relative_total_motion_raw"}:
         runtime_identities = base.opencv_runtime_identity(env, adapter_dir)
         adapter_wrapper = base.relative_motion_runtime_wrapper(adapter_dir)
     elif metric == "vbench_quality":
