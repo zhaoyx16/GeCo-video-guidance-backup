@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 
+HERE = Path(__file__).resolve().parent
 UPSTREAM = Path("/vol/dissolve/yz10325/tmp/run_metric_formal_nonlre_v6.py")
 UPSTREAM_SHA256 = "4eaf72f93c17457cb16353f394c3a92c169fac67e20e28af6d82cb0e2ef853dd"
 
@@ -38,8 +39,15 @@ def load_upstream():
 
 def main() -> None:
     base = load_upstream()
+    metrics = dict(base.METRICS)
+    metrics["met3r_multiscale"] = {
+        "adapter": "met3r_multiscale_adapter.py",
+        "core": "met3r/met3r/met3r.py",
+        "roles": list(base.METRICS["met3r"]["roles"]),
+        "records_per_entry": 16,
+    }
     parser = argparse.ArgumentParser()
-    parser.add_argument("metric", choices=sorted(base.METRICS))
+    parser.add_argument("metric", choices=sorted(metrics))
     parser.add_argument("--device", required=True, help="one physical Hippasus GPU index")
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--input-lock", type=Path, required=True)
@@ -79,9 +87,24 @@ def main() -> None:
         directory.mkdir(mode=0o700, exist_ok=True)
 
     metric = args.metric
-    metric_spec = base.METRICS[metric]
+    metric_spec = metrics[metric]
     adapter_dir = base.SOURCE / "protocol/metric_adapters"
-    if metric == "met3r":
+    adapter_source = None
+    if metric == "met3r_multiscale":
+        adapter_source = HERE / "met3r_multiscale_adapter.py"
+        if adapter_source.is_symlink() or not adapter_source.is_file():
+            raise ValueError("multiscale MEt3R adapter source must be a regular file")
+        adapter_copy = contracts / "met3r_multiscale_adapter.py"
+        descriptor = os.open(adapter_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(adapter_source.read_bytes())
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.chmod(adapter_copy, 0o444)
+        adapter = base.require_readonly(adapter_copy, sha256_file(adapter_source))
+    elif metric == "met3r":
         adapter = base.require_readonly(base.MET3R_FIXED_ADAPTER, base.MET3R_FIXED_ADAPTER_SHA)
     else:
         adapter = base.require_readonly(adapter_dir / metric_spec["adapter"])
@@ -148,7 +171,7 @@ def main() -> None:
         adapter_wrapper = base.geco_fused_runtime_wrapper(adapter_dir)
     elif metric == "long_range_reprojection_error":
         adapter_wrapper, runtime_identities = base.independent_lre_runtime_wrapper(adapter_dir)
-    elif metric == "met3r":
+    elif metric in {"met3r", "met3r_multiscale"}:
         adapter_wrapper, runtime_identities = base.met3r_runtime_wrapper(adapter_dir)
     else:
         adapter_wrapper = (
@@ -234,6 +257,11 @@ def main() -> None:
         "source_snapshot_sha256": base.SOURCE_SNAPSHOT_SHA,
         "environment_final_ready": {"path": final_binding["path"], "sha256": final_binding["sha256"]},
         "adapter": {"path": str(adapter), "sha256": base.sha256_file(adapter)},
+        "adapter_source": (
+            {"path": str(adapter_source.resolve()), "sha256": sha256_file(adapter_source)}
+            if adapter_source is not None
+            else None
+        ),
         "core": {"path": str(core), "sha256": base.sha256_file(core)},
         "core_source_receipt": core_source_receipt,
         "weights": {"path": str(weight_manifest_path), "sha256": weight_sha},
