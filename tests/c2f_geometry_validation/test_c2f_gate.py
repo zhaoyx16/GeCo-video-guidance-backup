@@ -151,3 +151,15 @@ def test_torch_gate_matches_stage_a_numpy_evidence_rule():
         max_error_tokens=0.25,
     )
     assert torch.equal(gate.reshape(-1).bool(), expected)
+
+
+def test_attention_processor_uses_explicit_geometry_diagnostics_sink():
+    pipeline_path = REPO_ROOT / "external/guidance_wan/pipeline_wan_i2v_c2f_geometry_gate.py"
+    source = pipeline_path.read_text(encoding="utf-8")
+    processor_start = source.index("class _CorrespondenceKVProcessor:")
+    processor_end = source.index("def _make_attention_hook", processor_start)
+    processor_source = source[processor_start:processor_end]
+
+    assert "self._last_c2f_geometry_diagnostics" not in processor_source
+    assert 'self.geometry_diagnostics["records"].append(' in processor_source
+    assert "self._last_c2f_geometry_diagnostics," in source[processor_end:]

@@ -1869,9 +1869,10 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 )
 
             class _CorrespondenceKVProcessor:
-                def __init__(self, base_processor, layer_idx: int):
+                def __init__(self, base_processor, layer_idx: int, geometry_diagnostics: dict | None):
                     self.base_processor = base_processor
                     self.layer_idx = layer_idx
+                    self.geometry_diagnostics = geometry_diagnostics
 
                 def __call__(
                     self,
@@ -2014,7 +2015,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             accepted_count = _active_count("accepted")
                             gated_norm = update_norms["gated_update_norm"]
                             norm_error = (actual_update_norm - gated_norm).abs() / gated_norm.clamp_min(1e-12)
-                            self._last_c2f_geometry_diagnostics["records"].append(
+                            if self.geometry_diagnostics is None:
+                                raise RuntimeError("geometry diagnostics sink is missing")
+                            self.geometry_diagnostics["records"].append(
                                 {
                                     "step": int(attn_avg_state["step"]),
                                     "layer": int(self.layer_idx),
@@ -2181,7 +2184,13 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         if attention_layer.add_k_proj is not None:
                             raise ValueError("correspondence attention manipulation only supports Wan self-attention without added image K/V")
                         attn_avg_processor_backups.append((attention_layer, attention_layer.processor))
-                        attention_layer.set_processor(_CorrespondenceKVProcessor(attention_layer.processor, layer_idx))
+                        attention_layer.set_processor(
+                            _CorrespondenceKVProcessor(
+                                attention_layer.processor,
+                                layer_idx,
+                                self._last_c2f_geometry_diagnostics,
+                            )
+                        )
                     else:
                         handle = attention_layer.register_forward_hook(_make_attention_hook(layer_idx))
                         attn_avg_hook_handles.append(handle)
