@@ -80,14 +80,22 @@ def aggregate_lre(
     for case_id in case_ids:
         base = baseline.get(case_id, {}).get("first_last")
         cand = candidate.get(case_id, {}).get("first_last")
-        if base is None or cand is None:
-            raise ValueError(f"missing LRE first-last record for {case_id}")
-        base_ok, cand_ok = base.get("eligible") is True, cand.get("eligible") is True
+        if base is None:
+            raise ValueError(f"missing baseline LRE first-last record for {case_id}")
+        base_ok = base.get("eligible") is True
+        cand_ok = cand is not None and cand.get("eligible") is True
+        if base_ok and cand is None:
+            raise ValueError(f"missing candidate LRE record for baseline-eligible case {case_id}")
+        if base_ok and not cand_ok:
+            raise ValueError(f"candidate LRE is ineligible for baseline-locked case {case_id}")
+        if not base_ok and cand is not None:
+            raise ValueError(f"candidate LRE contains a baseline-ineligible case {case_id}")
         eligibility.append(
             {
                 "case_id": case_id,
                 "baseline_eligible": base_ok,
                 "candidate_eligible": cand_ok,
+                "candidate_record_present": cand is not None,
                 "joint_eligible": base_ok and cand_ok,
             }
         )
