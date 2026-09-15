@@ -197,7 +197,12 @@ def main() -> None:
                     "selected_output_count": 1,
                     "comparison_note": "paired seed-0 same-host development validation",
                 },
-                "selection_policy": manifest["_meta"]["selection_policy"],
+                "selection_policy": {
+                    "selection_uses_generated_outputs": manifest["_meta"]["selection_uses_generated_outputs"],
+                    "selection_uses_metrics": manifest["_meta"]["selection_uses_metrics"],
+                    "strata": manifest["_meta"]["strata"],
+                    "cases_per_stratum": manifest["_meta"]["cases_per_stratum"],
+                },
                 "selection_manifest": str(selection_path),
                 "selection_manifest_sha256": sha256_file(selection_path),
                 "reserved_overlap_counts": expected_overlap,
