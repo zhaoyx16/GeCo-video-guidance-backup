@@ -15,7 +15,7 @@
   "pipeline_path": "/vol/dissolve/yz10325/repos/GeCo-worktrees/c2f-geometry-validation-0915/external/guidance_wan/pipeline_wan_i2v_c2f_geometry_gate.py",
   "geometry_root": "/vol/dissolve/yz10325/outputs/c2f_geometry_validation_0915/stage_b_geometry_v1",
   "stage_b_lock": "/vol/dissolve/yz10325/repos/GeCo-worktrees/c2f-geometry-validation-0915/benchmarks/c2f_geometry_validation/STAGE_B_LOCK.json",
-  "stage_b_lock_sha256": "48ffaaf1bc50fed81881b022275cb9a559ca660ba723c00e8a551603dd2d6fbe",
+  "stage_b_lock_sha256": "032982700d251ca1473fcc98e89fd183ca42a885e189a18a83cf3301df78b32f",
   "seed": 0,
   "generation": {
     "steps": 50,
