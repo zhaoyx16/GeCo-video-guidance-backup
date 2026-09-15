@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +24,8 @@ from PIL import Image
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def sha256_file(path: Path) -> str:
@@ -148,6 +151,15 @@ def main() -> None:
     config_path = args.config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config_sha = sha256_file(config_path)
+    runner_path = Path(__file__).resolve()
+    runner_sha = sha256_file(runner_path)
+    stage_b_lock_path = Path(config["stage_b_lock"])
+    if not stage_b_lock_path.is_absolute():
+        stage_b_lock_path = REPO_ROOT / stage_b_lock_path
+    if sha256_file(stage_b_lock_path) != config["stage_b_lock_sha256"]:
+        raise RuntimeError("Stage B lock digest differs from the frozen config")
+    stage_b_lock = json.loads(stage_b_lock_path.read_text(encoding="utf-8"))
+    stage_b_cases = {case["case_id"]: case for case in stage_b_lock["cases"]}
     source_path = Path(config["source_manifest"])
     if sha256_file(source_path) != config["source_manifest_sha256"]:
         raise RuntimeError("source manifest digest differs from frozen config")
@@ -199,12 +211,15 @@ def main() -> None:
             pipeline_path = REPO_ROOT / pipeline_path
         PipelineClass = load_pipeline_class(pipeline_path)
     pipeline_sha = sha256_file(pipeline_path)
+    if pipeline_sha != stage_b_lock["pipeline"]["sha256"]:
+        raise RuntimeError("pipeline digest differs from the Stage B lock")
     identity = git_identity()
     print("repo:", REPO_ROOT)
     print("git:", identity)
     print("config_sha256:", config_sha)
     print("selection_sha256:", sha256_file(selection_path))
     print("pipeline_sha256:", pipeline_sha)
+    print("runner_sha256:", runner_sha)
     print("shard cases:", len(cases))
     if args.validate_only:
         print("validation-only gate passed")
@@ -219,10 +234,21 @@ def main() -> None:
     generation = config["generation"]
     method = config["method"]
     for ordinal, (case_id, case) in enumerate(cases, start=1):
+        if case_id not in stage_b_cases:
+            raise RuntimeError(f"case {case_id} is absent from the Stage B lock")
+        stage_b_case = stage_b_cases[case_id]
         geometry_path = geometry_root / case_id / "GEOMETRY.npz"
         geometry_metadata_path = geometry_root / case_id / "GEOMETRY_METADATA.json"
         geometry_complete_path = geometry_root / case_id / "COMPLETE.json"
         geometry_sha = sha256_file(geometry_path)
+        geometry_metadata_record = json.loads(geometry_metadata_path.read_text(encoding="utf-8"))
+        geometry_complete_record = json.loads(geometry_complete_path.read_text(encoding="utf-8"))
+        if geometry_metadata_record.get("baseline_video_sha256") != stage_b_case["baseline_video_sha256"]:
+            raise RuntimeError(f"geometry draft hash differs from the Stage B case lock for {case_id}")
+        if geometry_metadata_record.get("lock_sha256") != config["stage_b_lock_sha256"]:
+            raise RuntimeError(f"geometry bundle was prepared from a different Stage B lock for {case_id}")
+        if geometry_complete_record.get("geometry_sha256") != geometry_sha:
+            raise RuntimeError(f"geometry bundle digest differs from COMPLETE for {case_id}")
         output_dir = args.output_root / config["method_id"] / case_id / f"seed_{config['seed']}"
         video_path = output_dir / "video.mp4"
         metadata_path = output_dir / "metadata.json"
@@ -234,6 +260,7 @@ def main() -> None:
                 "config_sha256": config_sha,
                 "selection_manifest_sha256": sha256_file(selection_path),
                 "pipeline_sha256": pipeline_sha,
+                "runner_sha256": runner_sha,
                 "geometry_sha256": geometry_sha,
             }
             if all(complete.get(key) == value for key, value in expected.items()) and video_path.is_file():
@@ -300,6 +327,8 @@ def main() -> None:
             "selection_manifest_sha256": sha256_file(selection_path),
             "pipeline_path": str(pipeline_path),
             "pipeline_sha256": pipeline_sha,
+            "runner_path": str(runner_path),
+            "runner_sha256": runner_sha,
             "code_identity": identity,
             "baseline_video": str(baseline_video),
             "baseline_video_sha256": sha256_file(baseline_video),
@@ -326,6 +355,7 @@ def main() -> None:
                 "config_sha256": config_sha,
                 "selection_manifest_sha256": sha256_file(selection_path),
                 "pipeline_sha256": pipeline_sha,
+                "runner_sha256": runner_sha,
                 "geometry_sha256": geometry_sha,
                 "video_sha256": metadata["video_sha256"],
                 "metadata_sha256": sha256_file(metadata_path),
