@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +17,44 @@ METHOD_IDS = {
     "G": "c2f_geometry_hard_gate",
     "U": "c2f_geometry_uniform_norm_control",
 }
+
+DEFAULT_BASELINE_LOCK = Path(
+    "/vol/dissolve/yz10325/outputs/c2f_validation_0914/"
+    "dev25_evaluator_inputs_v2/locks/official_same_host_reference.json"
+)
+DEFAULT_C2F_LOCK = Path(
+    "/vol/dissolve/yz10325/outputs/c2f_validation_0914/"
+    "dev25_evaluator_inputs_v2/locks/c2f_k3_a0025.json"
+)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def locked_entry(lock_path: Path, case: dict, expected_method: str) -> tuple[dict, str]:
+    lock_path = lock_path.resolve()
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    if lock.get("method_id") != expected_method:
+        raise ValueError(f"unexpected method in {lock_path}: {lock.get('method_id')}")
+    matching = [entry for entry in lock.get("entries", []) if entry.get("case_id") == case["case_id"]]
+    if len(matching) != 1:
+        raise ValueError(f"expected exactly one {case['case_id']} entry in {lock_path}")
+    entry = matching[0]
+    if (
+        entry.get("seed") != 0
+        or entry.get("prompt") != case["text_prompt"]
+        or entry.get("video_probe") != {"frames": 121, "width": 1280, "height": 704, "fps": 24}
+    ):
+        raise ValueError(f"locked comparator contract mismatch for {case['case_id']}")
+    video_path = Path(entry["metric_video_path"])
+    if sha256_file(video_path) != entry.get("video_sha256"):
+        raise RuntimeError(f"locked comparator SHA mismatch: {video_path}")
+    return entry, sha256_file(lock_path)
 
 
 def read_video(path: Path) -> tuple[list[np.ndarray], float]:
@@ -72,6 +111,8 @@ def main() -> None:
     )
     parser.add_argument("--generation-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--baseline-lock", type=Path, default=DEFAULT_BASELINE_LOCK)
+    parser.add_argument("--c2f-lock", type=Path, default=DEFAULT_C2F_LOCK)
     parser.add_argument("--case-index", type=int, required=True)
     parser.add_argument("--frame-indices", default="0,15,30,45,60,75,90,105,120")
     parser.add_argument("--tile-width", type=int, default=240)
@@ -83,9 +124,15 @@ def main() -> None:
         parser.error(f"case-index must be in [0, {len(cases) - 1}]")
     case = cases[args.case_index]
     case_id = case["case_id"]
+    baseline_entry, baseline_lock_sha = locked_entry(
+        args.baseline_lock, case, "official_same_host_reference"
+    )
+    c2f_entry, c2f_lock_sha = locked_entry(args.c2f_lock, case, "c2f_k3_a0025")
+    if c2f_entry["video_sha256"] != case["c2f_video_sha256"]:
+        raise RuntimeError(f"Stage B and evaluator C2F SHAs disagree for {case_id}")
     video_paths = {
-        "B": Path(case["baseline_video"]),
-        "C": Path(case["c2f_video"]),
+        "B": Path(baseline_entry["metric_video_path"]),
+        "C": Path(c2f_entry["metric_video_path"]),
         **{
             label: args.generation_root / method_id / case_id / "seed_0/video.mp4"
             for label, method_id in METHOD_IDS.items()
@@ -187,6 +234,10 @@ def main() -> None:
         mad[f"{left}_{right}"] = {"mean": float(np.mean(values)), "per_frame": values}
     report = {
         "case_id": case_id,
+        "comparator_locks": {
+            "B": {"path": str(args.baseline_lock.resolve()), "sha256": baseline_lock_sha},
+            "C": {"path": str(args.c2f_lock.resolve()), "sha256": c2f_lock_sha},
+        },
         "video_paths": {label: str(path.resolve()) for label, path in video_paths.items()},
         "frame_count": len(reference),
         "fps": reference_fps,
