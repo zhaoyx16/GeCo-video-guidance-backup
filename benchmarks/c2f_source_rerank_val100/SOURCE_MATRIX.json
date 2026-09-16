@@ -1,0 +1,374 @@
+{
+  "adapted_geco": "reuse-existing-not-regenerated",
+  "main_count": 36,
+  "manifest_sha256": "ef59a10d21d7d30729a9ac24cfba7cb37c153f5ae05debaa18387d3720afb862",
+  "public_reference_ids": [
+    "wan_unguided",
+    "c2f_k3_a0025",
+    "c2f_k3_a00125"
+  ],
+  "records": [
+    {
+      "config": "configs/c2f_src_draft_hard_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_v_a00125",
+      "sha256": "126c459ddd5121186d29b75e7bc6d82cb1b91316ac2c95c0b78ef300d3595187"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_v_a00125",
+      "sha256": "7f98b0f28cb2219e38ea50e236c95339c1c312140bb7d448ec1ce26c1a3b70b6"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_v_a00125",
+      "sha256": "18e8c5f89d06961abb7cccc691512a9163c63c1094f47fe0c24e2cc9eeb4e6c6"
+    },
+    {
+      "config": "configs/c2f_src_draft_hard_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_p_a00125",
+      "sha256": "6080cdff29aa016cb8e9d12a4946646d658628396e0b949a142555486955e7e6"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_p_a00125",
+      "sha256": "765dba034dc2b8a63e7b62affcee175fe53ae08720d2a12bdc5033c40694dcd8"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_p_a00125",
+      "sha256": "feed4c70d8f5c95ccf2f7fc8e1de610aee10cd7a92dfced64a01a46117543a0d"
+    },
+    {
+      "config": "configs/c2f_src_draft_hard_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_s_a00125",
+      "sha256": "3cc8f5f55c658f45908ffceaab978479ab21bdbe8023fe2df0dec832c216aff4"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_s_a00125",
+      "sha256": "7fbf0e87259c91a054e811f741e2404179e8f16ea746e7892b79e232436c5195"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_s_a00125",
+      "sha256": "5fed2389c4a79065725b3e841b6507b3192e776f9aff0d7bfc10394cf7bab4ed"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_v_a00125",
+      "sha256": "c30512ef334b78668145ddd12785fae15d35b34ce2b0d6364d88c5cbf875ca15"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_v_a00125",
+      "sha256": "0477530cdde70314189c6c60e9edadfb4918efbd0a847efc7847cc8c33f1dc41"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_v_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_v_a00125",
+      "sha256": "affa0894c1491c2b808930edc4585f599112a37d5fc5991a1d28bf71ad0e0292"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_p_a00125",
+      "sha256": "a3d303e80af77a049335db6aa784bbf07828cd9542855f5de018163f78789a8f"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_p_a00125",
+      "sha256": "92f45492f5e52ccdbca32d8cdc5ad7dd297751576d2d0ffb713cc6fa0a2f81de"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_p_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_p_a00125",
+      "sha256": "74b5efbf4f72030a23b7fbc140506445acb4ead2e4299b4ab9e98b025ade4916"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_s_a00125",
+      "sha256": "3934f011a45048cad99a5bb60006aa32a1c209934eedf37ff60da530d2dd3ac4"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_s_a00125",
+      "sha256": "285d4ab13316b5ce2b25ba97294625bb125fafc3e6a253269381a3c365b45de3"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_s_a00125.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_s_a00125",
+      "sha256": "fd959de5b91543794c63a179790ff8da096586a8df2e889a100097daedc07208"
+    },
+    {
+      "config": "configs/c2f_src_draft_hard_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_v_a0025",
+      "sha256": "17952aa9bd8b44e1bb01165d02c1fcddc58c05f765e71a69c9bca7a9214b68b0"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_v_a0025",
+      "sha256": "fa4857beb89b6773ef3862e799829d65127bc9916edab7eb79640ba3ba5d08e7"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_v_a0025",
+      "sha256": "027be13c22fab42f58582a9bfc0a11a6a93e4e5f5463bd2c18beee731d02cb14"
+    },
+    {
+      "config": "configs/c2f_src_draft_hard_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_p_a0025",
+      "sha256": "2deb55efe58c0818cea56b37d1cacaff0d4b5a305502b90e1a8e55f28ff57651"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_p_a0025",
+      "sha256": "17b45319d7864d7a9df32ea6f26ec6f69b9630400a98cfa3a396c25728e1bd7d"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_p_a0025",
+      "sha256": "646008d2792f4f9a7755a7a8b5f56c0f376d27c8b49275d47cfdbf260032c42b"
+    },
+    {
+      "config": "configs/c2f_src_draft_hard_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_hard_s_a0025",
+      "sha256": "09adb2a1f26c235184c712a6fbc63a858d6e64fd30c1ea24c01799d3a6af68b1"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_hard_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_hard_s_a0025",
+      "sha256": "0fb6f7696b6b39766c45ceadb889e6e4c44ba9ddc6a0b79b54be63f41947791a"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_hard_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_hard_s_a0025",
+      "sha256": "4f887a8baf03eb4c1498589c31ccc9432637e87aa767866eaa25fe55b2230616"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_v_a0025",
+      "sha256": "99213cd662f758d17cd22133846ae2754ba9c0cf524c661a79cf730d4324ec72"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_v_a0025",
+      "sha256": "01d9d82fa1212b6396e3c073a007fb81edc82e94683a1838b75bd117e14bea39"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_v_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_v_a0025",
+      "sha256": "b31006c81591493198bbc409ae49961014deb74c917e31f1d336497a11824fd0"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_p_a0025",
+      "sha256": "edf8524fe30e596611f7d07db88b4821201bbff263fe7316663ace53bc3ef72e"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_p_a0025",
+      "sha256": "f158ab88bc80dbb52da6ebb80522e46f4c857144d90207c1a09f19422ea1a660"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_p_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_p_a0025",
+      "sha256": "3dabb7b7225ab2cb8b455ff75a0e2b21d8570e067f42d89b4b5415ad6c067633"
+    },
+    {
+      "config": "configs/c2f_src_draft_soft_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_draft_soft_s_a0025",
+      "sha256": "64869e6def095c8b4cbcdd583f33db09d5e8457f631214feef2a6c2b4f4fbfdd"
+    },
+    {
+      "config": "configs/c2f_src_online_snapshot_soft_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_snapshot_soft_s_a0025",
+      "sha256": "eb8b08fe426bd0956d3be79db953ee2787c0046d52993ec897916e504fa54ccf"
+    },
+    {
+      "config": "configs/c2f_src_online_refresh_soft_s_a0025.json",
+      "kind": "main",
+      "method_id": "c2f_src_online_refresh_soft_s_a0025",
+      "sha256": "b1f43a55a1bfca1d0937c4dbc634dd113652e565b35f158cd4f9abd38e490581"
+    },
+    {
+      "config": "configs/c2f_u_draft_hard_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_hard_v_a00125",
+      "sha256": "495ac08047ee8276c080d6e8c96e5e22de30ca5be1e3fc70bcd783cf314236a1"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_hard_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_hard_v_a00125",
+      "sha256": "d56d2ddc5d84ae14466b68d5238286d9c814c9f13939a2ea89545182f6c07fbf"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_hard_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_hard_v_a00125",
+      "sha256": "a6bb4b61c6bfa8f0e7254f4f32a15d4dbf9ab60bd52431c62127196f75cdb39f"
+    },
+    {
+      "config": "configs/c2f_u_draft_hard_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_hard_p_a00125",
+      "sha256": "d30493a1395e1798c87a2962220b0dfaa8b0fd7585690ad7b1711efbcef178cc"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_hard_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_hard_p_a00125",
+      "sha256": "05b485578e008439a9293ed1faf7d05547a93c653493e4c0f2772d969ca52123"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_hard_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_hard_p_a00125",
+      "sha256": "3927f7b20f9f18335627dd64584bb390acd5f69268b2699eb222d743f3bdae6d"
+    },
+    {
+      "config": "configs/c2f_u_draft_soft_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_soft_v_a00125",
+      "sha256": "2220e59e1724fe9fca86741d30973982fbb9a11eff3abb4a63aebe512311a251"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_soft_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_soft_v_a00125",
+      "sha256": "14cf890879788306d3da8ecd6b559317ff6a148ad9a8bc74c15685e4917bd8b1"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_soft_v_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_soft_v_a00125",
+      "sha256": "488119a297d4943809a5ef9e56c27c8477364f810b634587493e00b8f0edf718"
+    },
+    {
+      "config": "configs/c2f_u_draft_soft_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_soft_p_a00125",
+      "sha256": "42ed99f41ea58ca76a3689ecea8d67a4567b1cc449b88df241f8f2ff3e606f1c"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_soft_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_soft_p_a00125",
+      "sha256": "9a38fc8ceb98ab0fdf0ffb5bc7ffecd075d18ab751c777014d8259f627b342c5"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_soft_p_a00125.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_soft_p_a00125",
+      "sha256": "0a27ed3827ff43b471c4eac896b2620c411eeec6a7ccc71e91b1d03e0a82a152"
+    },
+    {
+      "config": "configs/c2f_u_draft_hard_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_hard_v_a0025",
+      "sha256": "4b044ee4f03783802b49554d424765361f9f68495014ac48b9f201681c4ecdff"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_hard_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_hard_v_a0025",
+      "sha256": "11f7f624bd779eb672eda0712c8b84b5fbae4ee6b32a8b4155d3463373b01e69"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_hard_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_hard_v_a0025",
+      "sha256": "ea7441304d2a0b6e18d38952ab7ffe67b1c2f5ac0eaca93f3b491276cf0c7ff8"
+    },
+    {
+      "config": "configs/c2f_u_draft_hard_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_hard_p_a0025",
+      "sha256": "7fd0905fa29a87e05b0666e9ef60cd44ad2d391ddb847635a37ddff3d08a4d2e"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_hard_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_hard_p_a0025",
+      "sha256": "6b5cb5fcb2fd095ed42fabf553e904c151dc2857f37e61d5ec45aa9129d4610b"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_hard_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_hard_p_a0025",
+      "sha256": "1be4440a982e3c393d17611029d722818ec27719cda2a33266ea94dc8613e48e"
+    },
+    {
+      "config": "configs/c2f_u_draft_soft_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_soft_v_a0025",
+      "sha256": "3dd404de3fb4cede259e3455db76a98b270f222eebd0637a135384f4b30f70c2"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_soft_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_soft_v_a0025",
+      "sha256": "8527e351d4a1e86845e2753c9a304ac2121cbf2b05b3bb4ca69df9b85ad09206"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_soft_v_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_soft_v_a0025",
+      "sha256": "5772bf75e363b4f020f95c74d15a33183a4f826d63d465b759afb72a03e8d28e"
+    },
+    {
+      "config": "configs/c2f_u_draft_soft_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_draft_soft_p_a0025",
+      "sha256": "6f1bceb0759f0d2d0053e635dde2f384119883070e73ec987ad6ea2f9d02da79"
+    },
+    {
+      "config": "configs/c2f_u_online_snapshot_soft_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_snapshot_soft_p_a0025",
+      "sha256": "741cef4285f3cf019f775909f710f92ab51bf9d189a97b52e364174de4f35958"
+    },
+    {
+      "config": "configs/c2f_u_online_refresh_soft_p_a0025.json",
+      "kind": "uniform_control",
+      "method_id": "c2f_u_online_refresh_soft_p_a0025",
+      "sha256": "39567561f867c0be342785d6180a71c748aff263be3c2c57d422d5a415b7f0bb"
+    }
+  ],
+  "schema": "wan-c2f-source-rerank-matrix-v1",
+  "uniform_control_count": 24
+}

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -71,20 +72,45 @@ def ordered_cases(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 
 def probe_video(path: Path) -> dict[str, Any]:
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-count_frames",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=nb_read_frames,width,height,r_frame_rate",
-        "-of",
-        "json",
-        str(path),
-    ]
-    return json.loads(subprocess.check_output(command, text=True))["streams"][0]
+    if shutil.which("ffprobe"):
+        command = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-count_frames",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_read_frames,width,height,r_frame_rate",
+            "-of",
+            "json",
+            str(path),
+        ]
+        return json.loads(subprocess.check_output(command, text=True))["streams"][0]
+
+    from imageio_ffmpeg import read_frames
+
+    reader = read_frames(str(path), pix_fmt="rgb24")
+    try:
+        metadata = next(reader)
+        frame_count = sum(1 for _ in reader)
+    finally:
+        reader.close()
+    width, height = (int(value) for value in metadata["size"])
+    fps = float(metadata["fps"])
+    if frame_count <= 0 or width <= 0 or height <= 0 or fps <= 0.0:
+        raise RuntimeError(
+            f"invalid imageio-ffmpeg video probe: frames={frame_count} size={width}x{height} fps={fps}"
+        )
+    rounded_fps = int(round(fps))
+    if abs(fps - rounded_fps) > 1e-3:
+        raise RuntimeError(f"generated video has non-integral fps={fps}")
+    return {
+        "nb_read_frames": str(frame_count),
+        "width": width,
+        "height": height,
+        "r_frame_rate": f"{rounded_fps}/1",
+    }
 
 
 def resolve_repo_path(value: str) -> Path:

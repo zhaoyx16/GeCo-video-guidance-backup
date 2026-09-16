@@ -1,0 +1,57 @@
+{
+  "baseline_root": "/vol/dissolve/yz10325/outputs/geometry-selection/evaluator_inputs/wan_unguided_v2_4seed_metric_v1",
+  "evidence": {
+    "geometry_root": "/vol/dissolve/yz10325/outputs/geometry-selection/c2f_source_val100_online_snapshot_geometry_v1",
+    "kind": "online_snapshot"
+  },
+  "factors": {
+    "alpha": 0.025,
+    "geometry_evidence": "online_snapshot",
+    "intervention": "main",
+    "pair_weighting": "soft",
+    "retrieval_policy": "P"
+  },
+  "generation": {
+    "fps": 24,
+    "frames": 121,
+    "guidance_scale": 5.0,
+    "height": 704,
+    "negative_prompt": null,
+    "steps": 50,
+    "width": 1280
+  },
+  "manifest_sha256": "ef59a10d21d7d30729a9ac24cfba7cb37c153f5ae05debaa18387d3720afb862",
+  "method": {
+    "attn_avg_alpha": 0.025,
+    "attn_avg_coarse_factor": 2,
+    "attn_avg_cond_only": true,
+    "attn_avg_debug": false,
+    "attn_avg_descriptor_dim": 64,
+    "attn_avg_end": 29,
+    "attn_avg_layers": [
+      10,
+      15,
+      20
+    ],
+    "attn_avg_match_confidence": 0.4,
+    "attn_avg_match_mutual": true,
+    "attn_avg_match_radius": 2,
+    "attn_avg_memory_lookback": 3,
+    "attn_avg_mode": "c2f_value_residual_memory",
+    "attn_avg_preserve_first_frame": true,
+    "attn_avg_start": 20,
+    "attn_avg_temporal_radius": 1,
+    "c2f_force_source_score_one": false,
+    "c2f_geometry_confidence_percentile": 20.0,
+    "c2f_geometry_depth_tolerance": 0.15,
+    "c2f_geometry_max_error_tokens": 1.5,
+    "c2f_geometry_mode": "rerank",
+    "c2f_pair_weighting": "soft",
+    "c2f_retrieval_policy": "P",
+    "c2f_source_support_history": 3
+  },
+  "method_id": "c2f_src_online_snapshot_soft_p_a0025",
+  "pipeline_path": "external/guidance_wan/pipeline_wan_i2v_c2f_source_rerank.py",
+  "schema": "wan-c2f-source-rerank-val100-v1",
+  "seed": 0
+}

@@ -1,0 +1,32 @@
+{
+  "schema": "c2f-source-draft-geometry-config-v1",
+  "manifest_sha256": "ef59a10d21d7d30729a9ac24cfba7cb37c153f5ae05debaa18387d3720afb862",
+  "baseline_root": "/vol/dissolve/yz10325/outputs/geometry-selection/evaluator_inputs/wan_unguided_v2_4seed_metric_v1",
+  "output_root": "/vol/dissolve/yz10325/outputs/geometry-selection/c2f_source_val100_draft_geometry_v1",
+  "seed": 0,
+  "generation": {
+    "steps": 50,
+    "frames": 121,
+    "height": 704,
+    "width": 1280,
+    "fps": 24,
+    "guidance_scale": 5.0
+  },
+  "frame_indices": [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
+    64, 68, 72, 76, 80, 84, 88, 92, 96, 100, 104, 108, 112, 116, 120
+  ],
+  "confidence_percentile": 20.0,
+  "geometry": {
+    "name": "VGGT-Omega-1B-512",
+    "source_root": "external/vggt_omega",
+    "source_commit": "39a0cb8af88554f15ddcb5354cd52bde588fa014",
+    "checkpoint": "/vol/dissolve/yz10325/checkpoints/VGGT-Omega/vggt_omega_1b_512.pt",
+    "checkpoint_sha256": "c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934",
+    "checkpoint_size": 4576706117,
+    "image_resolution": 512,
+    "preprocessing_mode": "balanced",
+    "camera_convention": "opencv_world_to_camera",
+    "depth_definition": "camera_z_depth"
+  }
+}
