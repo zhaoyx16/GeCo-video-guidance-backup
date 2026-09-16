@@ -181,6 +181,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--baseline-root",
+        type=Path,
+        help="override only the host storage path for the frozen paired baselines",
+    )
+    parser.add_argument(
+        "--geometry-root",
+        type=Path,
+        help="override only the host storage path for the frozen geometry bundles",
+    )
     parser.add_argument("--case-index", type=int)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -222,7 +232,8 @@ def main() -> None:
     else:
         cases = [record for index, record in enumerate(all_cases) if index % args.num_shards == args.shard_index]
     case_ids = {case_id for case_id, _ in all_cases}
-    baseline_index = index_baselines(Path(config["baseline_root"]), case_ids, int(config["seed"]))
+    baseline_root = (args.baseline_root or Path(config["baseline_root"])).resolve()
+    baseline_index = index_baselines(baseline_root, case_ids, int(config["seed"]))
     for case_id, case in all_cases:
         validate_baseline(case_id, case, baseline_index[case_id], config)
     for case_id, case in cases:
@@ -234,7 +245,7 @@ def main() -> None:
     evidence_kind = evidence["kind"]
     if evidence_kind not in {"draft", "online_snapshot", "online_refresh"}:
         raise RuntimeError(f"unsupported geometry evidence kind: {evidence_kind}")
-    geometry_root = Path(evidence["geometry_root"])
+    geometry_root = (args.geometry_root or Path(evidence["geometry_root"])).resolve()
     for case_id, _ in cases:
         load_completed_geometry(geometry_root, case_id)
 
@@ -247,6 +258,8 @@ def main() -> None:
     print("method:", config["method_id"])
     print("evidence:", evidence_kind)
     print("shard cases:", len(cases))
+    print("baseline_root:", baseline_root)
+    print("geometry_root:", geometry_root)
     print("git:", identity)
     print("pipeline_sha256:", pipeline_sha)
     print("runner_sha256:", runner_sha)
@@ -393,6 +406,10 @@ def main() -> None:
             "baseline_video_sha256": sha256_file(baseline_video),
             "baseline_metadata": str(baseline_metadata),
             "initial_geometry": geometry_identity,
+            "host_path_overrides": {
+                "baseline_root": str(baseline_root),
+                "geometry_root": str(geometry_root),
+            },
             "diagnostics_sha256": sha256_file(diagnostics_path),
             "video_sha256": sha256_file(video_path),
             "video_probe": actual_probe,
