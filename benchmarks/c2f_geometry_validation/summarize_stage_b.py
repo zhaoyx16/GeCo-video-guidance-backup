@@ -229,6 +229,26 @@ def intervention_stats(root: Path, method_id: str, case_ids: list[str]) -> dict:
     }
 
 
+def component_provenance(roots: dict[str, dict[str, Path]]) -> dict:
+    locations = {
+        "met3r_multiscale": "main",
+        "geco_fused": "main",
+        "vbench_quality": "aux",
+        "relative_total_motion_raw": "aux",
+    }
+    result = {}
+    for method, method_roots in roots.items():
+        result[method] = {}
+        for metric_id, location in locations.items():
+            component_path = (method_roots[location] / "components" / f"{metric_id}.json").resolve()
+            run_path = (method_roots[location] / f"{metric_id}.RUN.json").resolve()
+            result[method][metric_id] = {
+                "component": {"path": str(component_path), "sha256": sha256_file(component_path)},
+                "run_receipt": {"path": str(run_path), "sha256": sha256_file(run_path)},
+            }
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage-b-lock", type=Path, required=True)
@@ -354,9 +374,51 @@ def main() -> None:
         "G": generation_stats(args.new_generation_root, METHODS["G"], case_ids),
         "U": generation_stats(args.new_generation_root, METHODS["U"], case_ids),
     }
+    geometry_efficiency = geometry_stats(args.geometry_precompute_root, case_ids)
+    clean_second_pass_seconds = generation["U"]["mean_wall_seconds"]
+    first_three_g_seconds = statistics.fmean(
+        generation["G"]["per_case_wall_seconds"][case_id] for case_id in case_ids[:3]
+    )
+    shared_load_amortized_seconds = geometry_efficiency["one_time_shared_model_load_seconds"] / len(case_ids)
+    two_pass_seconds_excluding_load = (
+        generation["B"]["mean_wall_seconds"]
+        + geometry_efficiency["mean_forward_seconds_per_scene"]
+        + clean_second_pass_seconds
+    )
+    two_pass_seconds_batch_amortized = two_pass_seconds_excluding_load + shared_load_amortized_seconds
     efficiency = {
         "sampling": generation,
-        "geometry_precompute": geometry_stats(args.geometry_precompute_root, case_ids),
+        "geometry_precompute": geometry_efficiency,
+        "clean_intervention_pass": {
+            "uniform_control_mean_wall_seconds": clean_second_pass_seconds,
+            "geometry_gate_first_three_uncontended_mean_wall_seconds": first_three_g_seconds,
+            "uniform_control_sampling_over_baseline_percent": 100.0
+            * clean_second_pass_seconds
+            / generation["B"]["mean_wall_seconds"],
+            "peak_memory_over_baseline_percent": 100.0
+            * max(generation["G"]["max_peak_memory_mib"], generation["U"]["max_peak_memory_mib"])
+            / generation["B"]["max_peak_memory_mib"],
+        },
+        "two_pass_end_to_end": {
+            "required_phases": ["baseline_draft", "external_geometry", "intervention_resampling"],
+            "seconds_per_scene_excluding_one_time_geometry_model_load": two_pass_seconds_excluding_load,
+            "seconds_per_scene_with_model_load_amortized_over_ten_scenes": two_pass_seconds_batch_amortized,
+            "seconds_for_single_scene_including_full_model_load": two_pass_seconds_excluding_load
+            + geometry_efficiency["one_time_shared_model_load_seconds"],
+            "batch_amortized_over_baseline_percent": 100.0
+            * two_pass_seconds_batch_amortized
+            / generation["B"]["mean_wall_seconds"],
+            "sequential_peak_memory_mib": max(
+                generation["B"]["max_peak_memory_mib"],
+                generation["G"]["max_peak_memory_mib"],
+                generation["U"]["max_peak_memory_mib"],
+                geometry_efficiency["max_peak_allocated_mib"],
+            ),
+            "note": (
+                "The external-geometry variant is a two-pass diagnostic. Attention intervention is cheap, but "
+                "end-to-end generation includes the baseline draft and a second Wan sampling pass."
+            ),
+        },
         "interpretation_warning": (
             "G cases 4-10 ran concurrently with an unrelated GPU0 workload; raw G wall time is not a clean "
             "method-overhead estimate. The first three uncontended G runs and all U runs are the usable timing evidence."
@@ -401,6 +463,7 @@ def main() -> None:
         "visual_gate": {"path": str(args.visual_gate.resolve()), "sha256": sha256_file(args.visual_gate)},
         "methods": METHODS,
         "case_count": 10,
+        "metric_provenance": component_provenance(roots),
         "method_means": method_means,
         "comparisons": comparisons,
         "lre": {
