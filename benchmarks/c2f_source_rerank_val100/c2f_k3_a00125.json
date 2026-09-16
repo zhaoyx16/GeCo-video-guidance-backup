@@ -1,0 +1,33 @@
+{
+  "schema": "wan-c2f-val100-method-v1",
+  "method_id": "c2f_k3_a00125",
+  "manifest_sha256": "ef59a10d21d7d30729a9ac24cfba7cb37c153f5ae05debaa18387d3720afb862",
+  "pipeline_path": "external/guidance_wan/pipeline_wan_i2v_c2f_memory_value.py",
+  "seed": 0,
+  "generation": {
+    "steps": 50,
+    "frames": 121,
+    "height": 704,
+    "width": 1280,
+    "fps": 24,
+    "guidance_scale": 5.0,
+    "negative_prompt": null
+  },
+  "method": {
+    "attn_avg_alpha": 0.0125,
+    "attn_avg_layers": [10, 15, 20],
+    "attn_avg_mode": "c2f_value_residual_memory",
+    "attn_avg_start": 20,
+    "attn_avg_end": 29,
+    "attn_avg_temporal_radius": 1,
+    "attn_avg_match_radius": 2,
+    "attn_avg_match_confidence": 0.4,
+    "attn_avg_match_mutual": true,
+    "attn_avg_descriptor_dim": 64,
+    "attn_avg_coarse_factor": 2,
+    "attn_avg_memory_lookback": 3,
+    "attn_avg_cond_only": true,
+    "attn_avg_preserve_first_frame": true,
+    "attn_avg_debug": false
+  }
+}
