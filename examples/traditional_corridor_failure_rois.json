@@ -1,0 +1,76 @@
+{
+  "benchmark": "wan_traditional_corridor_3seed",
+  "fps": 24,
+  "num_frames": 121,
+  "resolution": [704, 1280],
+  "grid": {
+    "columns": ["A", "B", "C", "D", "E", "F", "G", "H"],
+    "rows": [1, 2, 3, 4]
+  },
+  "videos": {
+    "seed0": "/vol/dissolve/yz10325/experiments/static_geometry_failure_benchmark_20260728/videos/wan/wan_traditional_corridor_s0.mp4",
+    "seed1": "/vol/dissolve/yz10325/experiments/static_geometry_failure_benchmark_20260728/videos/wan/wan_traditional_corridor_s1.mp4",
+    "seed2": "/vol/dissolve/yz10325/experiments/static_geometry_failure_benchmark_20260728/videos/wan/wan_traditional_corridor_s2.mp4"
+  },
+  "failures": [
+    {
+      "id": "seed0_end_railing_deformation",
+      "seed": 0,
+      "type": "local_structure_identity",
+      "description": "The wooden railing beside the corridor end deforms.",
+      "annotation_status": "excluded_from_primary_validation_subtle_failure",
+      "use_for_primary_validation": false,
+      "exclusion_reason": "The deformation is less visually distinct than seed2, making method-effect judgements unreliable.",
+      "candidate_frame_range": [48, 78],
+      "candidate_cells": ["A2", "B2", "A3", "B3"]
+    },
+    {
+      "id": "seed1_illegal_occluder",
+      "seed": 1,
+      "type": "visibility_topology_hallucination",
+      "description": "A dark horizontal wooden structure appears as an illegal occluder.",
+      "annotation_status": "needs_user_frame_roi_confirmation",
+      "candidate_frame_range": [18, 48],
+      "candidate_cells": ["B3", "C3", "D3", "E3", "B4", "C4", "D4", "E4"]
+    },
+    {
+      "id": "seed1_structure_deformation",
+      "seed": 1,
+      "type": "local_structure_identity",
+      "description": "Wooden corridor geometry deforms independently of the illegal occluder.",
+      "annotation_status": "user_confirmed",
+      "use_for_primary_validation": true,
+      "frame_range": [18, 48],
+      "cells": ["D2", "E2", "D3", "E3"],
+      "pixel_roi_xyxy": [480, 176, 800, 528],
+      "note": "Deformation is already visible at frame 18. End frame 48 covers the clearly visible early deformation interval."
+    },
+    {
+      "id": "seed2_beam_texture_deformation",
+      "seed": 2,
+      "type": "local_structure_and_texture_identity",
+      "description": "The wooden corridor roof beam deforms and its texture changes.",
+      "annotation_status": "user_confirmed",
+      "use_for_primary_validation": true,
+      "frame_range": [24, 47],
+      "cells": ["C2", "D2", "C3", "D3"],
+      "pixel_roi_xyxy": [320, 176, 640, 528]
+    },
+    {
+      "id": "seed2_gray_wall_camera_stuck_motion",
+      "seed": 2,
+      "type": "wrong_parallax_camera_world_entanglement",
+      "description": "The gray wall on the right moves with the camera instead of remaining fixed in world coordinates.",
+      "annotation_status": "needs_user_frame_roi_confirmation",
+      "candidate_frame_range": [0, 36],
+      "candidate_cells": ["G1", "H1", "G2", "H2", "G3", "H3", "G4", "H4"]
+    }
+  ],
+  "evaluation_policy": {
+    "freeze_one_shared_method_config_across_seeds": true,
+    "score_each_failure_separately": true,
+    "do_not_merge_occlusion_with_deformation": true,
+    "oracle_masks_are_diagnostic_not_general_method_results": true,
+    "require_visual_roi_review_before_aggregate_metrics": true
+  }
+}
