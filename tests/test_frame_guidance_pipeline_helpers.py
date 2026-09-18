@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from external.guidance_wan.pipeline_wan_i2v_full_guided import (
+    _frame_guidance_update_base,
     _prepare_frame_guidance_targets,
     _wan_causal_frame_decode_plan,
 )
@@ -37,6 +38,34 @@ class FrameGuidancePipelineHelperTest(unittest.TestCase):
         self.assertFalse(targets[8].requires_grad)
         self.assertTrue(torch.all(targets[8] == 1.0))
 
+    def test_targets_match_official_latent_downscale_resolution(self) -> None:
+        processor = FakeVideoProcessor()
+        targets = _prepare_frame_guidance_targets(
+            processor,
+            {0: "first", 8: "middle"},
+            fixed_frames=[0, 8],
+            num_frames=9,
+            height=704,
+            width=1280,
+            vae_device=torch.device("cpu"),
+            latent_downscale_factor=4,
+        )
+        self.assertEqual(processor.calls, [("first", 176, 320), ("middle", 176, 320)])
+        self.assertEqual(tuple(targets[8].shape), (1, 176, 320, 3))
+
+    def test_rejects_unsupported_latent_downscale_factor(self) -> None:
+        with self.assertRaisesRegex(ValueError, "one of"):
+            _prepare_frame_guidance_targets(
+                FakeVideoProcessor(),
+                {0: "first", 8: "middle"},
+                fixed_frames=[0, 8],
+                num_frames=9,
+                height=704,
+                width=1280,
+                vae_device=torch.device("cpu"),
+                latent_downscale_factor=3,
+            )
+
     def test_rejects_target_not_selected_for_decoding(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing from fixed_frames"):
             _prepare_frame_guidance_targets(
@@ -51,12 +80,19 @@ class FrameGuidancePipelineHelperTest(unittest.TestCase):
 
 
 class WanCausalFrameDecodePlanTest(unittest.TestCase):
-    def assert_plan(self, frame_index: int, expected: tuple[int, int, int]) -> None:
+    def assert_plan(
+        self,
+        frame_index: int,
+        expected: tuple[int, int, int],
+        *,
+        context_latents: int = 2,
+    ) -> None:
         plan = _wan_causal_frame_decode_plan(
             frame_index,
             num_frames=121,
             latent_frames=31,
             temporal_scale=4,
+            context_latents=context_latents,
         )
         self.assertEqual(plan, expected)
 
@@ -64,6 +100,12 @@ class WanCausalFrameDecodePlanTest(unittest.TestCase):
         self.assert_plan(0, (0, 1, 0))
         self.assert_plan(60, (14, 16, 4))
         self.assert_plan(120, (29, 31, 4))
+
+    def test_three_token_context_preserves_target_mapping(self) -> None:
+        self.assert_plan(0, (0, 1, 0), context_latents=3)
+        self.assert_plan(5, (0, 3, 5), context_latents=3)
+        self.assert_plan(60, (13, 16, 8), context_latents=3)
+        self.assert_plan(120, (28, 31, 8), context_latents=3)
 
     def test_noninitial_frames_select_the_target_token_not_a_future_slot(self) -> None:
         for frame_index in [1, 4, 5, 8, 60, 119, 120]:
@@ -87,6 +129,51 @@ class WanCausalFrameDecodePlanTest(unittest.TestCase):
                 latent_frames=3,
                 temporal_scale=4,
             )
+
+    def test_rejects_context_shorter_than_predecessor_target_pair(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least 2"):
+            _wan_causal_frame_decode_plan(
+                8,
+                num_frames=121,
+                latent_frames=31,
+                temporal_scale=4,
+                context_latents=1,
+            )
+
+
+class FrameGuidanceUpdateBaseTest(unittest.TestCase):
+    def test_direct_mode_preserves_current_latent(self) -> None:
+        latents = torch.randn(1, 2, 3)
+        x0_pred = torch.randn_like(latents)
+        base = _frame_guidance_update_base(
+            latents,
+            x0_pred,
+            sigma=torch.tensor(0.6),
+            generator=torch.Generator().manual_seed(7),
+            use_vlo_renoising=False,
+        )
+        self.assertIs(base, latents)
+
+    def test_vlo_mode_matches_flow_matching_renoising_equation(self) -> None:
+        latents = torch.zeros(1, 2, 3)
+        x0_pred = torch.full_like(latents, 2.0)
+        sigma = torch.tensor(0.25)
+        expected_generator = torch.Generator().manual_seed(11)
+        actual_generator = torch.Generator().manual_seed(11)
+        expected_noise = torch.randn(
+            x0_pred.shape,
+            generator=expected_generator,
+            dtype=x0_pred.dtype,
+        )
+        expected = sigma * expected_noise + (1.0 - sigma) * x0_pred
+        actual = _frame_guidance_update_base(
+            latents,
+            x0_pred,
+            sigma,
+            actual_generator,
+            use_vlo_renoising=True,
+        )
+        torch.testing.assert_close(actual, expected)
 
 
 if __name__ == "__main__":

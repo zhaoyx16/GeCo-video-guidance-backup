@@ -70,6 +70,41 @@ def _geco_move_tensor(
     return tensor.to(device=target, dtype=dtype) if dtype is not None else tensor.to(target)
 
 
+def _frame_guidance_update_base(
+    latents: torch.Tensor,
+    x0_pred: torch.Tensor,
+    sigma: torch.Tensor | float,
+    generator: torch.Generator | list[torch.Generator] | None,
+    *,
+    use_vlo_renoising: bool,
+) -> torch.Tensor:
+    """Return the latent state on which the normalized guidance step is applied.
+
+    The direct controlled variant updates the current ``x_t``.  The VLO variant
+    follows the official Wan Frame Guidance implementation: sample fresh noise
+    and reconstruct ``x_t = sigma * noise + (1 - sigma) * x0_pred`` before the
+    gradient update.  The reconstruction is intentionally outside autograd;
+    the gradient has already been computed through the differentiable x0 path.
+    """
+    if not use_vlo_renoising:
+        return latents
+    if latents.shape != x0_pred.shape:
+        raise ValueError(
+            "Frame Guidance VLO requires latents and x0_pred with identical shapes, "
+            f"got {tuple(latents.shape)} and {tuple(x0_pred.shape)}."
+        )
+
+    with torch.no_grad():
+        sigma_t = torch.as_tensor(sigma, device=latents.device, dtype=x0_pred.dtype)
+        noise = randn_tensor(
+            x0_pred.shape,
+            generator=generator,
+            device=latents.device,
+            dtype=x0_pred.dtype,
+        )
+        return sigma_t * noise + (1.0 - sigma_t) * x0_pred.detach()
+
+
 def _prepare_frame_guidance_targets(
     video_processor: VideoProcessor,
     raw_targets: Mapping[int | str, PipelineImageInput],
@@ -78,6 +113,7 @@ def _prepare_frame_guidance_targets(
     height: int,
     width: int,
     vae_device: torch.device,
+    latent_downscale_factor: int = 1,
 ) -> dict[int, torch.Tensor]:
     """Preprocess immutable RGB anchors once for Frame Guidance MSE.
 
@@ -87,6 +123,11 @@ def _prepare_frame_guidance_targets(
     """
     if not isinstance(raw_targets, Mapping) or not raw_targets:
         raise ValueError("Frame Guidance requires additional_inputs['frame_guidance_targets'].")
+    if latent_downscale_factor not in {1, 2, 4}:
+        raise ValueError("Frame Guidance latent_downscale_factor must be one of {1, 2, 4}.")
+
+    target_height = height // latent_downscale_factor
+    target_width = width // latent_downscale_factor
 
     fixed_set = set(fixed_frames)
     targets: dict[int, torch.Tensor] = {}
@@ -102,7 +143,11 @@ def _prepare_frame_guidance_targets(
                 f"Frame Guidance target index {index} is missing from fixed_frames={sorted(fixed_set)}."
             )
         with torch.no_grad():
-            target = video_processor.preprocess(raw_target, height=height, width=width).to(
+            target = video_processor.preprocess(
+                raw_target,
+                height=target_height,
+                width=target_width,
+            ).to(
                 vae_device, dtype=torch.float32
             )
         if target.ndim != 4 or target.shape[0] != 1 or target.shape[1] != 3:
@@ -122,16 +167,17 @@ def _wan_causal_frame_decode_plan(
     num_frames: int,
     latent_frames: int,
     temporal_scale: int,
+    context_latents: int = 2,
 ) -> tuple[int, int, int]:
-    """Return a causal Wan latent slice and local decoded-frame index.
+    """Return a causal Wan latent context and local decoded-frame index.
 
     ``AutoencoderKLWan._decode`` clears its cache, decodes latent token zero as
     a one-frame initial chunk, then decodes every later token as a four-frame
     chunk.  Consequently, RGB frame ``f > 0`` belongs to latent token
-    ``(f - 1) // temporal_scale + 1``.  To decode that target after a cache
-    reset, the Frame Guidance convention is to pass the predecessor/target
-    pair and select local output ``(f - 1) % temporal_scale + 1``.  This is the
-    same index algebra used by the official Wan Frame Guidance implementation.
+    ``(f - 1) // temporal_scale + 1``.  With ``context_latents=2``, the helper
+    reproduces the official Frame Guidance predecessor/target pair and selects
+    local output ``(f - 1) % temporal_scale + 1``.  Larger contexts retain more
+    causal history and adjust the local output index accordingly.
 
     The pair provides the correct *local output slot*.  It does not promise
     exact equality with a full causal decode for later frames because the
@@ -142,6 +188,8 @@ def _wan_causal_frame_decode_plan(
         raise ValueError(f"Wan temporal_scale must be positive, got {temporal_scale}.")
     if latent_frames <= 0:
         raise ValueError(f"Wan latent_frames must be positive, got {latent_frames}.")
+    if context_latents < 2:
+        raise ValueError(f"Wan context_latents must be at least 2, got {context_latents}.")
     if frame_index < 0 or frame_index >= num_frames:
         raise ValueError(f"Frame index {frame_index} is outside [0, {num_frames - 1}].")
 
@@ -160,7 +208,14 @@ def _wan_causal_frame_decode_plan(
             f"Frame {frame_index} maps to missing Wan latent token {target_latent}; "
             f"only [0, {latent_frames - 1}] are available."
         )
-    return target_latent - 1, target_latent + 1, (frame_index - 1) % temporal_scale + 1
+    start = max(0, target_latent - context_latents + 1)
+    end = target_latent + 1
+    if start == 0:
+        local_index = frame_index
+    else:
+        target_offset = (frame_index - 1) % temporal_scale
+        local_index = 1 + temporal_scale * (target_latent - start - 1) + target_offset
+    return start, end, local_index
 
 
 def _geco_tiled_decode_with_per_tile_checkpoint(vae: AutoencoderKLWan, z: torch.Tensor) -> torch.Tensor:
@@ -980,6 +1035,11 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         frame_loss_weight = 1.0
         geco_loss_weight = 1.0
         frame_guidance_fixed_frames = None
+        frame_guidance_temporal_context = 2
+        frame_guidance_latent_downscale_factor = 1
+        frame_guidance_update_mode = "direct"
+        frame_guidance_travel_start = 0
+        frame_guidance_travel_end = -1
         if uses_frame_guidance:
             if additional_inputs is None:
                 raise ValueError("Frame Guidance requires additional_inputs with frame_guidance_targets.")
@@ -997,8 +1057,47 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 )
             frame_loss_weight = float(additional_inputs.get("frame_loss_weight", 1.0))
             geco_loss_weight = float(additional_inputs.get("geco_loss_weight", 1.0))
+            frame_guidance_temporal_context = int(
+                additional_inputs.get("frame_guidance_temporal_context", 2)
+            )
+            frame_guidance_latent_downscale_factor = int(
+                additional_inputs.get("frame_guidance_latent_downscale_factor", 1)
+            )
+            frame_guidance_update_mode = str(
+                additional_inputs.get("frame_guidance_update_mode", "direct")
+            )
+            frame_guidance_travel_start = int(
+                additional_inputs.get("frame_guidance_travel_start", 0)
+            )
+            frame_guidance_travel_end = int(
+                additional_inputs.get("frame_guidance_travel_end", -1)
+            )
             if frame_loss_weight <= 0:
                 raise ValueError("frame_loss_weight must be positive.")
+            if frame_guidance_temporal_context < 2:
+                raise ValueError("frame_guidance_temporal_context must be at least 2.")
+            if frame_guidance_latent_downscale_factor not in {1, 2, 4}:
+                raise ValueError(
+                    "frame_guidance_latent_downscale_factor must be one of {1, 2, 4}."
+                )
+            if uses_residual_motion and frame_guidance_latent_downscale_factor != 1:
+                raise ValueError(
+                    "Low-resolution Frame Guidance is not yet combined with full-resolution "
+                    "RGB GeCo; use frame_guidance_latent_downscale_factor=1 for fg_geco."
+                )
+            if frame_guidance_update_mode not in {"direct", "vlo"}:
+                raise ValueError(
+                    "frame_guidance_update_mode must be either 'direct' or 'vlo'."
+                )
+            if (
+                frame_guidance_update_mode == "vlo"
+                and not 0 <= frame_guidance_travel_start <= frame_guidance_travel_end < num_inference_steps
+            ):
+                raise ValueError(
+                    "VLO travel window must satisfy "
+                    "0 <= frame_guidance_travel_start <= frame_guidance_travel_end "
+                    f"< {num_inference_steps}."
+                )
             if loss_fn == "frame_residual_motion" and geco_loss_weight <= 0:
                 raise ValueError("geco_loss_weight must be positive for frame_residual_motion.")
             frame_guidance_targets = _prepare_frame_guidance_targets(
@@ -1009,6 +1108,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 height,
                 width,
                 self._get_geco_vae_device(),
+                frame_guidance_latent_downscale_factor,
             )
             if 0 not in frame_guidance_fixed_frames:
                 raise ValueError("Frame Guidance fixed_frames must include the frame-0 conditioning anchor.")
@@ -1159,6 +1259,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                         num_frames=num_frames,
                                         latent_frames=T_lat,
                                         temporal_scale=temporal_scale,
+                                        context_latents=frame_guidance_temporal_context,
                                     )
                                 else:
                                     if fidx == 0:
@@ -1593,6 +1694,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                             num_frames=num_frames,
                                             latent_frames=T_lat,
                                             temporal_scale=temporal_scale,
+                                            context_latents=frame_guidance_temporal_context,
                                         )
                                     else:
                                         # Preserve the existing RGB-GeCo temporal slice behavior for
@@ -1643,6 +1745,21 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                                         vae_dtype,
                                         via_cpu_for_grad=cross_device_grad_via_cpu,
                                     )
+
+                                    # Match the official Frame Guidance efficiency path: only
+                                    # the anchor-MSE branch may decode a spatially downscaled
+                                    # latent. RGB GeCo remains full-resolution.
+                                    if (
+                                        uses_frame_guidance
+                                        and not uses_residual_motion
+                                        and frame_guidance_latent_downscale_factor > 1
+                                    ):
+                                        z_chunk = torch.nn.functional.interpolate(
+                                            z_chunk.squeeze(0),
+                                            scale_factor=1.0 / frame_guidance_latent_downscale_factor,
+                                            mode="bilinear",
+                                            align_corners=False,
+                                        ).unsqueeze(0)
 
                                     # 意思：可选地缩小 latent 的 H/W。
                                     # 为什么：进一步省显存。这个操作仍然可导，所以 gradient 可以从 decoded frames 回到 z_chunk，再回到 latents
@@ -2006,6 +2123,21 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             if update_delta.item() > max_delta:
                                 update = update * (max_delta / (update_delta + 1e-8))
 
+                        use_vlo_renoising = (
+                            uses_frame_guidance
+                            and frame_guidance_update_mode == "vlo"
+                            and frame_guidance_travel_start <= i <= frame_guidance_travel_end
+                        )
+                        sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
+                        update_base = _frame_guidance_update_base(
+                            latents,
+                            x0_pred,
+                            sigma_t,
+                            generator,
+                            use_vlo_renoising=use_vlo_renoising,
+                        )
+                        gradient_update_delta = update.float().abs().mean().item()
+
                         #  guidance loss 的负梯度更新当前 noisy latent，
                         # 然后切断这次 guidance update 的计算图，
                         # 让新 latent 作为后续 denoising 的状态继续运行。
@@ -2017,7 +2149,9 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         # L = guidance loss
                         # 然后：
                         # x_t ← x_t - update
-                        latents = (latents - update).detach()
+                        latents = (update_base - update.to(update_base.dtype)).to(
+                            latents_before_guidance.dtype
+                        ).detach()
                         # latent_delta = 本次 update 平均每个 latent 元素改了多少
                         latent_delta = (latents - latents_before_guidance).float().abs().mean().item()
                         # 把 update 幅度换算成相对于 latent 本身大小的百分比。
@@ -2028,11 +2162,15 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                             f"wan_guidance_loss({i}/{rep}): {loss.item():.6f} "
                             f"latent_mean_abs={latent_mean_abs:.6f} grad_norm={float(grad_norm):.6f} "
                             f"grad_mean_abs={grad_mean_abs:.10f} grad_max_abs={grad_max_abs:.8f} "
-                            f"latent_delta={latent_delta:.8f} relative_delta={relative_delta:.6f}% relative_grad={relative_grad:.8f}%",
+                            f"gradient_update_delta={gradient_update_delta:.8f} "
+                            f"latent_delta={latent_delta:.8f} relative_delta={relative_delta:.6f}% "
+                            f"relative_grad={relative_grad:.8f}% "
+                            f"update_mode={frame_guidance_update_mode} "
+                            f"vlo_renoised={use_vlo_renoising}",
                             flush=True,
                         )
 
-                        del grad, noise_pred_g, x0_pred, loss
+                        del grad, noise_pred_g, x0_pred, loss, update_base
 
                     # Recompute noise_pred after latent update, so scheduler.step uses the updated latent.
                     if self.config.expand_timesteps:

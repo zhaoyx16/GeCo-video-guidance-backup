@@ -1,0 +1,112 @@
+{
+  "cases": {
+    "dl3dv_garden_path_turn_5s": {
+      "text_prompt": "A realistic continuous first-person navigation video from the given first frame. The camera moves forward along the same stone path, follows the path around the rock garden and pond through one broad smooth turn, and ends facing the newly revealed side of the same garden. The rocks, pond, trees, pavilion, path, and all other scene geometry remain fixed while only the camera moves. One uninterrupted stable wide-angle shot, no cuts, no zoom, no teleportation, and no independently moving objects.",
+      "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32/images_4/frame_00001.png",
+      "source_dataset": "DL3DV-11K-960P",
+      "source_sequence": "173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32",
+      "pose_translation": 11.05,
+      "pose_rotation_deg": 103.19,
+      "frame_guidance": {
+        "source_fps": 30,
+        "generated_fps": 24,
+        "source_clip_start_frame": 0,
+        "source_clip_start_timestamp_seconds": 0.0,
+        "source_clip_end_frame": 150,
+        "timestamp_tolerance_seconds": 0.001,
+        "anchors": [
+          {
+            "frame_index": 0,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32/images_4/frame_00001.png",
+            "source_frame_index": 0,
+            "source_timestamp_seconds": 0.0
+          },
+          {
+            "frame_index": 60,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32/images_4/frame_00076.png",
+            "source_frame_index": 75,
+            "source_timestamp_seconds": 2.5
+          },
+          {
+            "frame_index": 120,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/173ac46c97406207771928456316c41fe6ed90746e99f207dcd9c16908c98b32/images_4/frame_00151.png",
+            "source_frame_index": 150,
+            "source_timestamp_seconds": 5.0
+          }
+        ]
+      }
+    },
+    "dl3dv_traditional_corridor_turn_5s": {
+      "text_prompt": "A realistic continuous first-person navigation video from the given first frame. The camera travels forward through the same covered wooden corridor, follows the walkway through one broad continuous turn around the lawn, and continues along the newly revealed section of the same corridor. The wooden posts, lattice panels, roof, railings, lawn, buildings, and all other scene geometry remain fixed while only the camera moves. One uninterrupted stable wide-angle shot, no cuts, no zoom, no teleportation, and no independently moving objects.",
+      "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4/images_4/frame_00001.png",
+      "source_dataset": "DL3DV-11K-960P",
+      "source_sequence": "9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4",
+      "pose_translation": 10.729,
+      "pose_rotation_deg": 170.09,
+      "frame_guidance": {
+        "source_fps": 30,
+        "generated_fps": 24,
+        "source_clip_start_frame": 0,
+        "source_clip_start_timestamp_seconds": 0.0,
+        "source_clip_end_frame": 150,
+        "timestamp_tolerance_seconds": 0.001,
+        "anchors": [
+          {
+            "frame_index": 0,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4/images_4/frame_00001.png",
+            "source_frame_index": 0,
+            "source_timestamp_seconds": 0.0
+          },
+          {
+            "frame_index": 60,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4/images_4/frame_00076.png",
+            "source_frame_index": 75,
+            "source_timestamp_seconds": 2.5
+          },
+          {
+            "frame_index": 120,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/11K/9c688ec4cec6702cde33e81d20100e7794712590f63439d46a74f493391371c4/images_4/frame_00151.png",
+            "source_frame_index": 150,
+            "source_timestamp_seconds": 5.0
+          }
+        ]
+      }
+    },
+    "dl3dv_forest_path_turn_5s": {
+      "text_prompt": "A realistic continuous first-person navigation video from the given first frame. The camera moves forward along the same paved forest path, follows its broad bend around the nearby trees, and continues onto the newly revealed part of the path. The path, tree trunks, rocks, leaves, and all other scene geometry remain fixed while only the camera moves. One uninterrupted stable wide-angle shot, no cuts, no zoom, no teleportation, and no independently moving objects.",
+      "image_prompt": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/8K/16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a/images_4/frame_00081.png",
+      "source_dataset": "DL3DV-8K-960P",
+      "source_sequence": "16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a",
+      "pose_translation": 8.147,
+      "pose_rotation_deg": 75.89,
+      "frame_guidance": {
+        "source_fps": 30,
+        "generated_fps": 24,
+        "source_clip_start_frame": 80,
+        "source_clip_start_timestamp_seconds": 0.0,
+        "source_clip_end_frame": 230,
+        "timestamp_tolerance_seconds": 0.001,
+        "anchors": [
+          {
+            "frame_index": 0,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/8K/16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a/images_4/frame_00081.png",
+            "source_frame_index": 80,
+            "source_timestamp_seconds": 0.0
+          },
+          {
+            "frame_index": 60,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/8K/16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a/images_4/frame_00156.png",
+            "source_frame_index": 155,
+            "source_timestamp_seconds": 2.5
+          },
+          {
+            "frame_index": 120,
+            "image_path": "/vol/dissolve/yz10325/experiments/experiments_videogpa/dl3dv_0718/8K/16ceeb9e25f2ddec3af98fa13da62d8ba082791d1958e23df53bb8608ce9cb6a/images_4/frame_00231.png",
+            "source_frame_index": 230,
+            "source_timestamp_seconds": 5.0
+          }
+        ]
+      }
+    }
+  }
+}

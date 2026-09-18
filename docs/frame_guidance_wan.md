@@ -31,13 +31,20 @@ middle and final anchors use the frame objective
 
 `L_frame = mean_i MSE(decoded_x0[i], GT_anchor[i])`.
 
-For an anchor `f > 0`, Wan's causal VAE uses the predecessor/target latent pair
-`[(f - 1) // 4, (f - 1) // 4 + 1]` and local decoded slot
-`(f - 1) % 4 + 1`.  This avoids supervising a future local slot.  The pair has
-the correct local index algebra, but later frames can still differ from a full
-causal decode because earlier VAE cache state is absent.  Use
+For an anchor `f > 0`, `--frame_guidance_temporal_context 2` reproduces the
+official Wan Frame Guidance predecessor/target pair and local decoded slot.
+Larger values retain additional causal predecessor tokens and adjust the local
+slot accordingly.  The selected slice has the correct index algebra, but later
+frames can still differ from a full causal decode because earlier VAE cache
+state is absent.  Use
 `verify_wan_frame_guidance_temporal_mapping.py` when model assets and a GPU are
 available to quantify that approximation for the anchors you will use.
+
+In a 121-frame, 704x1280 real-video VAE parity probe, increasing the context
+from 2 to 3 tokens reduced mean absolute selected/full decode error from
+0.05708 to 0.00883 at frame 60 and from 0.03144 to 0.00774 at frame 120.
+Therefore the first controlled navigation pilot uses context 3 explicitly;
+context 2 remains the default so the official implementation can be reproduced.
 
 For `fg_geco`, the update objective is
 
@@ -50,12 +57,17 @@ runner persists raw `frame_loss_raw`, `geco_loss_raw`, and `combined_loss` per
 guidance update.  `frame_loss_weight=1.0` and `geco_loss_weight=1.0` are raw,
 tunable multipliers, **not** normalized or automatically balanced weights.
 
-These are deliberately controlled Wan variants, not faithful reproductions of
-either official Frame Guidance/Video Latent Optimization or original GeCo:
-time-travel/re-noising is absent, and selected VAE-frame decoding is causal and
-approximate.  Every run manifest records those facts as well as the selected
-frame indices, scheduler, decode scale, checkpointing, and cross-device
-settings.
+`--frame_guidance_update_mode direct` retains the original controlled x_t
+update.  `--frame_guidance_update_mode vlo` ports the official Wan Frame
+Guidance update: within
+`--frame_guidance_travel_start/--frame_guidance_travel_end`, predicted x0 is
+re-noised using the current FlowMatch sigma before the normalized gradient
+update.  Every repeat still recomputes the Transformer prediction, so the
+method does not use a stale x0 estimate.  The selected VAE-frame decode remains
+causal and approximate, and the RGB-GeCo arm remains a controlled
+flow-matching variant rather than a faithful original-GeCo reproduction.
+Every run manifest records the update mode, travel window, selected frame
+indices, scheduler, decode scale, checkpointing, and cross-device settings.
 
 ## Schedule
 
@@ -72,16 +84,15 @@ but early enough to retain trajectory control.  Use the same schedule, learning
 rate, seed, prompt, anchors, resolution, FPS, and sampler settings for
 `fg_only` and `fg_geco`.
 
-## Deliberate divergence from the official Frame Guidance code
+## Relation to the official Frame Guidance code
 
-The official Wan implementation conditions on the first image and computes RGB
-MSE at selected target-frame indices.  This implementation preserves that core
-frame-level objective.  It does **not** port the official Video Latent
-Optimization time-travel/re-noising update, because changing the Wan FlowMatch
-trajectory would confound the controlled comparison with the already-audited
-RGB-GeCo sampler.  Instead, it applies the existing full-Jacobian update before
-the unchanged `FlowMatchEulerDiscreteScheduler.step`, then recomputes the model
-prediction for the normal scheduler step.
+The official Wan implementation conditions on the first image, computes RGB
+MSE at selected target-frame indices, normalizes the latent gradient globally,
+and optionally reconstructs x_t by re-noising predicted x0 in a travel window.
+The `vlo` mode preserves those mechanisms while retaining this repository's
+full-Jacobian, multi-GPU, and checkpointed decode path.  The `direct` mode is
+kept as an explicit ablation.  Both modes recompute the model prediction after
+the final inner update before the normal scheduler step.
 
 Unlike the official notebook's low-resolution `latent_downscale_factor=4`
 example, this arm requires `decode_spatial_scale=1.0` so `fg_geco` uses the

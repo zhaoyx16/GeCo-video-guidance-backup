@@ -144,6 +144,36 @@ parser.add_argument(
 parser.add_argument("--guidance_lr", type=float, required=True)
 parser.add_argument("--frame_loss_weight", type=float, default=1.0)
 parser.add_argument("--geco_loss_weight", type=float, default=1.0)
+parser.add_argument(
+    "--frame_guidance_update_mode",
+    choices=["direct", "vlo"],
+    default="direct",
+    help=(
+        "direct updates the current x_t. vlo follows official Wan Frame Guidance "
+        "and re-noises predicted x0 inside the configured travel window."
+    ),
+)
+parser.add_argument("--frame_guidance_travel_start", type=int, default=5)
+parser.add_argument("--frame_guidance_travel_end", type=int, default=20)
+parser.add_argument(
+    "--frame_guidance_temporal_context",
+    type=int,
+    default=2,
+    help=(
+        "Number of causal Wan latent tokens decoded per nonzero anchor. "
+        "2 matches the official implementation; 3 retains one more predecessor."
+    ),
+)
+parser.add_argument(
+    "--frame_guidance_latent_downscale_factor",
+    type=int,
+    choices=[1, 2, 4],
+    default=1,
+    help=(
+        "Spatial latent downscale used only by the Frame Guidance anchor-MSE decode. "
+        "Factor 4 matches the official Wan Frame Guidance notebook."
+    ),
+)
 parser.add_argument("--ufm_scale", type=float, default=0.125)
 parser.add_argument("--metric_device", default="cuda")
 parser.add_argument("--pipe_device", default="cuda:0")
@@ -162,6 +192,19 @@ if args.guidance_lr <= 0:
     parser.error("--guidance_lr must be positive.")
 if args.frame_loss_weight <= 0:
     parser.error("--frame_loss_weight must be positive.")
+if args.frame_guidance_temporal_context < 2:
+    parser.error("--frame_guidance_temporal_context must be at least 2.")
+if args.mode == "fg_geco" and args.frame_guidance_latent_downscale_factor != 1:
+    parser.error(
+        "fg_geco currently requires --frame_guidance_latent_downscale_factor 1 "
+        "so RGB GeCo remains full-resolution."
+    )
+if args.frame_guidance_update_mode == "vlo" and not (
+    0 <= args.frame_guidance_travel_start <= args.frame_guidance_travel_end < args.steps
+):
+    parser.error(
+        "VLO travel window must satisfy 0 <= start <= end < --steps."
+    )
 if args.mode == "fg_geco" and args.geco_loss_weight <= 0:
     parser.error("--geco_loss_weight must be positive for fg_geco.")
 
@@ -186,16 +229,28 @@ condition_image = anchor_images[0]
 
 uses_geco = args.mode == "fg_geco"
 loss_fn = "frame_residual_motion" if uses_geco else "frame"
-guidance_variant = (
-    "controlled_wan_x0_frame_mse_rgb_geco_flow_matching_variant"
-    if uses_geco
-    else "controlled_wan_x0_frame_mse_variant"
-)
+if args.frame_guidance_update_mode == "vlo":
+    guidance_variant = (
+        "wan_frame_guidance_vlo_rgb_geco_flow_matching_variant"
+        if uses_geco
+        else "wan_frame_guidance_vlo_variant"
+    )
+else:
+    guidance_variant = (
+        "controlled_wan_x0_frame_mse_rgb_geco_flow_matching_variant"
+        if uses_geco
+        else "controlled_wan_x0_frame_mse_variant"
+    )
 guidance_diagnostics: list[dict[str, Any]] = []
 additional_inputs: dict[str, Any] = {
     "frame_guidance_targets": anchor_images,
     "frame_loss_weight": args.frame_loss_weight,
     "geco_loss_weight": args.geco_loss_weight,
+    "frame_guidance_temporal_context": args.frame_guidance_temporal_context,
+    "frame_guidance_latent_downscale_factor": args.frame_guidance_latent_downscale_factor,
+    "frame_guidance_update_mode": args.frame_guidance_update_mode,
+    "frame_guidance_travel_start": args.frame_guidance_travel_start,
+    "frame_guidance_travel_end": args.frame_guidance_travel_end,
     "decode_spatial_scale": 1.0,
     "max_relative_delta": args.max_relative_delta,
     "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
@@ -281,9 +336,17 @@ pair_invariants = {
     "decode_spatial_scale": 1.0,
     "max_relative_delta": args.max_relative_delta,
     "transformer_jacobian": "full",
-    "selected_frame_temporal_slice": "wan_causal_predecessor_target_pair_v1",
+    "selected_frame_temporal_slice": (
+        f"wan_causal_context_{args.frame_guidance_temporal_context}_v1"
+    ),
+    "frame_guidance_latent_downscale_factor": args.frame_guidance_latent_downscale_factor,
     "scheduler": "FlowMatchEulerDiscreteScheduler",
-    "time_travel_renoising": False,
+    "frame_guidance_update_mode": args.frame_guidance_update_mode,
+    "time_travel_renoising": (
+        [args.frame_guidance_travel_start, args.frame_guidance_travel_end]
+        if args.frame_guidance_update_mode == "vlo"
+        else False
+    ),
     "transformer_block_checkpointing": args.transformer_block_checkpointing,
     "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
 }
@@ -319,10 +382,18 @@ config_for_hash = {
     "max_relative_delta": args.max_relative_delta,
     "transformer_jacobian": "full",
     "vae_decode_spatial_scale": 1.0,
-    "selected_frame_temporal_slice": "wan_causal_predecessor_target_pair_v1",
+    "selected_frame_temporal_slice": (
+        f"wan_causal_context_{args.frame_guidance_temporal_context}_v1"
+    ),
+    "frame_guidance_latent_downscale_factor": args.frame_guidance_latent_downscale_factor,
     "selected_frame_full_decode_parity": "not_assumed; optional probe required",
     "scheduler": "FlowMatchEulerDiscreteScheduler",
-    "time_travel_renoising": False,
+    "frame_guidance_update_mode": args.frame_guidance_update_mode,
+    "time_travel_renoising": (
+        [args.frame_guidance_travel_start, args.frame_guidance_travel_end]
+        if args.frame_guidance_update_mode == "vlo"
+        else False
+    ),
     "transformer_block_checkpointing": args.transformer_block_checkpointing,
     "cross_device_grad_via_cpu": args.cross_device_grad_via_cpu,
 }
@@ -353,11 +424,19 @@ run_record: dict[str, Any] = {
         "metric_device": args.metric_device if uses_geco else None,
     },
     "implementation_notes": [
-        "This is a controlled Wan x0 frame-MSE variant, not a faithful Frame Guidance/VLO reproduction.",
+        (
+            "This run uses the official Wan Frame Guidance VLO re-noising update."
+            if args.frame_guidance_update_mode == "vlo"
+            else "This run uses the controlled direct x_t frame-guidance update."
+        ),
         "Frame MSE is computed on decoded x0 predictions at nonzero anchor indices.",
+        (
+            "Frame Guidance anchor latents are decoded at spatial downscale factor "
+            f"{args.frame_guidance_latent_downscale_factor}; RGB GeCo remains full-resolution."
+        ),
         "Frame zero is the Wan I2V condition and is recorded but does not receive a latent gradient.",
         "The audited FlowMatch scheduler, x0 conversion, and full RGB GeCo residual path are unchanged.",
-        "The RGB-GeCo arm is a controlled flow-matching variant, not a faithful original-GeCo reproduction: it omits time-travel/re-noising and uses a causal-VAE selected-frame approximation.",
+        "The RGB-GeCo arm remains a controlled flow-matching variant and uses a causal-VAE selected-frame approximation.",
         "Raw frame and GeCo losses use tunable multipliers; 1.0/1.0 is not normalization.",
     ],
 }
