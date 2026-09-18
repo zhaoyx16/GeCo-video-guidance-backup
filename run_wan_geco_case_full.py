@@ -5,6 +5,7 @@ run_wan_geco_case.py 不做 guidance。
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -13,7 +14,8 @@ from PIL import Image
 from diffusers import AutoencoderKLWan
 from diffusers.utils import export_to_video
 
-sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_wan")
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT / "external" / "guidance_wan"))
 from pipeline_wan_i2v_full_guided import WanImageToVideoPipeline
 
 def remap_path(p):
@@ -26,6 +28,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--case", required=True)
 parser.add_argument("--prompt_json", required=True)
 parser.add_argument("--output_root", required=True)
+parser.add_argument(
+    "--model",
+    default=os.environ.get(
+        "WAN_MODEL_PATH",
+        "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers",
+    ),
+    help="Wan2.2 TI2V Diffusers model directory or Hugging Face model ID.",
+)
 parser.add_argument("--mode", choices=["baseline", "guided"], required=True)
 parser.add_argument("--steps", type=int, default=10)
 parser.add_argument("--frames", type=int, default=21)
@@ -62,7 +72,7 @@ parser.add_argument(
     help="CPU-stage differentiable VAE-to-metric transfers for verified-correct multi-GPU VJPs.",
 )
 parser.add_argument("--decode_spatial_scale", type=float, default=1.0)
-parser.add_argument("--max_relative_delta", type=float, default=0.0, help="Optional cap on mean absolute latent update as a fraction of mean abs latent, e.g. 0.002 for 0.2%.")
+parser.add_argument("--max_relative_delta", type=float, default=0.0, help="Optional cap on mean absolute latent update as a fraction of mean abs latent, e.g. 0.002 for 0.2 percent.")
 parser.add_argument("--debug_x0_interval", type=int, default=0, help="If >0, save decoded x0_pred frames every N denoising steps.")
 parser.add_argument("--debug_x0_dir", default=None, help="Directory for x0_pred debug PNGs. Defaults under the case output directory.")
 parser.add_argument("--debug_x0_frames", default="", help="Comma-separated frame indices to save for x0_pred debug. Defaults to fixed_frames.")
@@ -74,11 +84,15 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-model = "/vol/dissolve/yz10325/checkpoints/Wan2.2-TI2V-5B-Diffusers"
+model = args.model
 data = json.load(open(args.prompt_json))
 item = data[args.case]
 
-image_path = remap_path(item["image_prompt"])
+image_path = Path(item["image_prompt"])
+if image_path.is_absolute():
+    image_path = Path(remap_path(image_path))
+else:
+    image_path = Path(args.prompt_json).resolve().parent / image_path
 prompt = item["text_prompt"]
 
 out_dir = Path(args.output_root) / args.case

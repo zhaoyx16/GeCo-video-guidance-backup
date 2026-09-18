@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -7,7 +8,8 @@ import torch
 from PIL import Image
 from diffusers.utils import export_to_video
 
-sys.path.insert(0, "/vol/dissolve/yz10325/repos/GeCo/external/guidance_cosmos")
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT / "external" / "guidance_cosmos"))
 from pipeline_cosmos2_5_predict_guided import Cosmos2_5_PredictBasePipeline
 
 
@@ -57,6 +59,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--case", required=True)
 parser.add_argument("--prompt_json", required=True)
 parser.add_argument("--output_root", required=True)
+parser.add_argument(
+    "--model",
+    default=os.environ.get(
+        "COSMOS_MODEL_PATH",
+        "/vol/dissolve/yz10325/checkpoints/Cosmos-Predict2.5-2B-diffusers-base-post-trained",
+    ),
+    help="Cosmos Predict2.5 Diffusers model directory or Hugging Face model ID.",
+)
 parser.add_argument("--mode", choices=["baseline", "guided"], required=True)
 parser.add_argument("--profile", choices=PROFILE_DEFAULTS, default="smoke")
 parser.add_argument("--steps", type=int, default=None)
@@ -127,11 +137,15 @@ for name, value in PROFILE_DEFAULTS[args.profile].items():
     if getattr(args, name) is None:
         setattr(args, name, value)
 
-model = "/vol/dissolve/yz10325/checkpoints/Cosmos-Predict2.5-2B-diffusers-base-post-trained"
+model = args.model
 data = json.load(open(args.prompt_json))
 item = data[args.case]
 
-image_path = remap_path(item["image_prompt"])
+image_path = Path(item["image_prompt"])
+if image_path.is_absolute():
+    image_path = Path(remap_path(image_path))
+else:
+    image_path = Path(args.prompt_json).resolve().parent / image_path
 prompt = item["text_prompt"]
 
 out_dir = Path(args.output_root) / args.case
